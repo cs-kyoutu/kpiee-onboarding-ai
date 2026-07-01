@@ -1,0 +1,12 @@
+# 機密情報（API キー）— 絶対にコミットしない
+server/.env
+
+# 実行時データ（DB・アップロードファイル）
+server/data/
+
+# 依存・ビルド成果物
+node_modules/
+dist/
+
+# 実行時ログ
+logs/
