@@ -43,14 +43,14 @@ async function main() {
       throw new Error('force rollback');
     });
   } catch { /* expected */ }
-  const afterRollback = await db.prepare(`SELECT id FROM projects WHERE customer_name = ?`).all(['rollback-me']);
+  const afterRollback = await db.prepare(`SELECT id FROM projects WHERE customer_name = ?`).all('rollback-me');
   assert(afterRollback.length === 0, 'rollback leaves no row');
 
   // トランザクション: コミット
   await db.tx(async t => {
     await t.prepare(`INSERT INTO projects (customer_name) VALUES (?)`).run('commit-me');
   });
-  const afterCommit = await db.prepare(`SELECT id FROM projects WHERE customer_name = ?`).all(['commit-me']);
+  const afterCommit = await db.prepare(`SELECT id FROM projects WHERE customer_name = ?`).all('commit-me');
   assert(afterCommit.length === 1, 'commit adds row');
 
   // 集計（getProjectUsage 相当の COALESCE/SUM/GROUP BY が両方言で通るか）
