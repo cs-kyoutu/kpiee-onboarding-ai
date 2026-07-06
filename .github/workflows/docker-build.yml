@@ -1,9 +1,9 @@
-# Docker イメージのビルド検証（1段階目）。
-# push/PR ごとにイメージが実際にビルドできるか（better-sqlite3 / @duckdb などネイティブモジュールの
-# linux/glibc コンパイル含む）を CI で確認する。レジストリへの push はしない（2段階目で追加）。
+# Docker イメージのビルド＆公開（GitHub Actions）。
+#  - PR: ビルドのみ（ネイティブモジュール込みで壊れていないか検証、push はしない）
+#  - main への push / 手動実行: ビルドして GHCR (GitHub Container Registry) に push
 #
-# 前提: このワークフローはアプリがリポジトリ直下にある構成（専用リポジトリ）を想定する。
-# Dockerfile はリポジトリルート、ビルドコンテキストは "."。
+# レジストリは GHCR を使う（GitHub 内蔵の GITHUB_TOKEN で認証でき、AWS 認証や追加シークレット不要）。
+# 将来 ECS へ載せる際は ECR への push（AWS OIDC 認証）をここに追加、または ECS が GHCR から pull する。
 name: docker-build
 
 on:
@@ -12,9 +12,16 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  # ghcr.io/<owner>/<repo> 形式。github.repository = cs-kyoutu/kpiee-onboarding-ai
+  IMAGE: ghcr.io/${{ github.repository }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # GHCR への push に必要
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,13 +29,31 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image (no push)
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata (tags/labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          push: false
-          tags: kpiee-onboarding-ai:ci
-          # GitHub Actions キャッシュでネイティブビルドの再コンパイルを短縮
+          # PR ではビルドのみ、main への push では GHCR に push
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
