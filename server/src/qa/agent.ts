@@ -8,7 +8,7 @@
 import { db } from '../db.js';
 import { getJson } from '../storage.js';
 import { aiAvailable, callWithTools } from '../ai/client.js';
-import { QA_TOOL_DEFS, runQaTool } from './tools.js';
+import { QA_TOOL_DEFS, runQaTool, invalidateBooks } from './tools.js';
 import type { StructureOverview } from '../ai/schemas.js';
 
 interface ChatRow { role: 'user' | 'assistant'; content: string }
@@ -63,7 +63,11 @@ export async function ask(projectId: number, question: string): Promise<AskResul
   const result = await callWithTools(
     projectId, buildSystemText(projectId), history, QA_TOOL_DEFS as unknown as Parameters<typeof callWithTools>[3],
     call => runQaTool(projectId, call.name, call.input),
-  );
+  ).finally(() => {
+    // 無保存モードでは、ドリルダウンで読み込んだワークブック（原本相当）をこの質問の処理終了時に破棄する。
+    // ターン内の複数ツール呼び出しではキャッシュを共有し、ターンをまたいでは保持しない（デプロイ設計 C5）。
+    if (process.env.ARTIFACT_EPHEMERAL === '1') invalidateBooks(projectId);
+  });
 
   db.prepare(`INSERT INTO chat_messages (project_id, role, content, tool_trace) VALUES (?, 'assistant', ?, ?)`)
     .run(projectId, result.text, JSON.stringify(result.trace));
