@@ -33,6 +33,7 @@ export function aiAvailable(): boolean {
 
 const client = aiAvailable() ? new Anthropic() : null;
 
+// prepare は同期（遅延コンパイル）。実行(.run)は非同期なので呼び出し側で await する。
 const insertUsage = db.prepare(`
   INSERT INTO ai_usage_logs
     (project_id, stage, model, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens)
@@ -82,7 +83,7 @@ export async function callStructured<T>(
 
   const message = await stream.finalMessage();
 
-  insertUsage.run(
+  await insertUsage.run(
     projectId,
     stage,
     MODEL,
@@ -154,7 +155,7 @@ export async function callWithTools(
     });
     const msg = await stream.finalMessage();
     inTok += msg.usage.input_tokens; outTok += msg.usage.output_tokens;
-    insertUsage.run(projectId, 'qa', MODEL, msg.usage.input_tokens, msg.usage.output_tokens,
+    await insertUsage.run(projectId, 'qa', MODEL, msg.usage.input_tokens, msg.usage.output_tokens,
       msg.usage.cache_read_input_tokens ?? 0, msg.usage.cache_creation_input_tokens ?? 0);
 
     if (msg.stop_reason === 'refusal') throw new Error('AI が安全上の理由で応答を拒否しました');

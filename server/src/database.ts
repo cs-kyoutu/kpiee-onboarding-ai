@@ -80,12 +80,15 @@ function makeSqliteDb(sdb: Database.Database): Db {
   return {
     driver: 'sqlite',
     prepare(sql: string): Stmt {
-      const st = sdb.prepare(sql);
+      // 遅延コンパイル: better-sqlite3 は prepare 時に SQL を即コンパイルしテーブル未作成だと落ちる。
+      // pg と同様に「実行時までコンパイルしない」ことで、initDb 前のモジュール評価時 prepare でも落ちない。
+      let st: Database.Statement | undefined;
+      const stmt = () => (st ??= sdb.prepare(sql));
       return {
-        async get<T>(...params: unknown[]) { return st.get(...params) as T | undefined; },
-        async all<T>(...params: unknown[]) { return st.all(...params) as T[]; },
+        async get<T>(...params: unknown[]) { return stmt().get(...params) as T | undefined; },
+        async all<T>(...params: unknown[]) { return stmt().all(...params) as T[]; },
         async run(...params: unknown[]) {
-          const r = st.run(...params);
+          const r = stmt().run(...params);
           return { lastInsertRowid: Number(r.lastInsertRowid), changes: r.changes };
         },
       };

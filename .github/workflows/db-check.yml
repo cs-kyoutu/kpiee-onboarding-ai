@@ -56,3 +56,45 @@ jobs:
       - name: DB smoke (SQLite)
         working-directory: server
         run: npx tsx scripts/db-smoke.ts
+
+  # 実アプリを Postgres に対して起動し、initDb(スキーマ作成) + 主要ルートが動くかを検証する
+  # （非同期 DB 移行後にアプリが pg で実際にブートするかの確認。ANTHROPIC_API_KEY 無しなのでモード=mock）。
+  app-boot:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: onboarding
+          POSTGRES_PASSWORD: onboarding
+          POSTGRES_DB: onboarding
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U onboarding"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Install deps
+        working-directory: server
+        run: npm ci
+      - name: Boot app against Postgres and smoke routes
+        working-directory: server
+        env:
+          DATABASE_URL: postgres://onboarding:onboarding@localhost:5432/onboarding
+          PORT: '8787'
+        run: |
+          npx tsx src/index.ts & SERVER_PID=$!
+          for i in $(seq 1 30); do curl -sf http://localhost:8787/api/health >/dev/null && break || sleep 1; done
+          echo "health:" && curl -sf http://localhost:8787/api/health && echo
+          PID=$(curl -sf -X POST http://localhost:8787/api/projects -H 'Content-Type: application/json' -d '{"customer_name":"ci"}' | node -e "process.stdin.on('data',d=>console.log(JSON.parse(d).id))")
+          echo "created project $PID"
+          curl -sf "http://localhost:8787/api/projects/$PID/chat" >/dev/null && echo "chat GET ok"
+          curl -sf http://localhost:8787/api/projects | node -e "process.stdin.on('data',d=>{const n=JSON.parse(d).length; if(n<1){console.error('FAIL: no projects');process.exit(1)} console.log('projects',n)})"
+          curl -sf -X DELETE "http://localhost:8787/api/projects/$PID" >/dev/null && echo "delete ok"
+          kill $SERVER_PID 2>/dev/null || true

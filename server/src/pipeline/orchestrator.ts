@@ -40,22 +40,22 @@ export function tableNameOf(filename: string): string {
 interface ScriptRow { id: number; name: string; code: string }
 
 /** プロジェクトに登録された Apps Script 等の変換ロジック原文を読み込む */
-function loadScripts(projectId: number): ScriptRow[] {
-  return db.prepare(
+async function loadScripts(projectId: number): Promise<ScriptRow[]> {
+  return await db.prepare(
     `SELECT id, name, code FROM project_scripts WHERE project_id = ? ORDER BY id`,
   ).all(projectId) as ScriptRow[];
 }
 
 /** AI メッセージへ添付する <apps_scripts> ブロックを組み立てる（無ければ空文字列） */
-function scriptsBlock(projectId: number): string {
-  const scripts = loadScripts(projectId);
+async function scriptsBlock(projectId: number): Promise<string> {
+  const scripts = await loadScripts(projectId);
   if (scripts.length === 0) return '';
   const payload = scripts.map(s => ({ name: s.name, code: s.code }));
   return `\n\n<apps_scripts>\n${JSON.stringify(payload)}\n</apps_scripts>`;
 }
 
 async function loadArtifacts(projectId: number): Promise<{ row: ArtifactRow; parsed: ParsedArtifact }[]> {
-  const rows = db.prepare(
+  const rows = await db.prepare(
     `SELECT id, kind, original_filename, storage_key, parsed_key, parse_status, sheet_roles FROM artifacts WHERE project_id = ?`,
   ).all(projectId) as ArtifactRow[];
   // 無保存モードでは parsed_key が無いので materializeParsed が原本を Drive から取り直してパースする。
@@ -122,23 +122,24 @@ export async function collectByRole(projectId: number): Promise<RoleCollections>
   return { inputs, working, finalOutput, unknownSheets, artifacts };
 }
 
-function startRun(projectId: number, stage: string): number {
-  const res = db.prepare(
+async function startRun(projectId: number, stage: string): Promise<number> {
+  const res = await db.prepare(
     `INSERT INTO analysis_runs (project_id, stage, status, model) VALUES (?, ?, 'running', ?)`,
   ).run(projectId, stage, aiAvailable() ? MODEL : 'mock');
   return Number(res.lastInsertRowid);
 }
 
-function finishRun(runId: number, ok: boolean, error?: string, tokens?: { input: number; output: number }): void {
-  db.prepare(
-    `UPDATE analysis_runs SET status = ?, error = ?, input_tokens = ?, output_tokens = ?, finished_at = datetime('now') WHERE id = ?`,
-  ).run(ok ? 'done' : 'failed', error ?? null, tokens?.input ?? 0, tokens?.output ?? 0, runId);
+async function finishRun(runId: number, ok: boolean, error?: string, tokens?: { input: number; output: number }): Promise<void> {
+  // datetime('now') は方言依存のため ISO 文字列を渡す（pg=TIMESTAMPTZ, sqlite=TEXT どちらも受理）
+  await db.prepare(
+    `UPDATE analysis_runs SET status = ?, error = ?, input_tokens = ?, output_tokens = ?, finished_at = ? WHERE id = ?`,
+  ).run(ok ? 'done' : 'failed', error ?? null, tokens?.input ?? 0, tokens?.output ?? 0, new Date().toISOString(), runId);
 }
 
 /** P1 解読: アーティファクト → 解読項目リスト */
 export async function runDecode(projectId: number): Promise<{ runId: number; findingCount: number }> {
-  setProjectStatus(projectId, 'analyzing');
-  const runId = startRun(projectId, 'decode');
+  await setProjectStatus(projectId, 'analyzing');
+  const runId = await startRun(projectId, 'decode');
   try {
     const collections = await collectByRole(projectId);
     if (collections.artifacts.length === 0) throw new Error('解析済みアーティファクトがありません。先にアップロードしてください');
@@ -155,7 +156,7 @@ export async function runDecode(projectId: number): Promise<{ runId: number; fin
         ({ parsed: a.parsed, roles: a.roles, kind: a.row.kind, filename: a.row.original_filename })));
       const result = await callStructured<{ findings: Finding[]; overview: StructureOverview }>(
         projectId, 'decode',
-        `${decodeInstruction(assetNames)}\n\n<artifacts>\n${JSON.stringify(payload)}\n</artifacts>${scriptsBlock(projectId)}`,
+        `${decodeInstruction(assetNames)}\n\n<artifacts>\n${JSON.stringify(payload)}\n</artifacts>${await scriptsBlock(projectId)}`,
         FINDINGS_SCHEMA as unknown as Record<string, unknown>,
       );
       findings = result.data.findings;
@@ -178,42 +179,44 @@ export async function runDecode(projectId: number): Promise<{ runId: number; fin
       });
     }
 
-    const insert = db.prepare(`
-      INSERT INTO findings
-        (analysis_run_id, project_id, source_ref, formula_raw, logic_type, kpiee_target, explanation, confidence, needs_customer_confirmation)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    const insertQuestion = db.prepare(`
-      INSERT INTO customer_questions (project_id, finding_id, question) VALUES (?, ?, ?)
-    `);
-    const tx = db.transaction(() => {
+    await db.tx(async t => {
       // 再実行時は前回の解読結果を破棄する（冪等性確保）
-      db.prepare(`DELETE FROM customer_questions WHERE project_id = ? AND finding_id IS NOT NULL`).run(projectId);
-      db.prepare(`DELETE FROM findings WHERE project_id = ?`).run(projectId);
-      // 全体構造サマリも最新の解読結果で置き換える（プロジェクトごとに1件）
-      db.prepare(`INSERT OR REPLACE INTO project_overviews (project_id, content, created_at) VALUES (?, ?, datetime('now'))`)
-        .run(projectId, JSON.stringify(overview));
+      await t.prepare(`DELETE FROM customer_questions WHERE project_id = ? AND finding_id IS NOT NULL`).run(projectId);
+      await t.prepare(`DELETE FROM findings WHERE project_id = ?`).run(projectId);
+      // 全体構造サマリも最新の解読結果で置き換える（プロジェクトごとに1件）。
+      // INSERT OR REPLACE(sqlite) の代わりに ON CONFLICT を使う（pg/sqlite 双方対応）。
+      await t.prepare(
+        `INSERT INTO project_overviews (project_id, content, created_at) VALUES (?, ?, ?)
+         ON CONFLICT (project_id) DO UPDATE SET content = EXCLUDED.content, created_at = EXCLUDED.created_at`,
+      ).run(projectId, JSON.stringify(overview), new Date().toISOString());
+      const insert = t.prepare(`
+        INSERT INTO findings
+          (analysis_run_id, project_id, source_ref, formula_raw, logic_type, kpiee_target, explanation, confidence, needs_customer_confirmation)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const insertQuestion = t.prepare(`
+        INSERT INTO customer_questions (project_id, finding_id, question) VALUES (?, ?, ?)
+      `);
       for (const f of findings) {
         const needsConfirm = f.kpiee_target === 'needs_customer_confirmation' ? 1 : 0;
-        const res = insert.run(
+        const res = await insert.run(
           runId, projectId, f.source_ref, f.formula_raw ?? null,
           f.logic_type, f.kpiee_target, f.explanation, f.confidence, needsConfirm,
         );
         // ロジック化不能項目は顧客確認リストへ自動登録（UC-10）
         if (needsConfirm) {
-          insertQuestion.run(projectId, Number(res.lastInsertRowid),
+          await insertQuestion.run(projectId, Number(res.lastInsertRowid),
             `${f.source_ref}: ${f.explanation}（この値・ロジックの出所をご教示ください）`);
         }
       }
     });
-    tx();
 
-    finishRun(runId, true, undefined, tokens);
-    setProjectStatus(projectId, 'reviewing');
+    await finishRun(runId, true, undefined, tokens);
+    await setProjectStatus(projectId, 'reviewing');
     return { runId, findingCount: findings.length };
   } catch (e) {
-    finishRun(runId, false, String(e));
-    setProjectStatus(projectId, 'draft');
+    await finishRun(runId, false, String(e));
+    await setProjectStatus(projectId, 'draft');
     throw e;
   }
 }
@@ -246,8 +249,8 @@ function validateReportConfig(config: ReportConfig): string[] {
 }
 
 /** findings の承認済み内容（修正があれば修正後）を取得する */
-function approvedFindings(projectId: number): (Finding & { review_status: string })[] {
-  const rows = db.prepare(
+async function approvedFindings(projectId: number): Promise<(Finding & { review_status: string })[]> {
+  const rows = await db.prepare(
     `SELECT source_ref, formula_raw, logic_type, kpiee_target, explanation, confidence, review_status, modified_content
      FROM findings WHERE project_id = ? AND review_status IN ('approved', 'modified')`,
   ).all(projectId) as Record<string, string>[];
@@ -265,13 +268,13 @@ function approvedFindings(projectId: number): (Finding & { review_status: string
 
 /** P2 生成 + P3 静的検証（NG 時は最大3回まで自動再生成） */
 export async function runGenerate(projectId: number): Promise<{ runId: number; version: number; validationOk: boolean }> {
-  setProjectStatus(projectId, 'generating');
-  const runId = startRun(projectId, 'generate');
+  await setProjectStatus(projectId, 'generating');
+  const runId = await startRun(projectId, 'generate');
   try {
     const collections = await collectByRole(projectId);
     const inputs = collections.inputs;
     const assetNames = inputs.map(i => i.tableName);
-    const approved = approvedFindings(projectId);
+    const approved = await approvedFindings(projectId);
     if (approved.length === 0) throw new Error('承認済みの解読項目がありません。先に検収（SC-04）を行ってください');
 
     let generation: GenerationResult | null = null;
@@ -286,7 +289,7 @@ export async function runGenerate(projectId: number): Promise<{ runId: number; v
         const feedback = lastErrors.length > 0 ? `\n\n${regenerateInstruction(lastErrors)}` : '';
         const result = await callStructured<GenerationResult>(
           projectId, 'generate',
-          `${generateInstruction(assetNames)}\n\n<approved_findings>\n${JSON.stringify(approved)}\n</approved_findings>\n\n<artifacts>\n${JSON.stringify(payload)}\n</artifacts>${scriptsBlock(projectId)}${feedback}`,
+          `${generateInstruction(assetNames)}\n\n<approved_findings>\n${JSON.stringify(approved)}\n</approved_findings>\n\n<artifacts>\n${JSON.stringify(payload)}\n</artifacts>${await scriptsBlock(projectId)}${feedback}`,
           GENERATION_SCHEMA as unknown as Record<string, unknown>,
         );
         generation = result.data;
@@ -307,76 +310,75 @@ export async function runGenerate(projectId: number): Promise<{ runId: number; v
     const validationOk = lastErrors.length === 0;
 
     // 成果物の保存（version は再生成履歴として加算。設計書 §8）
-    const prev = db.prepare(`SELECT COALESCE(MAX(version), 0) AS v FROM deliverables WHERE project_id = ?`)
+    const prev = await db.prepare(`SELECT COALESCE(MAX(version), 0) AS v FROM deliverables WHERE project_id = ?`)
       .get(projectId) as { v: number };
     const version = prev.v + 1;
 
-    const decodeReport = buildDecodeReport(projectId, approved);
+    const decodeReport = await buildDecodeReport(projectId, approved);
     const mappingTable = buildMappingTable(approved);
     const configTable = buildConfigTable(generation.report_config);
 
-    const insert = db.prepare(`
-      INSERT INTO deliverables (project_id, kind, version, content, validation_status, validation_errors)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
     const validationStatus = validationOk ? 'passed' : 'failed';
     const validationErrors = validationOk ? null : JSON.stringify(lastErrors);
-    const tx = db.transaction(() => {
-      insert.run(projectId, 'decode_report', version, decodeReport, 'passed', null);
-      insert.run(projectId, 'mapping', version, mappingTable, 'passed', null);
-      insert.run(projectId, 'sql', version, generation!.sql, validationStatus, validationErrors);
-      insert.run(projectId, 'master_csv', version, generation!.master_csv, 'passed', null);
-      insert.run(projectId, 'report_config_table', version, configTable, 'passed', null);
-      insert.run(projectId, 'report_config_json', version, JSON.stringify(generation!.report_config, null, 2), validationStatus, validationErrors);
+    await db.tx(async t => {
+      const insert = t.prepare(`
+        INSERT INTO deliverables (project_id, kind, version, content, validation_status, validation_errors)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      await insert.run(projectId, 'decode_report', version, decodeReport, 'passed', null);
+      await insert.run(projectId, 'mapping', version, mappingTable, 'passed', null);
+      await insert.run(projectId, 'sql', version, generation!.sql, validationStatus, validationErrors);
+      await insert.run(projectId, 'master_csv', version, generation!.master_csv, 'passed', null);
+      await insert.run(projectId, 'report_config_table', version, configTable, 'passed', null);
+      await insert.run(projectId, 'report_config_json', version, JSON.stringify(generation!.report_config, null, 2), validationStatus, validationErrors);
     });
-    tx();
 
-    finishRun(runId, true, validationOk ? undefined : `検証NG（${MAX_REGENERATION}回試行後）: ${lastErrors.join(' / ')}`, totalTokens);
+    await finishRun(runId, true, validationOk ? undefined : `検証NG（${MAX_REGENERATION}回試行後）: ${lastErrors.join(' / ')}`, totalTokens);
     return { runId, version, validationOk };
   } catch (e) {
-    finishRun(runId, false, String(e));
-    setProjectStatus(projectId, 'reviewing');
+    await finishRun(runId, false, String(e));
+    await setProjectStatus(projectId, 'reviewing');
     throw e;
   }
 }
 
 /** P4 照合: ローカルシミュレーション実行と帳票との突き合わせ */
 export async function runMatch(projectId: number): Promise<{ runId: number; matchRate: number }> {
-  setProjectStatus(projectId, 'matching');
-  const runId = startRun(projectId, 'match');
+  await setProjectStatus(projectId, 'matching');
+  const runId = await startRun(projectId, 'match');
   try {
     const collections = await collectByRole(projectId);
     const inputs = collections.inputs;
     const finalOutput = collections.finalOutput;
     if (!finalOutput) throw new Error('最終帳票（final_output 役割のシート）が見つかりません');
 
-    const latestSql = db.prepare(
+    const latestSql = await db.prepare(
       `SELECT content, version FROM deliverables WHERE project_id = ? AND kind = 'sql' ORDER BY version DESC LIMIT 1`,
     ).get(projectId) as { content: string; version: number } | undefined;
     if (!latestSql) throw new Error('生成済み SQL がありません。先に成果物生成を実行してください');
 
     const outcome = await matchAgainstFinalOutput(inputs, latestSql.content, finalOutput);
 
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO match_results (project_id, deliverable_version, total_cells, matched_cells, mismatches)
       VALUES (?, ?, ?, ?, ?)
     `).run(projectId, latestSql.version, outcome.totalCells, outcome.matchedCells, JSON.stringify(outcome.mismatches));
 
-    finishRun(runId, true);
-    setProjectStatus(projectId, 'completed');
+    await finishRun(runId, true);
+    await setProjectStatus(projectId, 'completed');
     return {
       runId,
       matchRate: outcome.totalCells === 0 ? 0 : outcome.matchedCells / outcome.totalCells,
     };
   } catch (e) {
-    finishRun(runId, false, String(e));
+    await finishRun(runId, false, String(e));
     throw e;
   }
 }
 
 /** 解読リポート（Markdown）を組み立てる */
-function buildDecodeReport(projectId: number, findings: Finding[]): string {
-  const project = db.prepare(`SELECT customer_name FROM projects WHERE id = ?`).get(projectId) as { customer_name: string };
+async function buildDecodeReport(projectId: number, findings: Finding[]): Promise<string> {
+  const project = await db.prepare(`SELECT customer_name FROM projects WHERE id = ?`).get(projectId) as { customer_name: string };
   const lines = [
     `# 解読リポート — ${project.customer_name}`,
     '',

@@ -14,19 +14,19 @@ import type { StructureOverview } from '../ai/schemas.js';
 interface ChatRow { role: 'user' | 'assistant'; content: string }
 
 /** プロジェクトの会話履歴を取得する（古い順・表示用） */
-export function getHistory(projectId: number): (ChatRow & { id: number; tool_trace: string | null; created_at: string })[] {
-  return db.prepare(
+export async function getHistory(projectId: number): Promise<(ChatRow & { id: number; tool_trace: string | null; created_at: string })[]> {
+  return await db.prepare(
     `SELECT id, role, content, tool_trace, created_at FROM chat_messages WHERE project_id = ? ORDER BY id`,
   ).all(projectId) as (ChatRow & { id: number; tool_trace: string | null; created_at: string })[];
 }
 
 /** 構造サマリ＋解読項目をシステムプロンプト用テキストに組み立てる */
-function buildSystemText(projectId: number): string {
-  const ov = db.prepare(`SELECT content FROM project_overviews WHERE project_id = ?`)
+async function buildSystemText(projectId: number): Promise<string> {
+  const ov = await db.prepare(`SELECT content FROM project_overviews WHERE project_id = ?`)
     .get(projectId) as { content: string } | undefined;
   const overview: StructureOverview | null = ov ? JSON.parse(ov.content) : null;
 
-  const findings = db.prepare(
+  const findings = await db.prepare(
     `SELECT source_ref, logic_type, kpiee_target, explanation FROM findings WHERE project_id = ? LIMIT 200`,
   ).all(projectId) as { source_ref: string; logic_type: string; kpiee_target: string; explanation: string }[];
 
@@ -51,17 +51,17 @@ export interface AskResult { answer: string; trace: { tool: string; input: Recor
 /** 質問を1件処理し、回答と利用ツール記録を永続化して返す */
 export async function ask(projectId: number, question: string): Promise<AskResult> {
   // ユーザー発話を先に記録
-  db.prepare(`INSERT INTO chat_messages (project_id, role, content) VALUES (?, 'user', ?)`).run(projectId, question);
+  await db.prepare(`INSERT INTO chat_messages (project_id, role, content) VALUES (?, 'user', ?)`).run(projectId, question);
 
   if (!aiAvailable()) {
     const answer = '（モックモード: ANTHROPIC_API_KEY 未設定のため実回答はできません。サーバーに API キーを設定してください）';
-    db.prepare(`INSERT INTO chat_messages (project_id, role, content) VALUES (?, 'assistant', ?)`).run(projectId, answer);
+    await db.prepare(`INSERT INTO chat_messages (project_id, role, content) VALUES (?, 'assistant', ?)`).run(projectId, answer);
     return { answer, trace: [] };
   }
 
-  const history = getHistoryForModel(projectId);
+  const history = await getHistoryForModel(projectId);
   const result = await callWithTools(
-    projectId, buildSystemText(projectId), history, QA_TOOL_DEFS as unknown as Parameters<typeof callWithTools>[3],
+    projectId, await buildSystemText(projectId), history, QA_TOOL_DEFS as unknown as Parameters<typeof callWithTools>[3],
     call => runQaTool(projectId, call.name, call.input),
   ).finally(() => {
     // 無保存モードでは、ドリルダウンで読み込んだワークブック（原本相当）をこの質問の処理終了時に破棄する。
@@ -69,14 +69,14 @@ export async function ask(projectId: number, question: string): Promise<AskResul
     if (process.env.ARTIFACT_EPHEMERAL === '1') invalidateBooks(projectId);
   });
 
-  db.prepare(`INSERT INTO chat_messages (project_id, role, content, tool_trace) VALUES (?, 'assistant', ?, ?)`)
+  await db.prepare(`INSERT INTO chat_messages (project_id, role, content, tool_trace) VALUES (?, 'assistant', ?, ?)`)
     .run(projectId, result.text, JSON.stringify(result.trace));
   return { answer: result.text, trace: result.trace };
 }
 
 /** モデルへ渡す会話履歴（純テキストの user/assistant 交互列。末尾は今記録した user 質問） */
-function getHistoryForModel(projectId: number): { role: 'user' | 'assistant'; content: string }[] {
-  return db.prepare(
+async function getHistoryForModel(projectId: number): Promise<{ role: 'user' | 'assistant'; content: string }[]> {
+  return await db.prepare(
     `SELECT role, content FROM chat_messages WHERE project_id = ? ORDER BY id`,
   ).all(projectId) as { role: 'user' | 'assistant'; content: string }[];
 }
