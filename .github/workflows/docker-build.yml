@@ -1,0 +1,34 @@
+# Docker イメージのビルド検証（1段階目）。
+# push/PR ごとにイメージが実際にビルドできるか（better-sqlite3 / @duckdb などネイティブモジュールの
+# linux/glibc コンパイル含む）を CI で確認する。レジストリへの push はしない（2段階目で追加）。
+#
+# 前提: このワークフローはアプリがリポジトリ直下にある構成（専用リポジトリ）を想定する。
+# Dockerfile はリポジトリルート、ビルドコンテキストは "."。
+name: docker-build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: kpiee-onboarding-ai:ci
+          # GitHub Actions キャッシュでネイティブビルドの再コンパイルを短縮
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

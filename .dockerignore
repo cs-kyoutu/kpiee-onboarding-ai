@@ -1,0 +1,12 @@
+# ビルドコンテキストから除外（イメージ肥大・秘密混入・OS 差異の回避）
+**/node_modules
+server/data
+server/dist
+web/dist
+logs
+**/*.log
+**/.env
+**/.env.*
+.git
+.gitignore
+**/.DS_Store

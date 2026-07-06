@@ -57,7 +57,6 @@ export function listDriveSheets(q?: string): Promise<DriveSheet[]> {
 export interface GoogleStatus {
   clientConfigured: boolean  // OAuth クライアント(ID/SECRET)が設定済みか
   connected: boolean         // ユーザーが Web ログイン済み（refresh token 保有）か
-  legacy: boolean            // 従来方式(SA鍵 / gcloud ADC)で利用可能か
 }
 export function googleStatus(): Promise<GoogleStatus> {
   return get<GoogleStatus>('/google/status')
@@ -65,9 +64,11 @@ export function googleStatus(): Promise<GoogleStatus> {
 export function googleDisconnect(): Promise<{ ok: boolean }> {
   return post<{ ok: boolean }>('/google/disconnect')
 }
-/** Google ログイン開始 URL。全画面リダイレクトのためサーバー(:8787)へ直接ナビゲートする（/api プロキシ経由不可） */
+/** Google ログイン開始 URL。全画面リダイレクトで使う。
+ * 本番(1プロセス)は同一オリジン、開発は別ポートの API サーバー(:8787)へ直接ナビゲートする。 */
 export function googleAuthUrl(): string {
-  const origin = import.meta.env.VITE_API_ORIGIN || `${window.location.protocol}//${window.location.hostname}:8787`
+  const origin = import.meta.env.VITE_API_ORIGIN
+    || (import.meta.env.DEV ? `${window.location.protocol}//${window.location.hostname}:8787` : window.location.origin)
   return `${origin}/api/google/auth`
 }
 

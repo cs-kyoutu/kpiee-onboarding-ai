@@ -420,24 +420,45 @@ function isInformative(v: (string | number)[]): boolean {
   return uniqRatio(v) >= 0.8;
 }
 
-/**
- * 数式を持たない情報量のある列が、他列(計算結果含む)と値一致 → 手コピー辺。
- * 方向: 数式列(=計算)を source、値のみ列を dst とする。両方とも値のみなら needsConfirmation。
- */
-export function valueCopyEdges(grids: RawGrid[], regions: Region[], formulaLinked: Set<string>): Edge[] {
-  const cols = collectColumns(grids, regions).filter(c => isInformative(c.values));
+// 列の「指紋」レコード。手コピー推定に必要なのは値の完全一致判定だけなので、
+// 生の値配列ではなく (指紋文字列 + メタ情報) だけを保持する。これにより
+// ファイル単位解析で「そのファイルの指紋」だけを次ファイルへ持ち越せる
+// （＝原本グリッドをファイル境界で捨ててもクロスファイルのコピー辺を失わない）。
+export interface ColFingerprint {
+  key: string;        // `${region.id}:${col.name}`（辺の from/to になる）
+  regionId: string;   // 同一表内ペアの除外に使う
+  hasFormula: boolean;// 向き判定（数式列=source）に使う
+  length: number;     // 一致件数（evidence 表示用）
+  fp: string;         // 長さ + 値連結。完全一致判定の鍵（元実装のバケット鍵と同一）
+}
 
-  // 採用条件は「値列が完全一致（順序・長さ込み）」のみ。したがって、各列の指紋
-  // （長さ + 値の連結文字列）を1回だけ計算し、同一指紋の列だけをバケットにまとめて
-  // その中で比較すればよい。元実装の全列ペア総当たり O(列^2) を ≈O(列) に削減する
-  // （バケット内の列数は通常ごく少数。結果のグラフは元実装と同一）。
-  const buckets = new Map<string, ColVals[]>();
-  for (const c of cols) {
-    // 長さも鍵に含めることで、区切り文字の衝突等による誤一致を元実装と同様に防ぐ
-    const key = `${c.values.length}#${c.values.map(fpVal).join('|')}`;
-    let arr = buckets.get(key);
-    if (!arr) { arr = []; buckets.set(key, arr); }
-    arr.push(c); // cols の順序を保つ（辺の向き・src/dst を元実装と一致させる）
+/** グリッド群から「情報量のある列」の指紋レコードを作る。値配列はここで捨てる。 */
+export function fingerprintColumns(grids: RawGrid[], regions: Region[]): ColFingerprint[] {
+  return collectColumns(grids, regions)
+    .filter(c => isInformative(c.values))
+    .map(c => ({
+      key: c.key,
+      regionId: c.region.id,
+      hasFormula: c.col.hasFormula,
+      length: c.values.length,
+      // 長さも鍵に含めることで、区切り文字の衝突等による誤一致を元実装と同様に防ぐ
+      fp: `${c.values.length}#${c.values.map(fpVal).join('|')}`,
+    }));
+}
+
+/**
+ * 指紋レコード群から手コピー辺を作る。
+ * 採用条件は「値列が完全一致（順序・長さ込み）」のみ。同一指紋の列だけをバケットに
+ * まとめて比較すればよく、元実装の全列ペア総当たり O(列^2) を ≈O(列) に削減する。
+ * 方向: 数式列(=計算)を source、値のみ列を dst とする。両方とも値のみなら needsConfirmation。
+ * 指紋の入力順を保てば辺の向き・src/dst は元実装と一致する。
+ */
+export function valueCopyEdgesFromFingerprints(fps: ColFingerprint[], formulaLinked: Set<string>): Edge[] {
+  const buckets = new Map<string, ColFingerprint[]>();
+  for (const c of fps) {
+    let arr = buckets.get(c.fp);
+    if (!arr) { arr = []; buckets.set(c.fp, arr); }
+    arr.push(c); // 入力順を保つ（src/dst を元実装と一致させる）
   }
 
   const edges: Edge[] = [];
@@ -446,21 +467,21 @@ export function valueCopyEdges(grids: RawGrid[], regions: Region[], formulaLinke
     for (let i = 0; i < group.length; i++) {
       for (let j = i + 1; j < group.length; j++) {
         const a = group[i], b = group[j];
-        if (a.region.id === b.region.id) continue;
+        if (a.regionId === b.regionId) continue;
         // 既に数式で連結済みの列ペアは、その数式が本当の関係。コピー辺は重複ノイズなので出さない
         if (formulaLinked.has(unorderedPair(a.key, b.key))) continue;
         // ここに来た時点で「長さ・値列が完全一致」は保証済み（バケット化済み）
 
         // 方向: 数式列があればそれを source（計算結果を手で貼った）。両方値のみなら確認要。
         let src = a, dst = b, needsConfirmation = false;
-        if (a.col.hasFormula && !b.col.hasFormula) { src = a; dst = b; }
-        else if (b.col.hasFormula && !a.col.hasFormula) { src = b; dst = a; }
-        else if (!a.col.hasFormula && !b.col.hasFormula) { needsConfirmation = true; }
+        if (a.hasFormula && !b.hasFormula) { src = a; dst = b; }
+        else if (b.hasFormula && !a.hasFormula) { src = b; dst = a; }
+        else if (!a.hasFormula && !b.hasFormula) { needsConfirmation = true; }
         else continue; // 両方数式列 = それぞれ自前計算。コピーでない
 
         edges.push({
           from: src.key, to: dst.key, type: 'copy',
-          evidence: `値完全一致(${dst.values.length}件, 手コピー疑い)`,
+          evidence: `値完全一致(${dst.length}件, 手コピー疑い)`,
           confidence: needsConfirmation ? 0.55 : 0.9,
           needsConfirmation,
         });
@@ -468,6 +489,15 @@ export function valueCopyEdges(grids: RawGrid[], regions: Region[], formulaLinke
     }
   }
   return edges;
+}
+
+/**
+ * 数式を持たない情報量のある列が、他列(計算結果含む)と値一致 → 手コピー辺。
+ * 単一パス（全グリッドを同時保持できる小規模）向けの薄いラッパ。
+ * 大規模はファイル単位で指紋を貯める analyzeArtifacts を使う。
+ */
+export function valueCopyEdges(grids: RawGrid[], regions: Region[], formulaLinked: Set<string>): Edge[] {
+  return valueCopyEdgesFromFingerprints(fingerprintColumns(grids, regions), formulaLinked);
 }
 
 const unorderedPair = (a: string, b: string) => a < b ? `${a}::${b}` : `${b}::${a}`;
@@ -608,12 +638,12 @@ export interface RelationGraph {
   sheetStructures: SheetStructure[];
 }
 
-export function analyzeGrids(grids: RawGrid[]): RelationGraph {
-  const regions = grids.flatMap(detectRegions);
-  const fEdges = formulaEdges(grids, regions);
-  // 数式で連結済みの列ペア（無向）。コピー推定の重複ノイズ抑制に使う
-  const formulaLinked = new Set(fEdges.map(e => unorderedPair(e.from, e.to)));
-  const edges = [...fEdges, ...valueCopyEdges(grids, regions, formulaLinked)];
+/**
+ * 領域・数式辺・コピー辺からグラフを組み立てる共通処理。
+ * analyzeGrids（単一パス）と analyzeArtifacts（ファイル単位）で結果を一致させるため共通化する。
+ */
+function assembleGraph(regions: Region[], fEdges: Edge[], copyEdges: Edge[]): RelationGraph {
+  const edges = [...fEdges, ...copyEdges];
   const warnings: RelationWarning[] = [];
   for (const reg of regions) {
     for (const col of reg.columns) {
@@ -631,19 +661,48 @@ export function analyzeGrids(grids: RawGrid[]): RelationGraph {
   return { regions, edges, warnings, sheetStructures };
 }
 
+export function analyzeGrids(grids: RawGrid[]): RelationGraph {
+  const regions = grids.flatMap(detectRegions);
+  const fEdges = formulaEdges(grids, regions);
+  // 数式で連結済みの列ペア（無向）。コピー推定の重複ノイズ抑制に使う
+  const formulaLinked = new Set(fEdges.map(e => unorderedPair(e.from, e.to)));
+  const copyEdges = valueCopyEdges(grids, regions, formulaLinked);
+  return assembleGraph(regions, fEdges, copyEdges);
+}
+
 export async function analyzeBuffer(buffer: Buffer): Promise<RelationGraph> {
   return analyzeGrids(await buildGridsFromBuffer(buffer));
 }
 
 /**
- * 複数アーティファクト（xlsx/csv）を 1 つの解析パスで処理する。
- * 表領域検出はシート単位、数式リネージュはファイル内、値コピー推定はファイルをまたいで比較する。
+ * 複数アーティファクト（xlsx/csv）をファイル単位で処理する。
+ * 表領域検出・数式リネージュはファイル内で完結するので1ファイルずつ計算し、
+ * ファイルをまたぐ手コピー推定は「列の指紋」だけを貯めて最後にまとめて突き合わせる。
+ *
+ * これにより同時にメモリへ載る原本グリッドは常に1ファイル分だけになり、
+ * ピークメモリが「全ファイルの合計」ではなく「最も大きい単一ファイル」に抑えられる
+ * （シート数が増えても破綻しない）。クロスファイルのコピー辺は指紋比較で保持されるため、
+ * 出力グラフは全グリッドを同時保持する analyzeGrids と一致する（scripts の diff テストで検証）。
  * ファイルが 1 つなら自然にそのファイル単体の解析になる。
  */
-export async function analyzeArtifacts(arts: { filename: string; buffer: Buffer }[]): Promise<RelationGraph> {
-  // 逐次パースにする（旧実装は Promise.all で全ファイルを同時展開し、大きい xlsx が複数あると
-  // ExcelJS のワークブックが同時に積み上がってメモリのピークが跳ね上がっていた）。
-  const grids: RawGrid[] = [];
-  for (const a of arts) grids.push(...(await gridsFromArtifact(a.filename, a.buffer)));
-  return analyzeGrids(grids);
+export async function analyzeArtifacts(arts: { filename: string; load: () => Promise<Buffer> }[]): Promise<RelationGraph> {
+  const regionsAll: Region[] = [];
+  const fEdgesAll: Edge[] = [];
+  const fpsAll: ColFingerprint[] = [];
+  for (const a of arts) {
+    // バッファはここで初めて取得する（Drive 等からの遅延ロード）。前ファイルの原本を保持したまま
+    // 全ファイルをメモリに載せないため、ピークを最大単一ファイルに抑える設計を fetch 経路でも保つ。
+    const buffer = await a.load();
+    // このファイルのグリッドはこのブロック内でのみ生存し、次ファイルへ進む際に GC される
+    const grids = await gridsFromArtifact(a.filename, buffer);
+    if (grids.length === 0) continue;
+    const regions = grids.flatMap(detectRegions);
+    regionsAll.push(...regions);
+    fEdgesAll.push(...formulaEdges(grids, regions)); // 数式参照はファイル内で解決するのでファイル単位で確定
+    fpsAll.push(...fingerprintColumns(grids, regions)); // 生の値は捨て、指紋だけ持ち越す
+  }
+  // 数式で連結済みの列ペア（無向）。コピー推定の重複ノイズ抑制に使う
+  const formulaLinked = new Set(fEdgesAll.map(e => unorderedPair(e.from, e.to)));
+  const copyEdges = valueCopyEdgesFromFingerprints(fpsAll, formulaLinked);
+  return assembleGraph(regionsAll, fEdgesAll, copyEdges);
 }

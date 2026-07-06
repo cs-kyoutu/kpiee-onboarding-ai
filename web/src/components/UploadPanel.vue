@@ -27,7 +27,7 @@ const importProgress = ref<{ done: number; total: number } | null>(null)
 const allDriveSelected = computed(() =>
   driveSheets.value.length > 0 && selectedDriveIds.value.length === driveSheets.value.length)
 // Google Web ログイン状態
-const googleConn = ref<GoogleStatus>({ clientConfigured: false, connected: false, legacy: false })
+const googleConn = ref<GoogleStatus>({ clientConfigured: false, connected: false })
 const googleMsg = ref('')
 
 async function refreshGoogleStatus() {
@@ -50,14 +50,14 @@ onMounted(async () => {
 
 // ドライブボタンのラベル（連携状態で出し分け）
 const driveButtonLabel = computed(() => {
-  if (googleConn.value.connected || googleConn.value.legacy) return showDrive.value ? 'Google ドライブを閉じる' : 'Google ドライブから選択'
+  if (googleConn.value.connected) return showDrive.value ? 'Google ドライブを閉じる' : 'Google ドライブから選択'
   if (googleConn.value.clientConfigured) return 'Google でログイン'
   return 'Google ドライブ（未設定）'
 })
 
 // ドライブボタン押下: 連携済みなら一覧表示、未連携ならログインへ遷移
 function onDriveButton() {
-  if (googleConn.value.connected || googleConn.value.legacy) { void toggleDrive(); return }
+  if (googleConn.value.connected) { void toggleDrive(); return }
   if (googleConn.value.clientConfigured) { window.location.href = googleAuthUrl(); return }
   error.value = 'Google 連携が未設定です。server/.env に OAuth クライアント(GOOGLE_OAUTH_CLIENT_ID / SECRET)を設定してください（docs/google-drive-setup.md 参照）'
 }

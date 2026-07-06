@@ -1,5 +1,8 @@
 # 機密情報（API キー）— 絶対にコミットしない
 server/.env
+# 念のため、どの階層の .env も除外（.env.example はテンプレートなので追跡する）
+.env
+**/.env
 
 # 実行時データ（DB・アップロードファイル）
 server/data/

@@ -1,10 +1,14 @@
 // Google Drive/Sheets 連携（リモート取り込み・1段階目）。
-// サービスアカウントの鍵で Drive API を使い、共有された Google スプレッドシートを
-// xlsx として書き出して取得する。取得した buffer は通常のアップロードと同じ前処理を通る
-// （= パース・関係解析・AI解読のパイプラインを一切変えずに再利用できる）。
+// 認証は「対象アカウント本人による Web OAuth 同意」のみを使う。本人が一度ブラウザで同意すると
+// refresh_token が得られ、以後はサーバーがその refresh_token で本人に代わって Drive を読む。
+// 取得した buffer は通常のアップロードと同じ前処理を通る（パース・関係解析・AI解読を変えず再利用）。
 //
-// 必要な環境変数: GOOGLE_SERVICE_ACCOUNT_KEY = サービスアカウント鍵(JSON)の絶対パス
-// 事前準備: GCP で Sheets API / Drive API を有効化し、対象シートを SA のメールに共有しておく。
+// サービスアカウント(SA)鍵・gcloud ADC は使わない。単一アカウントのデータを別アカウント（SA 含む）へ
+// 渡さない、という制約（デプロイ設計 C2）のため、本人ログインの OAuth 経路だけを残す。
+//
+// 必要な環境変数:
+//   GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET … OAuth クライアント
+//   GOOGLE_OAUTH_REFRESH_TOKEN                          … 本人同意で得たトークン（デプロイ時はタスク定義 env に設定）
 import { google } from 'googleapis';
 import ExcelJS from 'exceljs';
 import { loadRefreshToken, saveRefreshToken, clearRefreshToken } from './tokenStore.js';
@@ -19,17 +23,14 @@ function currentRefreshToken(): string | null {
   return process.env.GOOGLE_OAUTH_REFRESH_TOKEN || loadRefreshToken();
 }
 
-/** Drive へ実際にアクセスできる資格情報が揃っているか（Web OAuth 連携済み / 従来の SA・ADC） */
+/** Drive へ実際にアクセスできる資格情報が揃っているか（Web OAuth 連携済みか） */
 export function googleConfigured(): boolean {
-  if (oauthClientConfigured() && currentRefreshToken()) return true;
-  return !!(process.env.GOOGLE_SERVICE_ACCOUNT_KEY || process.env.GOOGLE_SHEETS_ADC);
+  return oauthClientConfigured() && !!currentRefreshToken();
 }
 
 /** UI 表示用の連携状態 */
-export function connectionStatus(): { clientConfigured: boolean; connected: boolean; legacy: boolean } {
-  const connected = oauthClientConfigured() && !!currentRefreshToken();
-  const legacy = !connected && !!(process.env.GOOGLE_SERVICE_ACCOUNT_KEY || process.env.GOOGLE_SHEETS_ADC);
-  return { clientConfigured: oauthClientConfigured(), connected, legacy };
+export function connectionStatus(): { clientConfigured: boolean; connected: boolean } {
+  return { clientConfigured: oauthClientConfigured(), connected: googleConfigured() };
 }
 
 /** Google ドライブの URL / ID からファイルIDを取り出す（シート /spreadsheets/d/ も 通常ファイル /file/d/ も対応） */
@@ -69,16 +70,15 @@ export function disconnect(): void {
   clearRefreshToken();
 }
 
-/** 認証クライアントを返す。優先: Web OAuthユーザーログイン(refresh token) → SA鍵/gcloud ADC */
+/** 認証クライアントを返す。対象アカウント本人の Web OAuth(refresh token) のみを使う（SA/ADC は廃止）。 */
 function authClient() {
   const refreshToken = currentRefreshToken();
-  if (oauthClientConfigured() && refreshToken) {
-    const oauth = new google.auth.OAuth2(process.env.GOOGLE_OAUTH_CLIENT_ID, process.env.GOOGLE_OAUTH_CLIENT_SECRET);
-    oauth.setCredentials({ refresh_token: refreshToken });
-    return oauth;
+  if (!oauthClientConfigured() || !refreshToken) {
+    throw new Error('Google 連携が未設定です（OAuth クライアントと本人同意による refresh_token が必要です）');
   }
-  // サービスアカウント鍵（keyFile）または gcloud ADC（keyFile 未指定なら ADC チェーンを使用）
-  return new google.auth.GoogleAuth({ keyFile: process.env.GOOGLE_SERVICE_ACCOUNT_KEY, scopes: SCOPES });
+  const oauth = new google.auth.OAuth2(process.env.GOOGLE_OAUTH_CLIENT_ID, process.env.GOOGLE_OAUTH_CLIENT_SECRET);
+  oauth.setCredentials({ refresh_token: refreshToken });
+  return oauth;
 }
 
 function gErr(e: unknown): string {

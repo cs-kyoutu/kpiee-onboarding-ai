@@ -6,8 +6,12 @@ import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
 import { ZipArchive } from 'archiver';
+import path from 'node:path';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { db, setProjectStatus, getProjectUsage } from './db.js';
-import { putObject, getJson, getObject, removeObject } from './storage.js';
+import { putObject, removeObject } from './storage.js';
+import { materializeBuffer, materializeParsed, driveKey } from './artifacts.js';
 import { parseArtifact, type ParsedArtifact } from './preprocess/parse.js';
 import { classifySheetRoles, type SheetClassification } from './preprocess/classify.js';
 import { analyzeBuffer, analyzeArtifacts } from './preprocess/relations.js';
@@ -16,18 +20,22 @@ import { ask as qaAsk, getHistory as qaHistory } from './qa/agent.js';
 import { invalidateBooks } from './qa/tools.js';
 import { aiAvailable, MODEL, estimateCostUsd } from './ai/client.js';
 import {
-  googleConfigured, fetchDriveFile, listSpreadsheets,
+  googleConfigured, fetchDriveFile, listSpreadsheets, extractSpreadsheetId,
   oauthClientConfigured, connectionStatus, buildAuthUrl, exchangeCodeAndStore, disconnect,
 } from './google/drive.js';
 
 const app = express();
-app.use(cors());
+// ALB/リバースプロキシ配下では TLS が LB で終端するため req.protocol が http に化ける。
+// trust proxy を有効化して X-Forwarded-Proto を尊重させ、OAuth の redirect_uri を https で組める
+// ようにする（さらに本番では GOOGLE_OAUTH_REDIRECT を明示して LB のホスト名で固定する）。
+app.set('trust proxy', true);
+// 本番は同一オリジン配信のため CORS は原則不要。CORS_ORIGIN（カンマ区切り）が指定されたときだけ
+// そのオリジンに限定し、未指定なら従来どおり許可（ローカル開発の 5173→8787 用）。
+const corsOrigins = process.env.CORS_ORIGIN?.split(',').map(s => s.trim()).filter(Boolean);
+app.use(cors(corsOrigins && corsOrigins.length ? { origin: corsOrigins } : undefined));
 app.use(express.json({ limit: '50mb' }));
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
-
-// プロジェクト関係グラフのキャッシュ（キー: projectId + アップロード構成）。重い再解析を避ける
-const relationsCache = new Map<string, unknown>();
 
 // ---- ヘルスチェック ----
 app.get('/api/health', (_req, res) => {
@@ -96,20 +104,32 @@ app.delete('/api/projects/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// 原本を永続保存しないデプロイ運用（C3/C4）。ARTIFACT_EPHEMERAL=1 のとき有効。
+// このとき原本バイト・パース結果 JSON はディスクに書かず、storage_key に Drive 参照だけを残し、
+// 消費時に都度 Drive から取り直す。ローカル開発では無効（従来どおり保存）で検証容易性を保つ。
+const ARTIFACT_EPHEMERAL = process.env.ARTIFACT_EPHEMERAL === '1';
+
 // ファイル(buffer)を保存し前処理（§6.1）まで行う共通処理。アップロード／Google Sheet 取り込みで共用。
-async function ingestArtifact(projectId: number, filename: string, buffer: Buffer, kind: string): Promise<number> {
-  const rawKey = `project-${projectId}/raw/${Date.now()}-${filename}`;
-  putObject(rawKey, buffer);
+// driveFileId を渡し、かつ無保存モードのときは原本・パース結果を保存せず Drive 参照のみを記録する。
+async function ingestArtifact(projectId: number, filename: string, buffer: Buffer, kind: string, driveFileId?: string): Promise<number> {
+  const ephemeral = ARTIFACT_EPHEMERAL && !!driveFileId;
+  // 無保存モードは Drive 参照キー、通常モードはローカル保存キー
+  const rawKey = ephemeral ? driveKey(driveFileId!) : `project-${projectId}/raw/${Date.now()}-${filename}`;
+  if (!ephemeral) putObject(rawKey, buffer);
   const result = db.prepare(`
     INSERT INTO artifacts (project_id, kind, original_filename, storage_key, parse_status)
     VALUES (?, ?, ?, ?, 'parsing')
   `).run(projectId, kind === 'auto' ? 'mixed' : kind, filename, rawKey);
   const artifactId = Number(result.lastInsertRowid);
   try {
+    // パース自体は無保存モードでも一度は必要（シート役割の自動分類のため）。結果はメモリに留め永続化しない。
     const parsed = await parseArtifact(filename, buffer);
-    const parsedKey = `project-${projectId}/parsed/${artifactId}.json`;
-    putObject(parsedKey, JSON.stringify(parsed));
-    // 混在ファイルは参照グラフでシート役割を自動分類して保存する
+    let parsedKey: string | null = null;
+    if (!ephemeral) {
+      parsedKey = `project-${projectId}/parsed/${artifactId}.json`;
+      putObject(parsedKey, JSON.stringify(parsed));
+    }
+    // 混在ファイルは参照グラフでシート役割を自動分類して保存する（役割は小さな派生結果なので保存可）
     const sheetRoles = kind === 'auto' ? JSON.stringify(classifySheetRoles(parsed)) : null;
     db.prepare(`UPDATE artifacts SET parse_status = 'done', parsed_key = ?, sheet_roles = ? WHERE id = ?`)
       .run(parsedKey, sheetRoles, artifactId);
@@ -126,6 +146,11 @@ const VALID_KINDS = ['input_data', 'final_output', 'working_sheet', 'auto'];
 app.post('/api/projects/:id/artifacts', upload.single('file'), async (req, res) => {
   const projectId = Number(req.params.id);
   const kind = req.body.kind as string;
+  // 無保存モードでは原本をサーバーに残さないため、参照先を持たないブラウザ直接アップロードは受け付けない
+  // （取り込みは Drive 経由のみ）。C2/C3 の担保。
+  if (ARTIFACT_EPHEMERAL) {
+    return res.status(400).json({ error: 'このデプロイでは直接アップロードは無効です。Google ドライブから取り込んでください' });
+  }
   if (!req.file) return res.status(400).json({ error: 'file は必須です' });
   if (!VALID_KINDS.includes(kind)) {
     return res.status(400).json({ error: 'kind は input_data / final_output / working_sheet / auto のいずれかです' });
@@ -196,11 +221,13 @@ app.post('/api/projects/:id/import-sheet', async (req, res) => {
   const k = kind ?? 'auto';
   if (!VALID_KINDS.includes(k)) return res.status(400).json({ error: 'kind が不正です' });
   if (!googleConfigured()) {
-    return res.status(400).json({ error: 'Google 連携が未設定です。サーバーに GOOGLE_SERVICE_ACCOUNT_KEY を設定し、対象シートをサービスアカウントに共有してください' });
+    return res.status(400).json({ error: 'Google 連携が未設定です。対象アカウント本人が「Google でログイン」から同意し、Drive 連携を有効化してください' });
   }
   try {
     const { filename, buffer } = await fetchDriveFile(url);
-    const artifactId = await ingestArtifact(projectId, filename, buffer, k);
+    // 無保存モードのために Drive のファイル ID を控える（storage_key を drive:<id> にして都度取得できるように）
+    const driveFileId = extractSpreadsheetId(url) ?? undefined;
+    const artifactId = await ingestArtifact(projectId, filename, buffer, k, driveFileId);
     res.status(201).json(db.prepare(
       `SELECT id, kind, original_filename, parse_status, parse_error, sheet_roles FROM artifacts WHERE id = ?`,
     ).get(artifactId));
@@ -240,25 +267,30 @@ app.delete('/api/artifacts/:id', (req, res) => {
 });
 
 // シートプレビュー（SC-03 / SC-04 のシートビューア用）
-app.get('/api/artifacts/:id/preview', (req, res) => {
-  const row = db.prepare(`SELECT parsed_key, original_filename, kind, sheet_roles FROM artifacts WHERE id = ?`)
-    .get(req.params.id) as { parsed_key: string | null; original_filename: string; kind: string; sheet_roles: string | null } | undefined;
-  if (!row?.parsed_key) return res.status(404).json({ error: 'parsed data not found' });
-  const parsed = getJson<ParsedArtifact>(row.parsed_key);
-  res.json({
-    filename: row.original_filename,
-    kind: row.kind,
-    sheetRoles: row.sheet_roles ? JSON.parse(row.sheet_roles) : null,
-    tableName: row.kind === 'input_data' ? tableNameOf(row.original_filename) : null,
-    sheets: parsed.sheets.map(s => ({
-      name: s.name,
-      rowCount: s.rowCount,
-      columnCount: s.columnCount,
-      formulaCellCount: s.formulaCellCount,
-      // プレビューは先頭 100 行に制限（巨大シート対策）
-      rows: s.rows.slice(0, 100),
-    })),
-  });
+app.get('/api/artifacts/:id/preview', async (req, res) => {
+  const row = db.prepare(`SELECT storage_key, parsed_key, original_filename, kind, sheet_roles FROM artifacts WHERE id = ?`)
+    .get(req.params.id) as { storage_key: string; parsed_key: string | null; original_filename: string; kind: string; sheet_roles: string | null } | undefined;
+  if (!row) return res.status(404).json({ error: 'artifact not found' });
+  try {
+    // 保存済みならその JSON、無保存モードなら Drive から取り直してメモリ上でパース
+    const parsed = await materializeParsed(row);
+    res.json({
+      filename: row.original_filename,
+      kind: row.kind,
+      sheetRoles: row.sheet_roles ? JSON.parse(row.sheet_roles) : null,
+      tableName: row.kind === 'input_data' ? tableNameOf(row.original_filename) : null,
+      sheets: parsed.sheets.map(s => ({
+        name: s.name,
+        rowCount: s.rowCount,
+        columnCount: s.columnCount,
+        formulaCellCount: s.formulaCellCount,
+        // プレビューは先頭 100 行に制限（巨大シート対策）
+        rows: s.rows.slice(0, 100),
+      })),
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
 });
 
 interface AiFinding { logic_type: string; kpiee_target: string; explanation: string; confidence: string; source_ref: string }
@@ -353,20 +385,16 @@ app.get('/api/projects/:id/relations', async (req, res) => {
   ).all(req.params.id) as { storage_key: string; original_filename: string }[];
   const supported = rows.filter(r => /\.(xlsx|xlsm|csv)$/i.test(r.original_filename));
   if (supported.length === 0) return res.json({ regions: [], edges: [], warnings: [], fileCount: 0 });
-  // 重い解析（大きいファイルで十数秒）を毎回走らせないようキャッシュ。
-  // storage_key はアップロードごとに一意なので、ファイル構成が変わると自然に別キーになる。
-  const cacheKey = `${req.params.id}:${supported.map(r => r.storage_key).sort().join('|')}`;
   try {
-    // 骨格グラフ（重い解析結果）だけキャッシュし、findings の融合は毎回新しく行う
-    let base = relationsCache.get(cacheKey) as LocalGraph | undefined;
-    if (!base) {
-      const graph = await analyzeArtifacts(
-        supported.map(r => ({ filename: r.original_filename, buffer: getObject(r.storage_key) })),
-      );
-      base = { ...graph, fileCount: supported.length };
-      relationsCache.set(cacheKey, base);
-    }
-    // ローカルの骨格グラフに AI解読（findings）を融合し、巨大グラフは転送前に集約する。
+    // 作業（このリクエスト1回）ごとに解析する。作業をまたぐキャッシュは持たない（デプロイ設計 C5:
+    // 原本・原本相当の派生物をサーバーに滞留させない方針。1リクエスト内の再利用のみ許容）。
+    // 解析はファイル単位処理でピークメモリを最大単一ファイルに抑えてある（relations.ts）。
+    const graph = await analyzeArtifacts(
+      // 各ファイルは analyzeArtifacts 内で1つずつ遅延ロードされる（無保存モードでは Drive から都度取得）
+      supported.map(r => ({ filename: r.original_filename, load: () => materializeBuffer(r.storage_key) })),
+    );
+    const base: LocalGraph = { ...graph, fileCount: supported.length };
+    // 骨格グラフに AI解読（findings）を融合し、巨大グラフは転送前に集約する。
     res.json(capGraphForResponse(attachAiFindings(base, Number(req.params.id)) as CapGraph));
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -382,7 +410,7 @@ app.get('/api/artifacts/:id/relations', async (req, res) => {
     return res.json({ filename: row.original_filename, supported: false, regions: [], edges: [], warnings: [] });
   }
   try {
-    const graph = await analyzeBuffer(getObject(row.storage_key));
+    const graph = await analyzeBuffer(await materializeBuffer(row.storage_key));
     res.json({ filename: row.original_filename, supported: true, ...graph });
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -583,6 +611,17 @@ app.post('/api/projects/:id/reset-status', (req, res) => {
   setProjectStatus(Number(req.params.id), status as Parameters<typeof setProjectStatus>[1]);
   res.json({ ok: true });
 });
+
+// プロダクションは 1 プロセス化: ビルド済みフロント(web/dist)を同一オリジンで配信する。
+// dist が存在しない開発時（vite を 5173 で別起動）は API のみで動く（従来どおり）。
+const webDist = process.env.WEB_DIST
+  || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../web/dist');
+if (existsSync(webDist)) {
+  app.use(express.static(webDist));
+  // SPA フォールバック（vue-router history モード）。/api 以外の GET は index.html を返す。
+  app.get(/^(?!\/api\/).*/, (_req, res) => res.sendFile(path.join(webDist, 'index.html')));
+  console.log(`[kpiee-onboarding-ai] serving web from ${webDist}`);
+}
 
 const PORT = Number(process.env.PORT ?? 8787);
 app.listen(PORT, () => {

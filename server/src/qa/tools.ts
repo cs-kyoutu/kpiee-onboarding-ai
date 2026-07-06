@@ -8,7 +8,7 @@
 //  - ワークブックはプロジェクト単位でキャッシュし、1 質問内の多数のツール呼び出しを高速化する。
 import ExcelJS from 'exceljs';
 import { db } from '../db.js';
-import { getObject } from '../storage.js';
+import { materializeBuffer } from '../artifacts.js';
 
 /** セル値を JSON 化可能なプリミティブへ正規化する（parse.ts と同方針） */
 function normalize(v: ExcelJS.CellValue): string | number | null {
@@ -56,7 +56,7 @@ async function loadProjectBooks(projectId: number): Promise<ProjectBook> {
   for (const r of rows) {
     if (!/\.(xlsx|xlsm)$/i.test(r.original_filename)) continue; // CSV はセル参照対象外
     const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(getObject(r.storage_key) as unknown as ArrayBuffer);
+    await wb.xlsx.load((await materializeBuffer(r.storage_key)) as unknown as ArrayBuffer);
     books.set(r.id, { filename: r.original_filename, wb });
     wb.eachSheet(ws => { if (!sheetIndex.has(ws.name)) sheetIndex.set(ws.name, r.id); });
   }

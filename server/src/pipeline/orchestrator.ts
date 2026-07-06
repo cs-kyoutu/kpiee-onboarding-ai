@@ -2,7 +2,7 @@
 // ローカル動作のため Sidekiq の代わりにインプロセスの逐次ジョブ実行を採用。
 // 各段階は analysis_runs に記録され、失敗しても該当段階から再実行できる（冪等）。
 import { db, setProjectStatus } from '../db.js';
-import { getJson } from '../storage.js';
+import { materializeParsed } from '../artifacts.js';
 import type { ParsedArtifact } from '../preprocess/parse.js';
 import { shapeArtifactsToBudget } from '../preprocess/shape.js';
 import { aiAvailable, callStructured, MODEL } from '../ai/client.js';
@@ -21,6 +21,7 @@ interface ArtifactRow {
   id: number;
   kind: string;
   original_filename: string;
+  storage_key: string;
   parsed_key: string | null;
   parse_status: string;
   sheet_roles: string | null;
@@ -53,13 +54,18 @@ function scriptsBlock(projectId: number): string {
   return `\n\n<apps_scripts>\n${JSON.stringify(payload)}\n</apps_scripts>`;
 }
 
-function loadArtifacts(projectId: number): { row: ArtifactRow; parsed: ParsedArtifact }[] {
+async function loadArtifacts(projectId: number): Promise<{ row: ArtifactRow; parsed: ParsedArtifact }[]> {
   const rows = db.prepare(
-    `SELECT id, kind, original_filename, parsed_key, parse_status, sheet_roles FROM artifacts WHERE project_id = ?`,
+    `SELECT id, kind, original_filename, storage_key, parsed_key, parse_status, sheet_roles FROM artifacts WHERE project_id = ?`,
   ).all(projectId) as ArtifactRow[];
-  return rows
-    .filter(r => r.parse_status === 'done' && r.parsed_key)
-    .map(r => ({ row: r, parsed: getJson<ParsedArtifact>(r.parsed_key!) }));
+  // 無保存モードでは parsed_key が無いので materializeParsed が原本を Drive から取り直してパースする。
+  // 逐次処理でメモリのピークを抑える（全ファイルのパース結果を同時展開しない）。
+  const out: { row: ArtifactRow; parsed: ParsedArtifact }[] = [];
+  for (const r of rows) {
+    if (r.parse_status !== 'done') continue;
+    out.push({ row: r, parsed: await materializeParsed(r) });
+  }
+  return out;
 }
 
 /** アーティファクトのシート役割マップを得る。sheet_roles 未設定時は kind を全シートに適用（従来動作） */
@@ -84,8 +90,8 @@ interface RoleCollections {
   artifacts: { row: ArtifactRow; parsed: ParsedArtifact; roles: Record<string, string> }[];
 }
 
-export function collectByRole(projectId: number): RoleCollections {
-  const artifacts = loadArtifacts(projectId).map(a => ({ ...a, roles: rolesOf(a.row, a.parsed) }));
+export async function collectByRole(projectId: number): Promise<RoleCollections> {
+  const artifacts = (await loadArtifacts(projectId)).map(a => ({ ...a, roles: rolesOf(a.row, a.parsed) }));
   const inputs: RoleCollections['inputs'] = [];
   const working: ParsedArtifact[] = [];
   let finalOutput: ParsedArtifact | null = null;
@@ -134,7 +140,7 @@ export async function runDecode(projectId: number): Promise<{ runId: number; fin
   setProjectStatus(projectId, 'analyzing');
   const runId = startRun(projectId, 'decode');
   try {
-    const collections = collectByRole(projectId);
+    const collections = await collectByRole(projectId);
     if (collections.artifacts.length === 0) throw new Error('解析済みアーティファクトがありません。先にアップロードしてください');
 
     const assetNames = collections.inputs.map(i => i.tableName);
@@ -262,7 +268,7 @@ export async function runGenerate(projectId: number): Promise<{ runId: number; v
   setProjectStatus(projectId, 'generating');
   const runId = startRun(projectId, 'generate');
   try {
-    const collections = collectByRole(projectId);
+    const collections = await collectByRole(projectId);
     const inputs = collections.inputs;
     const assetNames = inputs.map(i => i.tableName);
     const approved = approvedFindings(projectId);
@@ -339,7 +345,7 @@ export async function runMatch(projectId: number): Promise<{ runId: number; matc
   setProjectStatus(projectId, 'matching');
   const runId = startRun(projectId, 'match');
   try {
-    const collections = collectByRole(projectId);
+    const collections = await collectByRole(projectId);
     const inputs = collections.inputs;
     const finalOutput = collections.finalOutput;
     if (!finalOutput) throw new Error('最終帳票（final_output 役割のシート）が見つかりません');
