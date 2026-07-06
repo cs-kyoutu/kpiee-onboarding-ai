@@ -110,6 +110,31 @@ function makeSqliteDb(sdb: Database.Database): Db {
   };
 }
 
+/**
+ * pg: 対象データベースが無ければ作成する。メンテナンス DB(postgres) に接続して CREATE DATABASE する。
+ * VPC 内で起動するアプリ自身が作れるので、プライベート RDS へ手動接続して作る必要がない。
+ * DATABASE_URL の資格情報に CREATEDB 権限（マスターユーザー等）が必要。失敗しても致命的にしない
+ * （対象 DB が既に存在し直接到達できるケースを壊さないため、initDb 側で warn して継続する）。
+ */
+export async function ensurePgDatabase(url: string): Promise<void> {
+  const target = new URL(url);
+  const dbName = decodeURIComponent(target.pathname.replace(/^\//, '')) || 'onboarding';
+  if (dbName === 'postgres') return; // メンテナンス DB 自体なら作成不要
+  const admin = new URL(url);
+  admin.pathname = '/postgres';
+  const client = new pg.Client({ connectionString: admin.toString() });
+  await client.connect();
+  try {
+    const r = await client.query('SELECT 1 FROM pg_database WHERE datname = $1', [dbName]);
+    if (r.rowCount === 0) {
+      // DB 名は自前管理値。二重引用符で囲んで識別子として扱う
+      await client.query(`CREATE DATABASE "${dbName.replace(/"/g, '""')}"`);
+    }
+  } finally {
+    await client.end();
+  }
+}
+
 // ───────────────────────── ファクトリ ─────────────────────────
 export function createDb(): Db {
   const url = process.env.DATABASE_URL;

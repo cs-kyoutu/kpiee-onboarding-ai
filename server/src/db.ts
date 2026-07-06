@@ -4,7 +4,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdirSync } from 'node:fs';
-import { createDb, type Db } from './database.js';
+import { createDb, ensurePgDatabase, type Db } from './database.js';
 import { initSchema } from './schema.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -21,6 +21,15 @@ export type ProjectStatus =
  * 孤児掃除: サーバー再起動で取り残された running 実行を failed に倒し、進行中プロジェクトを安定状態へ戻す。
  */
 export async function initDb(): Promise<void> {
+  // pg の場合、対象 DB が無ければ自動作成（プライベート RDS へ手動接続せずに済ませる）。
+  // 失敗しても続行（DB が既に存在し直接到達できる構成を壊さない）。
+  if (db.driver === 'pg' && process.env.DATABASE_URL) {
+    try {
+      await ensurePgDatabase(process.env.DATABASE_URL);
+    } catch (e) {
+      console.warn(`[kpiee-onboarding-ai] データベース自動作成をスキップ（既存/権限なし想定）: ${String(e)}`);
+    }
+  }
   await initSchema(db);
 
   const orphans = await db.prepare(
