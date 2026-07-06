@@ -46,7 +46,7 @@ interface ProjectBook {
 const cache = new Map<number, Promise<ProjectBook>>();
 
 async function loadProjectBooks(projectId: number): Promise<ProjectBook> {
-  const rows = db.prepare(
+  const rows = await db.prepare(
     `SELECT id, original_filename, storage_key FROM artifacts WHERE project_id = ?`,
   ).all(projectId) as ArtifactRow[];
 

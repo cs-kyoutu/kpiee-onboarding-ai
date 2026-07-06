@@ -9,7 +9,7 @@ import { ZipArchive } from 'archiver';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { db, setProjectStatus, getProjectUsage } from './db.js';
+import { db, setProjectStatus, getProjectUsage, initDb } from './db.js';
 import { putObject, removeObject } from './storage.js';
 import { materializeBuffer, materializeParsed, driveKey } from './artifacts.js';
 import { parseArtifact, type ParsedArtifact } from './preprocess/parse.js';
@@ -38,22 +38,22 @@ app.use(express.json({ limit: '50mb' }));
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 // ---- ヘルスチェック ----
-app.get('/api/health', (_req, res) => {
+app.get('/api/health', async (_req, res) => {
   res.json({ ok: true, aiMode: aiAvailable() ? MODEL : 'mock', googleSheets: googleConfigured() });
 });
 
 // ---- プロジェクト（UC-01） ----
-app.post('/api/projects', (req, res) => {
+app.post('/api/projects', async (req, res) => {
   const { customer_name, description } = req.body as { customer_name?: string; description?: string };
   if (!customer_name) return res.status(400).json({ error: 'customer_name は必須です' });
-  const result = db.prepare(`INSERT INTO projects (customer_name, description) VALUES (?, ?)`)
+  const result = await db.prepare(`INSERT INTO projects (customer_name, description) VALUES (?, ?)`)
     .run(customer_name, description ?? '');
-  res.status(201).json(db.prepare(`SELECT * FROM projects WHERE id = ?`).get(result.lastInsertRowid));
+  res.status(201).json(await db.prepare(`SELECT * FROM projects WHERE id = ?`).get(result.lastInsertRowid));
 });
 
-app.get('/api/projects', (_req, res) => {
+app.get('/api/projects', async (_req, res) => {
   // 一覧カードに照合一致率を出すため最新の match_results を結合する（SC-01）
-  const projects = db.prepare(`
+  const projects = await db.prepare(`
     SELECT p.*,
       (SELECT CAST(matched_cells AS REAL) / NULLIF(total_cells, 0)
        FROM match_results m WHERE m.project_id = p.id ORDER BY m.id DESC LIMIT 1) AS match_rate
@@ -62,43 +62,42 @@ app.get('/api/projects', (_req, res) => {
   res.json(projects);
 });
 
-app.get('/api/projects/:id', (req, res) => {
-  const project = db.prepare(`SELECT * FROM projects WHERE id = ?`).get(req.params.id);
+app.get('/api/projects/:id', async (req, res) => {
+  const project = await db.prepare(`SELECT * FROM projects WHERE id = ?`).get(req.params.id);
   if (!project) return res.status(404).json({ error: 'project not found' });
-  const artifacts = db.prepare(
+  const artifacts = await db.prepare(
     `SELECT id, kind, original_filename, parse_status, parse_error, sheet_roles, created_at FROM artifacts WHERE project_id = ?`,
   ).all(req.params.id);
-  const runs = db.prepare(
+  const runs = await db.prepare(
     `SELECT * FROM analysis_runs WHERE project_id = ? ORDER BY id DESC LIMIT 20`,
   ).all(req.params.id);
-  const usage = getProjectUsage(Number(req.params.id));
+  const usage = await getProjectUsage(Number(req.params.id));
   res.json({ ...project, artifacts, runs, usage: { ...usage, estimated_cost_usd: estimateCostUsd(usage) } });
 });
 
 // プロジェクト単位のトークン使用量・コスト（段階別内訳付き）
-app.get('/api/projects/:id/usage', (req, res) => {
-  const usage = getProjectUsage(Number(req.params.id));
+app.get('/api/projects/:id/usage', async (req, res) => {
+  const usage = await getProjectUsage(Number(req.params.id));
   res.json({ ...usage, estimated_cost_usd: estimateCostUsd(usage), aiMode: aiAvailable() ? MODEL : 'mock' });
 });
 
 // プロジェクト削除: 関連レコード（成果物・解読・実行ログ等）とストレージを一括削除する
-app.delete('/api/projects/:id', (req, res) => {
+app.delete('/api/projects/:id', async (req, res) => {
   const projectId = Number(req.params.id);
-  const project = db.prepare(`SELECT id FROM projects WHERE id = ?`).get(projectId);
+  const project = await db.prepare(`SELECT id FROM projects WHERE id = ?`).get(projectId);
   if (!project) return res.status(404).json({ error: 'project not found' });
   // 外部キー制約のため子テーブルから順に削除する
-  const tx = db.transaction(() => {
-    db.prepare(`DELETE FROM ai_usage_logs WHERE project_id = ?`).run(projectId);
-    db.prepare(`DELETE FROM customer_questions WHERE project_id = ?`).run(projectId);
-    db.prepare(`DELETE FROM findings WHERE project_id = ?`).run(projectId);
-    db.prepare(`DELETE FROM analysis_runs WHERE project_id = ?`).run(projectId);
-    db.prepare(`DELETE FROM match_results WHERE project_id = ?`).run(projectId);
-    db.prepare(`DELETE FROM deliverables WHERE project_id = ?`).run(projectId);
-    db.prepare(`DELETE FROM project_scripts WHERE project_id = ?`).run(projectId);
-    db.prepare(`DELETE FROM artifacts WHERE project_id = ?`).run(projectId);
-    db.prepare(`DELETE FROM projects WHERE id = ?`).run(projectId);
+  await db.tx(async t => {
+    await t.prepare(`DELETE FROM ai_usage_logs WHERE project_id = ?`).run(projectId);
+    await t.prepare(`DELETE FROM customer_questions WHERE project_id = ?`).run(projectId);
+    await t.prepare(`DELETE FROM findings WHERE project_id = ?`).run(projectId);
+    await t.prepare(`DELETE FROM analysis_runs WHERE project_id = ?`).run(projectId);
+    await t.prepare(`DELETE FROM match_results WHERE project_id = ?`).run(projectId);
+    await t.prepare(`DELETE FROM deliverables WHERE project_id = ?`).run(projectId);
+    await t.prepare(`DELETE FROM project_scripts WHERE project_id = ?`).run(projectId);
+    await t.prepare(`DELETE FROM artifacts WHERE project_id = ?`).run(projectId);
+    await t.prepare(`DELETE FROM projects WHERE id = ?`).run(projectId);
   });
-  tx();
   // アップロード原本・パース結果のファイルも削除（DB と独立しているため try で握りつぶす）
   try { removeObject(`project-${projectId}`); } catch { /* ストレージが無くても致命的でない */ }
   res.json({ ok: true });
@@ -116,7 +115,7 @@ async function ingestArtifact(projectId: number, filename: string, buffer: Buffe
   // 無保存モードは Drive 参照キー、通常モードはローカル保存キー
   const rawKey = ephemeral ? driveKey(driveFileId!) : `project-${projectId}/raw/${Date.now()}-${filename}`;
   if (!ephemeral) putObject(rawKey, buffer);
-  const result = db.prepare(`
+  const result = await db.prepare(`
     INSERT INTO artifacts (project_id, kind, original_filename, storage_key, parse_status)
     VALUES (?, ?, ?, ?, 'parsing')
   `).run(projectId, kind === 'auto' ? 'mixed' : kind, filename, rawKey);
@@ -131,10 +130,10 @@ async function ingestArtifact(projectId: number, filename: string, buffer: Buffe
     }
     // 混在ファイルは参照グラフでシート役割を自動分類して保存する（役割は小さな派生結果なので保存可）
     const sheetRoles = kind === 'auto' ? JSON.stringify(classifySheetRoles(parsed)) : null;
-    db.prepare(`UPDATE artifacts SET parse_status = 'done', parsed_key = ?, sheet_roles = ? WHERE id = ?`)
+    await db.prepare(`UPDATE artifacts SET parse_status = 'done', parsed_key = ?, sheet_roles = ? WHERE id = ?`)
       .run(parsedKey, sheetRoles, artifactId);
   } catch (e) {
-    db.prepare(`UPDATE artifacts SET parse_status = 'failed', parse_error = ? WHERE id = ?`).run(String(e), artifactId);
+    await db.prepare(`UPDATE artifacts SET parse_status = 'failed', parse_error = ? WHERE id = ?`).run(String(e), artifactId);
   }
   invalidateBooks(projectId); // Q&A 用ワークブックキャッシュを破棄（新規取込で内容が変わるため）
   return artifactId;
@@ -157,7 +156,7 @@ app.post('/api/projects/:id/artifacts', upload.single('file'), async (req, res) 
   }
   const filename = Buffer.from(req.file.originalname, 'latin1').toString('utf-8');
   const artifactId = await ingestArtifact(projectId, filename, req.file.buffer, kind);
-  res.status(201).json(db.prepare(
+  res.status(201).json(await db.prepare(
     `SELECT id, kind, original_filename, parse_status, parse_error, sheet_roles FROM artifacts WHERE id = ?`,
   ).get(artifactId));
 });
@@ -170,12 +169,12 @@ function oauthRedirectUri(req: express.Request): string {
 
 // ---- Google Web ログイン（OAuth 2.0 認可コードフロー） ----
 // 連携状態（UI のボタン出し分け用）
-app.get('/api/google/status', (_req, res) => {
+app.get('/api/google/status', async (_req, res) => {
   res.json(connectionStatus());
 });
 
 // ログイン開始 → Google 同意画面へリダイレクト
-app.get('/api/google/auth', (req, res) => {
+app.get('/api/google/auth', async (req, res) => {
   if (!oauthClientConfigured()) {
     return res.status(400).send('OAuth クライアント未設定です。server/.env に GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET を設定してサーバーを再起動してください。');
   }
@@ -197,7 +196,7 @@ app.get('/api/google/callback', async (req, res) => {
 });
 
 // 連携解除（保存した refresh_token を破棄）
-app.post('/api/google/disconnect', (_req, res) => {
+app.post('/api/google/disconnect', async (_req, res) => {
   disconnect();
   res.json({ ok: true });
 });
@@ -228,7 +227,7 @@ app.post('/api/projects/:id/import-sheet', async (req, res) => {
     // 無保存モードのために Drive のファイル ID を控える（storage_key を drive:<id> にして都度取得できるように）
     const driveFileId = extractSpreadsheetId(url) ?? undefined;
     const artifactId = await ingestArtifact(projectId, filename, buffer, k, driveFileId);
-    res.status(201).json(db.prepare(
+    res.status(201).json(await db.prepare(
       `SELECT id, kind, original_filename, parse_status, parse_error, sheet_roles FROM artifacts WHERE id = ?`,
     ).get(artifactId));
   } catch (e) {
@@ -237,14 +236,14 @@ app.post('/api/projects/:id/import-sheet', async (req, res) => {
 });
 
 // シート役割の手動修正（自動分類の検収）。body: { sheet_roles: { シート名: 役割 } }
-app.patch('/api/artifacts/:id/roles', (req, res) => {
+app.patch('/api/artifacts/:id/roles', async (req, res) => {
   const { sheet_roles } = req.body as { sheet_roles?: Record<string, string> };
   if (!sheet_roles) return res.status(400).json({ error: 'sheet_roles は必須です' });
   const valid = new Set(['input_data', 'working_sheet', 'final_output', 'unknown']);
   for (const role of Object.values(sheet_roles)) {
     if (!valid.has(role)) return res.status(400).json({ error: `役割が不正です: ${role}` });
   }
-  const row = db.prepare(`SELECT sheet_roles FROM artifacts WHERE id = ?`).get(req.params.id) as { sheet_roles: string | null } | undefined;
+  const row = await db.prepare(`SELECT sheet_roles FROM artifacts WHERE id = ?`).get(req.params.id) as { sheet_roles: string | null } | undefined;
   if (!row) return res.status(404).json({ error: 'artifact not found' });
   // 既存の分類結果（判定理由）を保ちつつ役割だけ上書きする
   const current = (row.sheet_roles ? JSON.parse(row.sheet_roles) : {}) as Record<string, SheetClassification>;
@@ -255,20 +254,20 @@ app.patch('/api/artifacts/:id/roles', (req, res) => {
       references: current[name]?.references ?? [],
     };
   }
-  db.prepare(`UPDATE artifacts SET sheet_roles = ? WHERE id = ?`).run(JSON.stringify(current), req.params.id);
+  await db.prepare(`UPDATE artifacts SET sheet_roles = ? WHERE id = ?`).run(JSON.stringify(current), req.params.id);
   res.json({ ok: true, sheet_roles: current });
 });
 
-app.delete('/api/artifacts/:id', (req, res) => {
-  const row = db.prepare(`SELECT project_id FROM artifacts WHERE id = ?`).get(req.params.id) as { project_id: number } | undefined;
-  db.prepare(`DELETE FROM artifacts WHERE id = ?`).run(req.params.id);
+app.delete('/api/artifacts/:id', async (req, res) => {
+  const row = await db.prepare(`SELECT project_id FROM artifacts WHERE id = ?`).get(req.params.id) as { project_id: number } | undefined;
+  await db.prepare(`DELETE FROM artifacts WHERE id = ?`).run(req.params.id);
   if (row) invalidateBooks(row.project_id);
   res.json({ ok: true });
 });
 
 // シートプレビュー（SC-03 / SC-04 のシートビューア用）
 app.get('/api/artifacts/:id/preview', async (req, res) => {
-  const row = db.prepare(`SELECT storage_key, parsed_key, original_filename, kind, sheet_roles FROM artifacts WHERE id = ?`)
+  const row = await db.prepare(`SELECT storage_key, parsed_key, original_filename, kind, sheet_roles FROM artifacts WHERE id = ?`)
     .get(req.params.id) as { storage_key: string; parsed_key: string | null; original_filename: string; kind: string; sheet_roles: string | null } | undefined;
   if (!row) return res.status(404).json({ error: 'artifact not found' });
   try {
@@ -307,8 +306,8 @@ function sheetOfRef(ref: string): string {
  * - copy(値一致)辺には、提供先シートの AI解読をヒントとして添付（手コピー誤検出の見極め用）
  * findings は decode 実行後に増えるためキャッシュせず毎回新しく合成する。
  */
-function attachAiFindings(base: LocalGraph, projectId: number): unknown {
-  const findings = db.prepare(
+async function attachAiFindings(base: LocalGraph, projectId: number): Promise<unknown> {
+  const findings = await db.prepare(
     `SELECT source_ref, logic_type, kpiee_target, explanation, confidence FROM findings WHERE project_id = ?`,
   ).all(projectId) as AiFinding[];
 
@@ -334,7 +333,7 @@ function attachAiFindings(base: LocalGraph, projectId: number): unknown {
   });
 
   // 全体構造の自然言語サマリ（decode 実行時に生成・保存済み）を同梱する
-  const ovRow = db.prepare(`SELECT content FROM project_overviews WHERE project_id = ?`)
+  const ovRow = await db.prepare(`SELECT content FROM project_overviews WHERE project_id = ?`)
     .get(projectId) as { content: string } | undefined;
   const overview = ovRow ? JSON.parse(ovRow.content) : undefined;
 
@@ -380,7 +379,7 @@ function capGraphForResponse(g: CapGraph): CapGraph {
 // プロジェクト全体のシート関係性グラフ。アップロード済みの全ファイル(xlsx/csv)を1パスで解析し、
 // ファイルをまたぐ手コピー関係も検出する。ファイルが1つなら自然にそのファイル単体の解析になる。
 app.get('/api/projects/:id/relations', async (req, res) => {
-  const rows = db.prepare(
+  const rows = await db.prepare(
     `SELECT storage_key, original_filename FROM artifacts WHERE project_id = ? AND parse_status = 'done' AND storage_key IS NOT NULL`,
   ).all(req.params.id) as { storage_key: string; original_filename: string }[];
   const supported = rows.filter(r => /\.(xlsx|xlsm|csv)$/i.test(r.original_filename));
@@ -395,7 +394,7 @@ app.get('/api/projects/:id/relations', async (req, res) => {
     );
     const base: LocalGraph = { ...graph, fileCount: supported.length };
     // 骨格グラフに AI解読（findings）を融合し、巨大グラフは転送前に集約する。
-    res.json(capGraphForResponse(attachAiFindings(base, Number(req.params.id)) as CapGraph));
+    res.json(capGraphForResponse((await attachAiFindings(base, Number(req.params.id))) as CapGraph));
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
@@ -403,7 +402,7 @@ app.get('/api/projects/:id/relations', async (req, res) => {
 
 // （単一ファイル版。デバッグ・互換用。通常は上のプロジェクト全体版を使う）xlsx のみ
 app.get('/api/artifacts/:id/relations', async (req, res) => {
-  const row = db.prepare(`SELECT storage_key, original_filename FROM artifacts WHERE id = ?`)
+  const row = await db.prepare(`SELECT storage_key, original_filename FROM artifacts WHERE id = ?`)
     .get(req.params.id) as { storage_key: string | null; original_filename: string } | undefined;
   if (!row?.storage_key) return res.status(404).json({ error: 'artifact not found' });
   if (!/\.(xlsx|xlsm)$/i.test(row.original_filename)) {
@@ -419,30 +418,30 @@ app.get('/api/artifacts/:id/relations', async (req, res) => {
 
 // ---- Apps Script（GAS）等、xlsx に保存されない変換ロジックの登録 ----
 // 例: シートを生成する .gs 関数。decode/generate 時に <apps_scripts> として AI へ渡す。
-app.get('/api/projects/:id/scripts', (req, res) => {
-  res.json(db.prepare(
+app.get('/api/projects/:id/scripts', async (req, res) => {
+  res.json(await db.prepare(
     `SELECT id, name, code, created_at FROM project_scripts WHERE project_id = ? ORDER BY id`,
   ).all(req.params.id));
 });
 
-app.post('/api/projects/:id/scripts', (req, res) => {
+app.post('/api/projects/:id/scripts', async (req, res) => {
   const { name, code } = req.body as { name?: string; code?: string };
   if (!code || !code.trim()) return res.status(400).json({ error: 'code は必須です' });
-  const result = db.prepare(`INSERT INTO project_scripts (project_id, name, code) VALUES (?, ?, ?)`)
+  const result = await db.prepare(`INSERT INTO project_scripts (project_id, name, code) VALUES (?, ?, ?)`)
     .run(req.params.id, name ?? '', code);
-  res.status(201).json(db.prepare(`SELECT id, name, code, created_at FROM project_scripts WHERE id = ?`)
+  res.status(201).json(await db.prepare(`SELECT id, name, code, created_at FROM project_scripts WHERE id = ?`)
     .get(result.lastInsertRowid));
 });
 
-app.delete('/api/scripts/:id', (req, res) => {
-  db.prepare(`DELETE FROM project_scripts WHERE id = ?`).run(req.params.id);
+app.delete('/api/scripts/:id', async (req, res) => {
+  await db.prepare(`DELETE FROM project_scripts WHERE id = ?`).run(req.params.id);
   res.json({ ok: true });
 });
 
 // ---- パイプライン起動（UC-03 / UC-05 / UC-06） ----
 // 各段階は fire-and-forget で起動し、進捗は GET /api/projects/:id の runs でポーリングする。
-function startStage(res: express.Response, projectId: number, stage: string, fn: () => Promise<unknown>): void {
-  const running = db.prepare(
+async function startStage(res: express.Response, projectId: number, stage: string, fn: () => Promise<unknown>): Promise<void> {
+  const running = await db.prepare(
     `SELECT id FROM analysis_runs WHERE project_id = ? AND status = 'running'`,
   ).get(projectId);
   if (running) {
@@ -453,46 +452,46 @@ function startStage(res: express.Response, projectId: number, stage: string, fn:
   res.status(202).json({ started: true, stage });
 }
 
-app.post('/api/projects/:id/pipeline/decode', (req, res) => {
-  startStage(res, Number(req.params.id), 'decode', () => runDecode(Number(req.params.id)));
+app.post('/api/projects/:id/pipeline/decode', async (req, res) => {
+  await startStage(res, Number(req.params.id), 'decode', () => runDecode(Number(req.params.id)));
 });
-app.post('/api/projects/:id/pipeline/generate', (req, res) => {
-  startStage(res, Number(req.params.id), 'generate', () => runGenerate(Number(req.params.id)));
+app.post('/api/projects/:id/pipeline/generate', async (req, res) => {
+  await startStage(res, Number(req.params.id), 'generate', () => runGenerate(Number(req.params.id)));
 });
-app.post('/api/projects/:id/pipeline/match', (req, res) => {
-  startStage(res, Number(req.params.id), 'match', () => runMatch(Number(req.params.id)));
+app.post('/api/projects/:id/pipeline/match', async (req, res) => {
+  await startStage(res, Number(req.params.id), 'match', () => runMatch(Number(req.params.id)));
 });
 
 // ---- 解読項目の検収（UC-04, SC-04） ----
-app.get('/api/projects/:id/findings', (req, res) => {
-  res.json(db.prepare(`SELECT * FROM findings WHERE project_id = ? ORDER BY id`).all(req.params.id));
+app.get('/api/projects/:id/findings', async (req, res) => {
+  res.json(await db.prepare(`SELECT * FROM findings WHERE project_id = ? ORDER BY id`).all(req.params.id));
 });
 
-app.patch('/api/findings/:id', (req, res) => {
+app.patch('/api/findings/:id', async (req, res) => {
   const { review_status, modified_content } = req.body as { review_status?: string; modified_content?: string };
   if (review_status && !['pending', 'approved', 'modified', 'rejected'].includes(review_status)) {
     return res.status(400).json({ error: 'review_status が不正です' });
   }
-  const current = db.prepare(`SELECT * FROM findings WHERE id = ?`).get(req.params.id) as { project_id: number } | undefined;
+  const current = await db.prepare(`SELECT * FROM findings WHERE id = ?`).get(req.params.id) as { project_id: number } | undefined;
   if (!current) return res.status(404).json({ error: 'finding not found' });
-  db.prepare(`UPDATE findings SET review_status = COALESCE(?, review_status), modified_content = COALESCE(?, modified_content) WHERE id = ?`)
+  await db.prepare(`UPDATE findings SET review_status = COALESCE(?, review_status), modified_content = COALESCE(?, modified_content) WHERE id = ?`)
     .run(review_status ?? null, modified_content ?? null, req.params.id);
-  res.json(db.prepare(`SELECT * FROM findings WHERE id = ?`).get(req.params.id));
+  res.json(await db.prepare(`SELECT * FROM findings WHERE id = ?`).get(req.params.id));
 });
 
 // ---- 成果物（SC-05） ----
-app.get('/api/projects/:id/deliverables', (req, res) => {
-  const latest = db.prepare(`SELECT COALESCE(MAX(version), 0) AS v FROM deliverables WHERE project_id = ?`)
+app.get('/api/projects/:id/deliverables', async (req, res) => {
+  const latest = await db.prepare(`SELECT COALESCE(MAX(version), 0) AS v FROM deliverables WHERE project_id = ?`)
     .get(req.params.id) as { v: number };
   const version = req.query.version ? Number(req.query.version) : latest.v;
-  const items = db.prepare(`SELECT * FROM deliverables WHERE project_id = ? AND version = ?`)
+  const items = await db.prepare(`SELECT * FROM deliverables WHERE project_id = ? AND version = ?`)
     .all(req.params.id, version);
   res.json({ version, latestVersion: latest.v, items });
 });
 
 // ---- 数値照合結果（SC-06） ----
-app.get('/api/projects/:id/match-results', (req, res) => {
-  const result = db.prepare(
+app.get('/api/projects/:id/match-results', async (req, res) => {
+  const result = await db.prepare(
     `SELECT * FROM match_results WHERE project_id = ? ORDER BY id DESC LIMIT 1`,
   ).get(req.params.id) as { mismatches: string } | undefined;
   if (!result) return res.json(null);
@@ -500,32 +499,32 @@ app.get('/api/projects/:id/match-results', (req, res) => {
 });
 
 // ---- 顧客確認事項（UC-10, SC-07） ----
-app.get('/api/projects/:id/questions', (req, res) => {
-  res.json(db.prepare(`SELECT * FROM customer_questions WHERE project_id = ? ORDER BY id`).all(req.params.id));
+app.get('/api/projects/:id/questions', async (req, res) => {
+  res.json(await db.prepare(`SELECT * FROM customer_questions WHERE project_id = ? ORDER BY id`).all(req.params.id));
 });
 
-app.post('/api/projects/:id/questions', (req, res) => {
+app.post('/api/projects/:id/questions', async (req, res) => {
   const { question } = req.body as { question?: string };
   if (!question) return res.status(400).json({ error: 'question は必須です' });
-  const result = db.prepare(`INSERT INTO customer_questions (project_id, question) VALUES (?, ?)`)
+  const result = await db.prepare(`INSERT INTO customer_questions (project_id, question) VALUES (?, ?)`)
     .run(req.params.id, question);
-  res.status(201).json(db.prepare(`SELECT * FROM customer_questions WHERE id = ?`).get(result.lastInsertRowid));
+  res.status(201).json(await db.prepare(`SELECT * FROM customer_questions WHERE id = ?`).get(result.lastInsertRowid));
 });
 
-app.patch('/api/questions/:id', (req, res) => {
+app.patch('/api/questions/:id', async (req, res) => {
   const { status, customer_answer } = req.body as { status?: string; customer_answer?: string };
   if (status && !['open', 'waiting', 'resolved'].includes(status)) {
     return res.status(400).json({ error: 'status が不正です' });
   }
-  db.prepare(`UPDATE customer_questions SET status = COALESCE(?, status), customer_answer = COALESCE(?, customer_answer) WHERE id = ?`)
+  await db.prepare(`UPDATE customer_questions SET status = COALESCE(?, status), customer_answer = COALESCE(?, customer_answer) WHERE id = ?`)
     .run(status ?? null, customer_answer ?? null, req.params.id);
-  res.json(db.prepare(`SELECT * FROM customer_questions WHERE id = ?`).get(req.params.id));
+  res.json(await db.prepare(`SELECT * FROM customer_questions WHERE id = ?`).get(req.params.id));
 });
 
 // メール文面のエクスポート（SC-07）
-app.get('/api/projects/:id/questions/export', (req, res) => {
-  const project = db.prepare(`SELECT customer_name FROM projects WHERE id = ?`).get(req.params.id) as { customer_name: string } | undefined;
-  const questions = db.prepare(
+app.get('/api/projects/:id/questions/export', async (req, res) => {
+  const project = await db.prepare(`SELECT customer_name FROM projects WHERE id = ?`).get(req.params.id) as { customer_name: string } | undefined;
+  const questions = await db.prepare(
     `SELECT question FROM customer_questions WHERE project_id = ? AND status != 'resolved' ORDER BY id`,
   ).all(req.params.id) as { question: string }[];
   const body = [
@@ -542,8 +541,8 @@ app.get('/api/projects/:id/questions/export', (req, res) => {
 });
 
 // ---- 対話Q&A（解読済みシートへの自由質問。セル単位の根拠付き回答）----
-app.get('/api/projects/:id/chat', (req, res) => {
-  res.json(qaHistory(Number(req.params.id)));
+app.get('/api/projects/:id/chat', async (req, res) => {
+  res.json(await qaHistory(Number(req.params.id)));
 });
 
 app.post('/api/projects/:id/chat', async (req, res) => {
@@ -558,11 +557,11 @@ app.post('/api/projects/:id/chat', async (req, res) => {
 });
 
 // ---- パッケージ出力（UC-08）: 5点セットの zip ダウンロード ----
-app.get('/api/projects/:id/package', (req, res) => {
-  const latest = db.prepare(`SELECT COALESCE(MAX(version), 0) AS v FROM deliverables WHERE project_id = ?`)
+app.get('/api/projects/:id/package', async (req, res) => {
+  const latest = await db.prepare(`SELECT COALESCE(MAX(version), 0) AS v FROM deliverables WHERE project_id = ?`)
     .get(req.params.id) as { v: number };
   if (latest.v === 0) return res.status(404).json({ error: '成果物がまだ生成されていません' });
-  const items = db.prepare(`SELECT kind, content FROM deliverables WHERE project_id = ? AND version = ?`)
+  const items = await db.prepare(`SELECT kind, content FROM deliverables WHERE project_id = ? AND version = ?`)
     .all(req.params.id, latest.v) as { kind: string; content: string }[];
 
   const fileNames: Record<string, string> = {
@@ -584,8 +583,8 @@ app.get('/api/projects/:id/package', (req, res) => {
 });
 
 // ---- 管理（SC-08）: トークン使用量・コスト ----
-app.get('/api/admin/usage', (_req, res) => {
-  const byProject = db.prepare(`
+app.get('/api/admin/usage', async (_req, res) => {
+  const byProject = await db.prepare(`
     SELECT u.project_id, p.customer_name,
       SUM(u.input_tokens) AS input_tokens, SUM(u.output_tokens) AS output_tokens,
       SUM(u.cache_read_input_tokens) AS cache_read_tokens, COUNT(*) AS request_count
@@ -604,7 +603,7 @@ app.get('/api/admin/usage', (_req, res) => {
 });
 
 // プロジェクトステータスの手動リセット（運用補助: 失敗時の再実行用）
-app.post('/api/projects/:id/reset-status', (req, res) => {
+app.post('/api/projects/:id/reset-status', async (req, res) => {
   const { status } = req.body as { status?: string };
   const allowed = ['draft', 'analyzing', 'reviewing', 'generating', 'matching', 'completed'];
   if (!status || !allowed.includes(status)) return res.status(400).json({ error: 'status が不正です' });
@@ -622,6 +621,9 @@ if (existsSync(webDist)) {
   app.get(/^(?!\/api\/).*/, (_req, res) => res.sendFile(path.join(webDist, 'index.html')));
   console.log(`[kpiee-onboarding-ai] serving web from ${webDist}`);
 }
+
+// スキーマ作成 + 孤児ジョブ掃除を済ませてから listen する（トップレベル await / ESM）。
+await initDb();
 
 const PORT = Number(process.env.PORT ?? 8787);
 app.listen(PORT, () => {
