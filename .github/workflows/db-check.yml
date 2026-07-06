@@ -1,0 +1,58 @@
+# DB 移行検証（GitHub Actions の Postgres サービスコンテナを使う）。
+# ローカルに Docker/Postgres が無くても、CI 上で pg を起動して database.ts アダプタを検証する。
+#  - pg ジョブ: Postgres サービスに対して db-smoke（方言・RETURNING・トランザクション）
+#  - sqlite ジョブ: 同じスモークを SQLite でも通す（デュアルドライバの担保）
+name: db-check
+
+on:
+  push:
+    branches: [main, db-postgres]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pg:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: onboarding
+          POSTGRES_PASSWORD: onboarding
+          POSTGRES_DB: onboarding
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U onboarding"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Install deps
+        working-directory: server
+        run: npm ci
+      - name: DB smoke (Postgres)
+        working-directory: server
+        env:
+          DATABASE_URL: postgres://onboarding:onboarding@localhost:5432/onboarding
+        run: npx tsx scripts/db-smoke.ts
+
+  sqlite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Install deps
+        working-directory: server
+        run: npm ci
+      - name: DB smoke (SQLite)
+        working-directory: server
+        run: npx tsx scripts/db-smoke.ts
