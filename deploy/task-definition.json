@@ -1,11 +1,11 @@
 {
-  "_comment": "KPIEE オンボーディング AI — ECS タスク定義テンプレート。<...> を各自の値に置換して登録する。既存クラスタ(DPB と同一)に別サービスとして載せる想定。イメージは GHCR public のため pull 認証不要。",
+  "_comment": "KPIEE オンボーディング AI — ECS タスク定義（本番用フル構成）。<...> を各自の値に置換して登録する。既存クラスタ(DPB と同一 data-palette-builder)に別サービスとして載せる。イメージは GHCR public のため pull 認証不要。ポートは 8080 で全経路統一（Dockerfile ENV PORT=8080 / containerPort / ヘルスチェック / ターゲットグループ すべて 8080 に一致させること）。DB を有効化する前に、必ず task-definition.smoke.json で /healthz が ALB 経由で healthy になることを先に確認する。",
   "family": "kpiee-onboarding-ai",
   "requiresCompatibilities": ["FARGATE"],
   "networkMode": "awsvpc",
   "cpu": "2048",
   "memory": "4096",
-  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/<ecsTaskExecutionRole>",
+  "executionRoleArn": "arn:aws:iam::472709934419:role/ecsTaskExecutionRole",
   "containerDefinitions": [
     {
       "name": "onboarding-ai",
@@ -17,7 +17,7 @@
         { "name": "NODE_ENV", "value": "production" },
         { "name": "ARTIFACT_EPHEMERAL", "value": "1" },
         { "name": "WEB_DIST", "value": "/app/web/dist" },
-        { "name": "DATABASE_URL", "value": "postgres://onboarding:<DB_PASSWORD>@<DPB_RDS_ENDPOINT>:5432/onboarding" },
+        { "name": "DATABASE_URL", "value": "postgres://onboarding:<DB_PASSWORD>@data-palette-builder-db.cczskye8qhhc.ap-northeast-1.rds.amazonaws.com:5432/onboarding?sslmode=no-verify" },
         { "name": "PGPOOL_MAX", "value": "5" },
         { "name": "ANTHROPIC_API_KEY", "value": "<ANTHROPIC_API_KEY>" },
         { "name": "GOOGLE_OAUTH_CLIENT_ID", "value": "<OAUTH_CLIENT_ID>" },
@@ -28,18 +28,11 @@
         { "name": "CORS_ORIGIN", "value": "https://<APP_HOST>" }
       ],
       "ulimits": [{ "name": "core", "softLimit": 0, "hardLimit": 0 }],
-      "healthCheck": {
-        "command": ["CMD-SHELL", "node -e \"fetch('http://localhost:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""],
-        "interval": 30,
-        "timeout": 5,
-        "retries": 3,
-        "startPeriod": 20
-      },
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
           "awslogs-group": "/ecs/kpiee-onboarding-ai",
-          "awslogs-region": "<REGION>",
+          "awslogs-region": "ap-northeast-1",
           "awslogs-stream-prefix": "app"
         }
       }

@@ -38,6 +38,12 @@ app.use(express.json({ limit: '50mb' }));
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 // ---- ヘルスチェック ----
+// ALB/ECS 用の超軽量ヘルスチェック。DB にもフロント(web/dist)にも依存せず、
+// 認証なしで即 200 を返す。DPB と同じ /healthz パスに合わせ、ターゲットグループの
+// ヘルスチェックパスを両アプリで統一できるようにする（SPA フォールバックに紛れない）。
+app.get('/healthz', (_req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
 app.get('/api/health', async (_req, res) => {
   res.json({ ok: true, aiMode: aiAvailable() ? MODEL : 'mock', googleSheets: googleConfigured() });
 });
@@ -626,7 +632,9 @@ if (existsSync(webDist)) {
 await initDb();
 
 const PORT = Number(process.env.PORT ?? 8787);
-app.listen(PORT, () => {
+// 明示的に 0.0.0.0 へバインドする。ECS/ALB のヘルスチェックはタスク ENI の IP へ来るため、
+// localhost バインドだと到達できず unhealthy になる（DPB 手引きの既知の落とし穴）。
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`[kpiee-onboarding-ai] API server: http://localhost:${PORT}`);
   console.log(`[kpiee-onboarding-ai] AI mode: ${aiAvailable() ? MODEL : 'mock（ANTHROPIC_API_KEY 未設定）'}`);
 });
