@@ -98,7 +98,13 @@ const regionIdOf = (key: string) => key.slice(0, key.indexOf(':'))
 const colOf = (key: string) => key.slice(key.indexOf(':') + 1)
 const regionLabel = (id: string) => {
   const r = regionById.value.get(id)
-  if (!r) return id
+  if (!r) {
+    // 未解決（グラフのキャップ等で regions に無い）でも、raw id (`ファイル／シート#n`) から
+    // ファイル・シートを取り出して表示する。どのファイル/シートか必ず分かるように。
+    const m = /^(.*)／(.*)#\d+$/.exec(id)
+    if (m) return multiFile.value && m[1] !== m[2] ? `${m[1]}・${m[2]}` : m[2]
+    return id
+  }
   // ファイルが1つなら冗長なファイル名は出さず、シート名だけで示す
   if (!multiFile.value || r.sheet === r.file) return r.sheet
   return `${r.file}・${r.sheet}`
@@ -671,7 +677,9 @@ function colLetterRef(c: number): string {
         <div v-if="graph.warnings.length" class="warn-panel">
           <h3>注意（{{ (graph.warningTotal ?? graph.warnings.length).toLocaleString() }}件<span v-if="graph.warningTotal && graph.warningTotal > graph.warnings.length">・上位 {{ graph.warnings.length }} 件表示</span>）</h3>
           <ul>
-            <li v-for="(w, i) in graph.warnings" :key="i">{{ w.message }}</li>
+            <li v-for="(w, i) in graph.warnings" :key="i">
+              <span class="warn-loc">📍 {{ short(w.ref) }}</span> {{ w.message }}
+            </li>
           </ul>
         </div>
       </template>
@@ -779,4 +787,5 @@ h3 { font-size:14px; margin:20px 0 8px; }
 .warn-panel { margin-top:16px; padding:14px 16px; background:#fffaf2; border:1px solid #f4e3c8; border-radius:10px }
 .warn-panel h3 { margin:0 0 8px; font-size:14px }
 .warn-panel ul { margin:0; padding-left:18px; font-size:13px; line-height:1.7 }
+.warn-loc { font-weight:600; color:#92400e; margin-right:4px; white-space:nowrap }
 </style>
