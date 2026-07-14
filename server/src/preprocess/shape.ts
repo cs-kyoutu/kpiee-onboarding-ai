@@ -1,34 +1,44 @@
 // プロンプト用ペイロード整形（413 / 1M トークン超過 対策 + GAS 数式の充実）。
 //
 // 顧客ファイルは形が様々（縦長の仕訳29,348行 / 横長259列 / 同一テンプレ16シート…）。
-// シート毎に手調整しなくて済むよう、各シートを
-//   - ヘッダ行 / 数式パターン（署名で重複排除） / データ行サンプル / omitted件数
-// へ圧縮したうえで、プロジェクト全体の合計が「予算(文字数)」内に収まるまで
-// 上限を自動で段階的に絞る（shapeArtifactsToBudget）。小さいファイルは詳細に、
-// 巨大ファイルは自動でより圧縮され、ファイルごとの設定変更は不要。
+// 各シートを ヘッダ行 / 数式パターン（署名で重複排除） / データ行サンプル / omitted件数 へ圧縮する。
+//
+// 「必要な分だけ」当てる方針（シート単位の適応）:
+//   - シートの性格で基準 caps を変える。数式シート=ロジックを厚く・データ標本は薄く /
+//     データシート=標本を確保・数式系は最小。
+//   - 予算超過時の縮小は「情報価値の低い順」に1次元ずつ。数式パターン数・数式長（=ロジック）は
+//     高い下限(floor)で最後まで守る。ロジック保全のためなら予算を多少超えても可（保守的）。
+//   - 予算は合計固定でなく「1ファイルあたり × ファイル数」を総量キャップで頭打ち（ファイル数比例）。
 import { formulaSignature, type ParsedArtifact, type ParsedCell, type ParsedRow } from './parse.js';
 
-/** 整形の上限値。予算に収まらない場合は段階的に縮小される */
+/** 整形の上限値。予算に収まらない場合は情報価値の低い順に段階的に縮小される */
 export interface ShapeCaps {
   headerRows: number;    // ヘッダ候補行
   sampleRows: number;    // データ行サンプル
-  patterns: number;      // 1シートの数式パターン上限
+  patterns: number;      // 1シートの数式パターン上限（=ロジック。高 floor で保護）
   patternCells: number;  // 1パターンに含める数式セル上限（横長対策）
   rowCells: number;      // ヘッダ/サンプル行のセル上限（横長対策）
-  formulaLen: number;    // 数式原文の最大長
+  formulaLen: number;    // 数式原文の最大長（=ロジック。高 floor で保護）
 }
 
-// 既定（小さいファイルはこの詳細さで通る）
-const DEFAULT_CAPS: ShapeCaps = { headerRows: 3, sampleRows: 5, patterns: 60, patternCells: 40, rowCells: 80, formulaLen: 400 };
-// 最小（これ以上は縮めない）
-const MIN_CAPS: ShapeCaps = { headerRows: 1, sampleRows: 1, patterns: 8, patternCells: 8, rowCells: 24, formulaLen: 120 };
-// 予算（文字数）。合計固定ではなく「1ファイルあたり予算 × ファイル数」を上限とし、総量キャップで頭打ちにする。
-// 合計固定だとファイル数が増えるほど1ファイルあたりが薄くなる（例: 5ファイルで合計20万は1ファイル≒4万相当）。
-// ファイル数比例にすれば、ファイルが増えても各ファイルの詳細さを一定に保てる。
-// 日本語比率が高いと文字/token 比が下がる（最悪 ≒2.5文字/token）。下記は概算トークンをコメント併記。
-const PER_FILE_CHARS = 120_000;   // ≒ 48k tokens/ファイル（各ファイルが保つ詳細さ）
-const MAX_TOTAL_CHARS = 600_000;  // ≒ 240k tokens。多数ファイル時の総量キャップ（コスト暴走防止）
-const MAX_SHRINK_ATTEMPTS = 8;
+// 予算（文字数）。ファイル数比例＋総量キャップ（日本語 ~2.5字/token 目安、コメントは概算トークン）。
+// 主な削減は「同形セルの重複畳み込み＋シート別 caps」で達成するため、この予算は“暴走防止のバックストップ”。
+// 通常規模ではこの予算に達せず縮小が走らない＝ロジック（異なる数式の形）を落とさない、を狙って余裕を持たせる。
+const PER_FILE_CHARS = 180_000;   // ≒ 72k tokens/ファイル
+const MAX_TOTAL_CHARS = 900_000;  // ≒ 360k tokens。多数ファイル時の総量キャップ（超過時のみ縮小）
+
+// シートの性格別・基準 caps（必要な分だけ当てる第一歩）
+// 数式シート: ロジック（patterns/patternCells/formulaLen）を厚く、データ標本(sampleRows)は薄く。
+// patternCells は「同一シグネチャ（＝同じ数式パターン）のセル例」を何個持つか。同じ数式なので
+// 少数で十分（冗長）。パターン数(patterns)と数式長(formulaLen)＝ロジック本体は厚く保つ。
+// patternCells は「1行内の“異なる数式の形”をいくつ残すか」（同形＝参照違いは畳み済み）。列固有ロジックを
+// 落とさぬよう十分大きく取る。patterns（パターン行数）と formulaLen（数式長）＝ロジック本体は厚く保つ。
+const FORMULA_SHEET_CAPS: ShapeCaps = { headerRows: 3, sampleRows: 2, patterns: 300, patternCells: 48, rowCells: 100, formulaLen: 800 };
+// データシート: 数式が無い/少ない。構造(ヘッダ)＋標本を確保、数式系は小さく。
+const DATA_SHEET_CAPS:    ShapeCaps = { headerRows: 3, sampleRows: 6, patterns: 30,  patternCells: 24, rowCells: 120, formulaLen: 300 };
+// 縮小の下限。ロジック（patterns/formulaLen/異なる数式の形=patternCells）は高めの floor で守る。
+const MIN_CAPS: ShapeCaps = { headerRows: 1, sampleRows: 1, patterns: 30, patternCells: 20, rowCells: 24, formulaLen: 300 };
+const MAX_LEVEL = 30; // 全次元が floor に届くのに十分な段数
 
 export interface FormulaPattern {
   representativeRef: string;
@@ -60,6 +70,9 @@ export interface ShapedArtifact {
 
 const rowRepeatCount = (row: ParsedRow): number => row.compressedRange?.count ?? 1;
 const truncFormula = (f: string, max: number): string => (f.length > max ? f.slice(0, max) + '…' : f);
+// 数式の「形」を取り出す（セル参照を # に潰す）。参照だけ違う同形の数式を1つに畳むために使う。
+// 構造が異なる数式（SUM と IF、列ごとに違うロジック等）は別の形になるので必ず残る。
+const columnShapeOf = (f: string): string => f.replace(/\$?[A-Za-z]{1,3}\$?\d+/g, '#');
 const trimRow = (row: ParsedRow, maxCells: number): ParsedRow =>
   row.cells.length <= maxCells ? row : { ...row, cells: row.cells.slice(0, maxCells) };
 
@@ -77,12 +90,23 @@ function shapeSheet(sheet: ParsedArtifact['sheets'][number], role: string | unde
     if (existing) {
       existing.appliesToRowCount += rowRepeatCount(row);
     } else {
-      const kept = formulaCells.slice(0, caps.patternCells);
+      // 同一パターン行内でも列ごとに数式が違うことがある。参照だけ違う「同形」セルは1つに畳み、
+      // 構造が異なる数式は全て残す（＝必要な分だけ）。冗長セルだけ削り、列固有のロジックは保全する。
+      const seen = new Set<string>();
+      const distinct: typeof formulaCells = [];
+      for (const c of formulaCells) {
+        const shape = columnShapeOf(c.formula!);
+        if (seen.has(shape)) continue;
+        seen.add(shape);
+        distinct.push(c);
+      }
+      const kept = distinct.slice(0, caps.patternCells);
       patternMap.set(sig, {
         representativeRef: formulaCells[0].ref,
         appliesToRowCount: rowRepeatCount(row),
         gas: formulaCells.some(c => c.gas),
         cells: kept.map(c => ({ ref: c.ref, formula: truncFormula(c.formula!, caps.formulaLen), value: c.value })),
+        // 落としたのは主に「参照だけ違う同形セル」（冗長）。異なる形が cap を超えた分のみ真の省略。
         ...(formulaCells.length > kept.length ? { omittedCells: formulaCells.length - kept.length } : {}),
       });
     }
@@ -105,27 +129,38 @@ function shapeSheet(sheet: ParsedArtifact['sheets'][number], role: string | unde
   };
 }
 
-/** パース済みアーティファクトを整形する（caps 未指定なら既定の詳細さ） */
-export function shapeArtifact(
-  parsed: ParsedArtifact, roles: Record<string, string>, kind: string, filename: string,
-  caps: ShapeCaps = DEFAULT_CAPS,
-): ShapedArtifact {
-  return { filename, kind, fileType: parsed.fileType, sheets: parsed.sheets.map(s => shapeSheet(s, roles[s.name], caps)) };
+/** シートの性格から基準 caps を選ぶ（数式の有無で厚みを変える＝必要な分だけ） */
+function baseCapsForSheet(sheet: ParsedArtifact['sheets'][number]): ShapeCaps {
+  return sheet.formulaCellCount > 0 ? FORMULA_SHEET_CAPS : DATA_SHEET_CAPS;
 }
 
-const capsAtMin = (c: ShapeCaps): boolean =>
-  c.headerRows <= MIN_CAPS.headerRows && c.sampleRows <= MIN_CAPS.sampleRows && c.patterns <= MIN_CAPS.patterns &&
-  c.patternCells <= MIN_CAPS.patternCells && c.rowCells <= MIN_CAPS.rowCells && c.formulaLen <= MIN_CAPS.formulaLen;
+// 縮小は「情報価値の低い順」に1次元ずつ。ロジック（patterns/formulaLen）は最後に回す＝保守的。
+function shrinkOne(c: ShapeCaps): ShapeCaps {
+  const n = { ...c };
+  if (n.sampleRows   > MIN_CAPS.sampleRows)   { n.sampleRows   = Math.max(MIN_CAPS.sampleRows, n.sampleRows - 1); return n; }
+  if (n.rowCells     > MIN_CAPS.rowCells)     { n.rowCells     = Math.max(MIN_CAPS.rowCells, Math.floor(n.rowCells * 0.6)); return n; }
+  if (n.headerRows   > MIN_CAPS.headerRows)   { n.headerRows   = Math.max(MIN_CAPS.headerRows, n.headerRows - 1); return n; }
+  if (n.patternCells > MIN_CAPS.patternCells) { n.patternCells = Math.max(MIN_CAPS.patternCells, Math.floor(n.patternCells * 0.6)); return n; }
+  if (n.patterns     > MIN_CAPS.patterns)     { n.patterns     = Math.max(MIN_CAPS.patterns, Math.floor(n.patterns * 0.75)); return n; }
+  if (n.formulaLen   > MIN_CAPS.formulaLen)   { n.formulaLen   = Math.max(MIN_CAPS.formulaLen, Math.floor(n.formulaLen * 0.8)); return n; }
+  return n;
+}
+function applyLevel(c: ShapeCaps, level: number): ShapeCaps {
+  let caps = c;
+  for (let i = 0; i < level; i++) caps = shrinkOne(caps);
+  return caps;
+}
+const isMin = (c: ShapeCaps): boolean =>
+  c.sampleRows <= MIN_CAPS.sampleRows && c.rowCells <= MIN_CAPS.rowCells && c.headerRows <= MIN_CAPS.headerRows &&
+  c.patternCells <= MIN_CAPS.patternCells && c.patterns <= MIN_CAPS.patterns && c.formulaLen <= MIN_CAPS.formulaLen;
 
-function shrink(c: ShapeCaps): ShapeCaps {
-  const f = (v: number, min: number) => Math.max(min, Math.floor(v * 0.6));
+/** パース済みアーティファクトを（シート別の基準 caps ＋ 縮小レベルで）整形する */
+export function shapeArtifact(
+  parsed: ParsedArtifact, roles: Record<string, string>, kind: string, filename: string, level = 0,
+): ShapedArtifact {
   return {
-    headerRows: Math.max(MIN_CAPS.headerRows, c.headerRows - 1),
-    sampleRows: Math.max(MIN_CAPS.sampleRows, c.sampleRows - 1),
-    patterns: f(c.patterns, MIN_CAPS.patterns),
-    patternCells: f(c.patternCells, MIN_CAPS.patternCells),
-    rowCells: f(c.rowCells, MIN_CAPS.rowCells),
-    formulaLen: f(c.formulaLen, MIN_CAPS.formulaLen),
+    filename, kind, fileType: parsed.fileType,
+    sheets: parsed.sheets.map(s => shapeSheet(s, roles[s.name], applyLevel(baseCapsForSheet(s), level))),
   };
 }
 
@@ -133,17 +168,19 @@ export interface ShapeInput { parsed: ParsedArtifact; roles: Record<string, stri
 
 /**
  * プロジェクト内の全アーティファクトを、合計が予算内に収まるよう適応的に整形する。
- * 既定の詳細さで一度整形し、超過していれば上限を段階的に縮めて再整形（シート毎の手調整不要）。
+ * シート別の基準 caps から始め、超過していれば「情報価値の低い順」に縮小レベルを上げる。
+ * 全シートが floor に達したらそこで打ち切る（ロジック保全のため予算を多少超えることを許容）。
  */
 export function shapeArtifactsToBudget(items: ShapeInput[], budget?: number): ShapedArtifact[] {
-  // 予算は「1ファイルあたり × ファイル数」を総量キャップで頭打ちにする（明示指定があればそれを優先）。
   const effectiveBudget = budget ?? Math.min(PER_FILE_CHARS * Math.max(1, items.length), MAX_TOTAL_CHARS);
-  let caps = DEFAULT_CAPS;
-  let shaped = items.map(i => shapeArtifact(i.parsed, i.roles, i.kind, i.filename, caps));
-  for (let attempt = 0; attempt < MAX_SHRINK_ATTEMPTS; attempt++) {
-    if (JSON.stringify(shaped).length <= effectiveBudget || capsAtMin(caps)) break;
-    caps = shrink(caps);
-    shaped = items.map(i => shapeArtifact(i.parsed, i.roles, i.kind, i.filename, caps));
+  let level = 0;
+  let shaped = items.map(i => shapeArtifact(i.parsed, i.roles, i.kind, i.filename, level));
+  while (level < MAX_LEVEL && JSON.stringify(shaped).length > effectiveBudget) {
+    // 全シートが floor に達していたら、これ以上縮めても変わらないので打ち切る
+    const allMin = items.every(i => i.parsed.sheets.every(s => isMin(applyLevel(baseCapsForSheet(s), level))));
+    if (allMin) break;
+    level++;
+    shaped = items.map(i => shapeArtifact(i.parsed, i.roles, i.kind, i.filename, level));
   }
   return shaped;
 }
