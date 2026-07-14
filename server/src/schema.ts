@@ -107,6 +107,13 @@ CREATE TABLE IF NOT EXISTS project_overviews (
   created_at ${ts}
 );
 
+CREATE TABLE IF NOT EXISTS relation_graphs (
+  project_id INTEGER PRIMARY KEY REFERENCES projects(id),
+  signature TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at ${ts}
+);
+
 CREATE TABLE IF NOT EXISTS ai_usage_logs (
   id ${pk},
   project_id INTEGER REFERENCES projects(id),

@@ -34,8 +34,8 @@ function toPgPlaceholders(sql: string): string {
 
 const isInsert = (sql: string) => /^\s*insert\b/i.test(sql);
 const hasReturning = (sql: string) => /\breturning\b/i.test(sql);
-// id 列を持たないテーブルへの INSERT には RETURNING id を付けない（project_overviews は project_id が PK）
-const noIdTable = (sql: string) => /\binto\s+project_overviews\b/i.test(sql);
+// id 列を持たないテーブルへの INSERT には RETURNING id を付けない（project_id が PK のテーブル群）
+const noIdTable = (sql: string) => /\binto\s+(project_overviews|relation_graphs)\b/i.test(sql);
 
 // ───────────────────────── Postgres ─────────────────────────
 function makePgDb(pool: pg.Pool, client?: pg.PoolClient): Db {

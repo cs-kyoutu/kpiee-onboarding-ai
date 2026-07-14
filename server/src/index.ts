@@ -15,6 +15,7 @@ import { materializeBuffer, materializeParsed, driveKey } from './artifacts.js';
 import { parseArtifact, type ParsedArtifact } from './preprocess/parse.js';
 import { classifySheetRoles, type SheetClassification } from './preprocess/classify.js';
 import { analyzeBuffer, analyzeArtifacts } from './preprocess/relations.js';
+import { artifactSetSignature, getCachedRelationGraph, setCachedRelationGraph, invalidateRelationGraph } from './relationsCache.js';
 import { runDecode, runGenerate, runMatch, tableNameOf } from './pipeline/orchestrator.js';
 import { ask as qaAsk, getHistory as qaHistory } from './qa/agent.js';
 import { invalidateBooks } from './qa/tools.js';
@@ -142,6 +143,7 @@ async function ingestArtifact(projectId: number, filename: string, buffer: Buffe
     await db.prepare(`UPDATE artifacts SET parse_status = 'failed', parse_error = ? WHERE id = ?`).run(String(e), artifactId);
   }
   invalidateBooks(projectId); // Q&A 用ワークブックキャッシュを破棄（新規取込で内容が変わるため）
+  await invalidateRelationGraph(projectId); // 関係グラフの保存キャッシュも破棄（アーティファクト変更で構造が変わる）
   return artifactId;
 }
 
@@ -267,7 +269,7 @@ app.patch('/api/artifacts/:id/roles', async (req, res) => {
 app.delete('/api/artifacts/:id', async (req, res) => {
   const row = await db.prepare(`SELECT project_id FROM artifacts WHERE id = ?`).get(req.params.id) as { project_id: number } | undefined;
   await db.prepare(`DELETE FROM artifacts WHERE id = ?`).run(req.params.id);
-  if (row) invalidateBooks(row.project_id);
+  if (row) { invalidateBooks(row.project_id); await invalidateRelationGraph(row.project_id); }
   res.json({ ok: true });
 });
 
@@ -385,22 +387,28 @@ function capGraphForResponse(g: CapGraph): CapGraph {
 // プロジェクト全体のシート関係性グラフ。アップロード済みの全ファイル(xlsx/csv)を1パスで解析し、
 // ファイルをまたぐ手コピー関係も検出する。ファイルが1つなら自然にそのファイル単体の解析になる。
 app.get('/api/projects/:id/relations', async (req, res) => {
+  const projectId = Number(req.params.id);
   const rows = await db.prepare(
-    `SELECT storage_key, original_filename FROM artifacts WHERE project_id = ? AND parse_status = 'done' AND storage_key IS NOT NULL`,
-  ).all(req.params.id) as { storage_key: string; original_filename: string }[];
+    `SELECT id, storage_key, original_filename FROM artifacts WHERE project_id = ? AND parse_status = 'done' AND storage_key IS NOT NULL`,
+  ).all(projectId) as { id: number; storage_key: string; original_filename: string }[];
   const supported = rows.filter(r => /\.(xlsx|xlsm|csv)$/i.test(r.original_filename));
   if (supported.length === 0) return res.json({ regions: [], edges: [], warnings: [], fileCount: 0 });
   try {
-    // 作業（このリクエスト1回）ごとに解析する。作業をまたぐキャッシュは持たない（デプロイ設計 C5:
-    // 原本・原本相当の派生物をサーバーに滞留させない方針。1リクエスト内の再利用のみ許容）。
-    // 解析はファイル単位処理でピークメモリを最大単一ファイルに抑えてある（relations.ts）。
-    const graph = await analyzeArtifacts(
-      // 各ファイルは analyzeArtifacts 内で1つずつ遅延ロードされる（無保存モードでは Drive から都度取得）
-      supported.map(r => ({ filename: r.original_filename, load: () => materializeBuffer(r.storage_key) })),
-    );
+    // 関係グラフは「完成した派生結果物」（原本の数値を含まず、数式テキスト・構造のみ）なので DB に保存し、
+    // アーティファクト集合が変わらない限り再計算せず即返す（findings 等と同じ保存許容等級）。原本そのもの
+    // （raw バイト・全構造化 JSON）は保存しない方針（C3/C5）は不変で、キャッシュミス時のみ Drive から取り直す。
+    const signature = artifactSetSignature(supported);
+    let graph = await getCachedRelationGraph(projectId, signature);
+    if (!graph) {
+      // キャッシュ無し／古い → ファイル単位で遅延ロードしつつ解析（ピークメモリ＝最大単一ファイル）し、保存する
+      graph = await analyzeArtifacts(
+        supported.map(r => ({ filename: r.original_filename, load: () => materializeBuffer(r.storage_key) })),
+      );
+      await setCachedRelationGraph(projectId, signature, graph);
+    }
     const base: LocalGraph = { ...graph, fileCount: supported.length };
-    // 骨格グラフに AI解読（findings）を融合し、巨大グラフは転送前に集約する。
-    res.json(capGraphForResponse((await attachAiFindings(base, Number(req.params.id))) as CapGraph));
+    // 骨格グラフに AI解読（findings）を融合し、巨大グラフは転送前に集約する。findings は独立に変わりうるため毎回融合する。
+    res.json(capGraphForResponse((await attachAiFindings(base, projectId)) as CapGraph));
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
