@@ -8,6 +8,7 @@ import { get, post, type ProjectDetailData } from '../api'
 import UploadPanel from '../components/UploadPanel.vue'
 import ScriptsPanel from '../components/ScriptsPanel.vue'
 import RelationsPanel from '../components/RelationsPanel.vue'
+import AttentionPanel from '../components/AttentionPanel.vue'
 import ReviewPanel from '../components/ReviewPanel.vue'
 import DeliverablesPanel from '../components/DeliverablesPanel.vue'
 import MatchPanel from '../components/MatchPanel.vue'
@@ -18,7 +19,7 @@ const route = useRoute()
 const projectId = Number(route.params.id)
 
 const project = ref<ProjectDetailData | null>(null)
-const tab = ref<'upload' | 'scripts' | 'relations' | 'review' | 'deliverables' | 'match' | 'questions' | 'chat'>('upload')
+const tab = ref<'upload' | 'scripts' | 'relations' | 'attention' | 'review' | 'deliverables' | 'match' | 'questions' | 'chat'>('upload')
 const error = ref('')
 const refreshKey = ref(0) // 子パネルへ再読込を伝えるためのキー
 
@@ -145,6 +146,7 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
       <button :class="{ active: tab === 'upload' }" @click="tab = 'upload'">📥 資料アップロード</button>
       <button :class="{ active: tab === 'scripts' }" @click="tab = 'scripts'">📜 変換スクリプト</button>
       <button :class="{ active: tab === 'relations' }" @click="tab = 'relations'">🔗 シート関係</button>
+      <button :class="{ active: tab === 'attention' }" @click="tab = 'attention'">⚠ 要確認</button>
       <button :class="{ active: tab === 'review' }" @click="tab = 'review'">✅ 解読検収</button>
       <button :class="{ active: tab === 'deliverables' }" @click="tab = 'deliverables'">📄 成果物</button>
       <button :class="{ active: tab === 'match' }" @click="tab = 'match'">🔢 数値照合</button>
@@ -154,7 +156,8 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
 
     <UploadPanel v-if="tab === 'upload'" :project-id="projectId" :artifacts="project.artifacts" @changed="load" />
     <ScriptsPanel v-else-if="tab === 'scripts'" :project-id="projectId" />
-    <RelationsPanel v-else-if="tab === 'relations'" :project-id="projectId" :artifacts="project.artifacts" />
+    <RelationsPanel v-else-if="tab === 'relations'" :project-id="projectId" :artifacts="project.artifacts" @open-attention="tab = 'attention'" />
+    <AttentionPanel v-else-if="tab === 'attention'" :project-id="projectId" />
     <ReviewPanel v-else-if="tab === 'review'" :key="refreshKey" :project-id="projectId" :artifacts="project.artifacts" />
     <DeliverablesPanel v-else-if="tab === 'deliverables'" :key="refreshKey" :project-id="projectId" />
     <MatchPanel v-else-if="tab === 'match'" :key="refreshKey" :project-id="projectId" />

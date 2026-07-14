@@ -384,31 +384,79 @@ function capGraphForResponse(g: CapGraph): CapGraph {
   };
 }
 
-// プロジェクト全体のシート関係性グラフ。アップロード済みの全ファイル(xlsx/csv)を1パスで解析し、
-// ファイルをまたぐ手コピー関係も検出する。ファイルが1つなら自然にそのファイル単体の解析になる。
-app.get('/api/projects/:id/relations', async (req, res) => {
-  const projectId = Number(req.params.id);
+// 関係グラフを（キャッシュ優先で）取得する共通処理。relations 表示と「要確認」集計で共用する。
+// 関係グラフは「完成した派生結果物」（原本の数値を含まず、数式テキスト・構造のみ）なので DB に保存し、
+// アーティファクト集合が変わらない限り再計算せず即返す（findings 等と同じ保存許容等級）。原本そのもの
+// （raw バイト・全構造化 JSON）は保存しない方針（C3/C5）は不変で、キャッシュミス時のみ Drive から取り直す。
+async function loadProjectRelationGraph(projectId: number): Promise<{ graph: Awaited<ReturnType<typeof analyzeArtifacts>>; fileCount: number } | null> {
   const rows = await db.prepare(
     `SELECT id, storage_key, original_filename FROM artifacts WHERE project_id = ? AND parse_status = 'done' AND storage_key IS NOT NULL`,
   ).all(projectId) as { id: number; storage_key: string; original_filename: string }[];
   const supported = rows.filter(r => /\.(xlsx|xlsm|csv)$/i.test(r.original_filename));
-  if (supported.length === 0) return res.json({ regions: [], edges: [], warnings: [], fileCount: 0 });
+  if (supported.length === 0) return null;
+  const signature = artifactSetSignature(supported);
+  let graph = await getCachedRelationGraph(projectId, signature);
+  if (!graph) {
+    // キャッシュ無し／古い → ファイル単位で遅延ロードしつつ解析（ピークメモリ＝最大単一ファイル）し、保存する
+    graph = await analyzeArtifacts(
+      supported.map(r => ({ filename: r.original_filename, load: () => materializeBuffer(r.storage_key) })),
+    );
+    await setCachedRelationGraph(projectId, signature, graph);
+  }
+  return { graph, fileCount: supported.length };
+}
+
+// プロジェクト全体のシート関係性グラフ。アップロード済みの全ファイル(xlsx/csv)を1パスで解析し、
+// ファイルをまたぐ手コピー関係も検出する。ファイルが1つなら自然にそのファイル単体の解析になる。
+app.get('/api/projects/:id/relations', async (req, res) => {
+  const projectId = Number(req.params.id);
   try {
-    // 関係グラフは「完成した派生結果物」（原本の数値を含まず、数式テキスト・構造のみ）なので DB に保存し、
-    // アーティファクト集合が変わらない限り再計算せず即返す（findings 等と同じ保存許容等級）。原本そのもの
-    // （raw バイト・全構造化 JSON）は保存しない方針（C3/C5）は不変で、キャッシュミス時のみ Drive から取り直す。
-    const signature = artifactSetSignature(supported);
-    let graph = await getCachedRelationGraph(projectId, signature);
-    if (!graph) {
-      // キャッシュ無し／古い → ファイル単位で遅延ロードしつつ解析（ピークメモリ＝最大単一ファイル）し、保存する
-      graph = await analyzeArtifacts(
-        supported.map(r => ({ filename: r.original_filename, load: () => materializeBuffer(r.storage_key) })),
-      );
-      await setCachedRelationGraph(projectId, signature, graph);
-    }
-    const base: LocalGraph = { ...graph, fileCount: supported.length };
+    const loaded = await loadProjectRelationGraph(projectId);
+    if (!loaded) return res.json({ regions: [], edges: [], warnings: [], fileCount: 0 });
+    const base: LocalGraph = { ...loaded.graph, fileCount: loaded.fileCount };
     // 骨格グラフに AI解読（findings）を融合し、巨大グラフは転送前に集約する。findings は独立に変わりうるため毎回融合する。
     res.json(capGraphForResponse((await attachAiFindings(base, projectId)) as CapGraph));
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// 「要確認」集計: 関係グラフの警告（手入力混入など）を全件（キャップなし）、
+// ファイル→シート→列 に集約して返す。フラットな数千行の羅列では確認不能なため、
+// シート単位のカード＋列チップで俯瞰できる形に整えるのが目的（UI は AttentionPanel）。
+app.get('/api/projects/:id/attention', async (req, res) => {
+  const projectId = Number(req.params.id);
+  try {
+    const loaded = await loadProjectRelationGraph(projectId);
+    if (!loaded) return res.json({ total: 0, kinds: [], groups: [] });
+    const warnings = loaded.graph.warnings ?? [];
+    // ref は `ファイル／シート#n:列`。region id は ':' を含まないので最初の ':' で列名を分離できる
+    const parse = (ref: string) => {
+      const ci = ref.indexOf(':');
+      const regionId = ci >= 0 ? ref.slice(0, ci) : ref;
+      const column = ci >= 0 ? ref.slice(ci + 1) : '';
+      const m = /^(.*)／(.*)#\d+$/.exec(regionId);
+      return { file: m?.[1] ?? '', sheet: m?.[2] ?? regionId, column };
+    };
+    const groups = new Map<string, { kind: string; file: string; sheet: string; count: number; columns: string[]; seen: Set<string> }>();
+    const kindCount = new Map<string, number>();
+    for (const w of warnings) {
+      const { file, sheet, column } = parse(w.ref);
+      kindCount.set(w.kind, (kindCount.get(w.kind) ?? 0) + 1);
+      const key = `${w.kind} ${file} ${sheet}`;
+      let g = groups.get(key);
+      if (!g) { g = { kind: w.kind, file, sheet, count: 0, columns: [], seen: new Set() }; groups.set(key, g); }
+      g.count++;
+      if (column && !g.seen.has(column)) { g.seen.add(column); g.columns.push(column); }
+    }
+    res.json({
+      total: warnings.length,
+      fileCount: loaded.fileCount,
+      kinds: [...kindCount.entries()].map(([kind, count]) => ({ kind, count })).sort((a, b) => b.count - a.count),
+      groups: [...groups.values()]
+        .map(({ seen: _seen, ...g }) => g)
+        .sort((a, b) => b.count - a.count),
+    });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }

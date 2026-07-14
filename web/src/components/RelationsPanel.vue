@@ -10,6 +10,7 @@ import { computed, ref, watch } from 'vue'
 import { get, getProjectRelations, type Artifact, type RelationGraph, type RelEdge, type RelType, type RelRegion, type SheetPreview } from '../api'
 
 const props = defineProps<{ projectId: number; artifacts: Artifact[] }>()
+const emit = defineEmits<{ (e: 'open-attention'): void }>()
 
 // 解析対象になり得るファイル数（xlsx/csv かつ解析済み）
 const analyzableCount = computed(() =>
@@ -673,11 +674,15 @@ function colLetterRef(c: number): string {
           </table>
         </div>
 
-        <!-- 注意 -->
+        <!-- 注意（全件の羅列は確認不能なため、ここは要約のみ。整理表示は「⚠ 要確認」タブへ） -->
         <div v-if="graph.warnings.length" class="warn-panel">
-          <h3>注意（{{ (graph.warningTotal ?? graph.warnings.length).toLocaleString() }}件<span v-if="graph.warningTotal && graph.warningTotal > graph.warnings.length">・上位 {{ graph.warnings.length }} 件表示</span>）</h3>
+          <div class="warn-head">
+            <h3>注意（{{ (graph.warningTotal ?? graph.warnings.length).toLocaleString() }}件）</h3>
+            <button class="primary" @click="emit('open-attention')">⚠ 要確認タブでシート別に見る</button>
+          </div>
+          <p class="muted" style="margin:4px 0 8px">手入力混入などの指摘です。全件はシート別・列別に集約した「⚠ 要確認」タブで確認してください。以下は例です。</p>
           <ul>
-            <li v-for="(w, i) in graph.warnings" :key="i">
+            <li v-for="(w, i) in graph.warnings.slice(0, 5)" :key="i">
               <span class="warn-loc">📍 {{ short(w.ref) }}</span> {{ w.message }}
             </li>
           </ul>
@@ -788,4 +793,6 @@ h3 { font-size:14px; margin:20px 0 8px; }
 .warn-panel h3 { margin:0 0 8px; font-size:14px }
 .warn-panel ul { margin:0; padding-left:18px; font-size:13px; line-height:1.7 }
 .warn-loc { font-weight:600; color:#92400e; margin-right:4px; white-space:nowrap }
+.warn-head { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap }
+.warn-head h3 { margin:0 }
 </style>
