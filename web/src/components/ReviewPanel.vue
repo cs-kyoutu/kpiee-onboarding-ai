@@ -123,7 +123,8 @@ onMounted(load)
     <span class="muted">各項目の「📍場所」をクリックすると、ここが開いて該当シート・セルが黄色く表示されます。</span>
   </div>
   <div v-show="showSheet" class="panel sheet-panel">
-    <SheetViewer v-if="preview" ref="sheetViewer" :sheets="preview.sheets" :highlight-ref="highlightRef" />
+    <!-- 検収は構造・数式の確認が目的のため、顧客の実数値は既定で伏せ字にする（トグルで一時表示可） -->
+    <SheetViewer v-if="preview" ref="sheetViewer" :sheets="preview.sheets" :highlight-ref="highlightRef" :mask-values="true" />
     <p v-else class="muted">中間スプレッドシートが未アップロードです</p>
   </div>
 

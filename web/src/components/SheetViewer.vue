@@ -8,10 +8,26 @@ const props = defineProps<{
   sheets: SheetPreview['sheets']
   /** 検収画面から渡されるハイライト対象（例: 集計!B2） */
   highlightRef?: string | null
+  /** 数値を伏せて表示するか（既定値）。検収では構造・数式の確認が目的で、実数値は画面に出さない */
+  maskValues?: boolean
 }>()
 
 const activeSheetIdx = ref(0)
 const selectedCell = ref<{ ref: string; formula?: string; value: string | number | null } | null>(null)
+
+// 数値マスク: ヘッダーや行ラベル（文字列）はそのまま、数値（と数値らしい文字列）だけ「•••」に伏せる。
+// 画面共有や離席時に顧客の実数値が映らないようにする表示上の配慮（トグルで一時表示は可能）。
+const masking = ref(props.maskValues ?? false)
+const looksNumeric = (s: string) => {
+  const t = s.trim().replace(/[,\s¥$%円]/g, '')
+  return t !== '' && /^-?\d+(\.\d+)?$/.test(t)
+}
+const isNumericValue = (v: string | number | null | undefined): boolean =>
+  typeof v === 'number' || (typeof v === 'string' && looksNumeric(v))
+const displayValue = (v: string | number | null | undefined): string | number => {
+  if (v === null || v === undefined) return ''
+  return masking.value && isNumericValue(v) ? '•••' : v
+}
 
 const activeSheet = computed(() => props.sheets[activeSheetIdx.value])
 
@@ -74,12 +90,15 @@ function cellAt(row: SheetPreview['sheets'][0]['rows'][0], col: string) {
         {{ s.name }}
         <span v-if="s.formulaCellCount > 0" class="badge warn">数式 {{ s.formulaCellCount }}</span>
       </button>
+      <button v-if="props.maskValues" class="mask-toggle" :class="{ on: masking }" @click="masking = !masking">
+        {{ masking ? '🙈 数値を伏せ字表示中（クリックで表示）' : '👁 数値を表示中（クリックで伏せる）' }}
+      </button>
     </div>
 
     <div v-if="selectedCell" class="panel" style="padding: 8px 12px; margin-bottom: 8px">
       <strong class="mono">{{ selectedCell.ref }}</strong>:
       <span v-if="selectedCell.formula" class="mono">={{ selectedCell.formula }}</span>
-      <span class="muted"> → {{ selectedCell.value }}</span>
+      <span class="muted"> → {{ displayValue(selectedCell.value) }}</span>
     </div>
 
     <div v-if="activeSheet" class="sheet-viewer">
@@ -98,10 +117,10 @@ function cellAt(row: SheetPreview['sheets'][0]['rows'][0], col: string) {
             </th>
             <td
               v-for="col in columnHeaders" :key="col"
-              :class="{ formula: !!cellAt(row, col)?.formula, highlight: isHighlighted(activeSheet.name, `${col}${row.rowNumber}`) }"
+              :class="{ formula: !!cellAt(row, col)?.formula, highlight: isHighlighted(activeSheet.name, `${col}${row.rowNumber}`), masked: masking && isNumericValue(cellAt(row, col)?.value) }"
               class="mono"
               @click="cellAt(row, col) && (selectedCell = cellAt(row, col)!)"
-            >{{ cellAt(row, col)?.value ?? '' }}</td>
+            >{{ displayValue(cellAt(row, col)?.value) }}</td>
           </tr>
         </tbody>
       </table>
@@ -111,3 +130,12 @@ function cellAt(row: SheetPreview['sheets'][0]['rows'][0], col: string) {
     </div>
   </div>
 </template>
+
+<style scoped>
+.mask-toggle {
+  margin-left: auto; font-size: 12px; padding: 4px 10px;
+  border: 1px solid var(--border-strong); border-radius: 999px; background: #fff; cursor: pointer;
+}
+.mask-toggle.on { background: var(--warn-bg); border-color: var(--warn); color: var(--warn); font-weight: 600 }
+td.masked { color: var(--muted-2); letter-spacing: 1px }
+</style>
