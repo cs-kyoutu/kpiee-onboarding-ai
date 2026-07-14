@@ -19,6 +19,7 @@ onMounted(async () => {
     <router-link to="/" class="brand">KPIEE オンボーディング AI</router-link>
     <nav>
       <router-link to="/">プロジェクト</router-link>
+      <router-link to="/usage">使用量</router-link>
       <router-link to="/admin">管理</router-link>
     </nav>
     <span class="ai-mode" :class="{ mock: aiMode === 'mock' }">

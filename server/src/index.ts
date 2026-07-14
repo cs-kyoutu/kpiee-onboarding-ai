@@ -598,22 +598,63 @@ app.get('/api/projects/:id/package', async (req, res) => {
 
 // ---- 管理（SC-08）: トークン使用量・コスト ----
 app.get('/api/admin/usage', async (_req, res) => {
+  // 各行の推定コストを付与するヘルパ（列名は input_tokens / output_tokens / cache_read_tokens に統一）
+  const cost = (r: Record<string, unknown>) => estimateCostUsd({
+    input_tokens: Number(r.input_tokens ?? 0),
+    output_tokens: Number(r.output_tokens ?? 0),
+    cache_read_tokens: Number(r.cache_read_tokens ?? 0),
+  });
+  // pg の SUM/COUNT は bigint=文字列で返るため、数値へ強制変換してから返す（フロントの計算・整形用）
+  const numify = (r: Record<string, unknown>) => ({
+    ...r,
+    input_tokens: Number(r.input_tokens ?? 0),
+    output_tokens: Number(r.output_tokens ?? 0),
+    cache_read_tokens: Number(r.cache_read_tokens ?? 0),
+    request_count: Number(r.request_count ?? 0),
+    estimated_cost_usd: cost(r),
+  });
+  const withCost = (rows: Record<string, unknown>[]) => rows.map(numify);
+
+  // プロジェクト別（customer_name も GROUP BY に含める＝pg でも安全）
   const byProject = await db.prepare(`
     SELECT u.project_id, p.customer_name,
       SUM(u.input_tokens) AS input_tokens, SUM(u.output_tokens) AS output_tokens,
       SUM(u.cache_read_input_tokens) AS cache_read_tokens, COUNT(*) AS request_count
     FROM ai_usage_logs u LEFT JOIN projects p ON p.id = u.project_id
-    GROUP BY u.project_id ORDER BY u.project_id DESC
-  `).all() as Record<string, number>[];
-  const withCost = byProject.map(r => ({
-    ...r,
-    estimated_cost_usd: estimateCostUsd({
-      input_tokens: Number(r.input_tokens),
-      output_tokens: Number(r.output_tokens),
-      cache_read_tokens: Number(r.cache_read_tokens),
-    }),
-  }));
-  res.json({ aiMode: aiAvailable() ? MODEL : 'mock', projects: withCost });
+    GROUP BY u.project_id, p.customer_name ORDER BY u.project_id DESC
+  `).all() as Record<string, unknown>[];
+
+  // 段階（decode/generate/qa/match…）別
+  const byStage = await db.prepare(`
+    SELECT stage, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
+      SUM(cache_read_input_tokens) AS cache_read_tokens, COUNT(*) AS request_count
+    FROM ai_usage_logs GROUP BY stage ORDER BY 2 DESC
+  `).all() as Record<string, unknown>[];
+
+  // 日別トレンド（直近30日）。日付切り出しは方言差を吸収する
+  const dayExpr = db.driver === 'pg' ? "to_char(created_at, 'YYYY-MM-DD')" : "substr(created_at, 1, 10)";
+  const byDay = await db.prepare(`
+    SELECT ${dayExpr} AS day, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
+      SUM(cache_read_input_tokens) AS cache_read_tokens, COUNT(*) AS request_count
+    FROM ai_usage_logs GROUP BY 1 ORDER BY 1 DESC LIMIT 30
+  `).all() as Record<string, unknown>[];
+
+  // 全体合計
+  const totalsRow = await db.prepare(`
+    SELECT SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
+      SUM(cache_read_input_tokens) AS cache_read_tokens, COUNT(*) AS request_count
+    FROM ai_usage_logs
+  `).get() as Record<string, unknown> | undefined;
+  const totals = totalsRow ?? { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, request_count: 0 };
+
+  res.json({
+    aiMode: aiAvailable() ? MODEL : 'mock',
+    model: MODEL,
+    totals: numify(totals),
+    projects: withCost(byProject),
+    byStage: withCost(byStage),
+    byDay: withCost(byDay).reverse(), // 古い→新しいの並びで返す（グラフ描画用）
+  });
 });
 
 // プロジェクトステータスの手動リセット（運用補助: 失敗時の再実行用）
