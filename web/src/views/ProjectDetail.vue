@@ -113,7 +113,7 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
   <div v-if="project">
     <div style="display: flex; justify-content: space-between; align-items: center">
       <h1>{{ project.customer_name }} <span class="muted">#{{ project.id }}</span></h1>
-      <button @click="downloadPackage">📦 パッケージ出力（5点セット）</button>
+      <button @click="downloadPackage">📦 パッケージ出力（AI可視化ガイド同梱）</button>
     </div>
     <p class="muted">{{ project.description }}</p>
 

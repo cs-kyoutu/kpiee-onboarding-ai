@@ -618,13 +618,16 @@ app.post('/api/projects/:id/chat', async (req, res) => {
   }
 });
 
-// ---- パッケージ出力（UC-08）: 5点セットの zip ダウンロード ----
+// ---- パッケージ出力（UC-08）: 成果物一式の zip ダウンロード ----
+// 先頭に AI 用の案内ファイル（00_）を同梱する。zip ごと AI アシスタント（Claude 等）へ添付すると、
+// データフロー図（Mermaid）と平易な説明に自動で整理される、を狙った「貼るだけ」導線。
 app.get('/api/projects/:id/package', async (req, res) => {
+  const projectId = Number(req.params.id);
   const latest = await db.prepare(`SELECT COALESCE(MAX(version), 0) AS v FROM deliverables WHERE project_id = ?`)
-    .get(req.params.id) as { v: number };
+    .get(projectId) as { v: number };
   if (latest.v === 0) return res.status(404).json({ error: '成果物がまだ生成されていません' });
   const items = await db.prepare(`SELECT kind, content FROM deliverables WHERE project_id = ? AND version = ?`)
-    .all(req.params.id, latest.v) as { kind: string; content: string }[];
+    .all(projectId, latest.v) as { kind: string; content: string }[];
 
   const fileNames: Record<string, string> = {
     decode_report: '01_解読リポート.md',
@@ -635,9 +638,64 @@ app.get('/api/projects/:id/package', async (req, res) => {
     report_config_json: '05_レポート設定_api.json',
   };
 
+  // AI 用案内ファイルの材料（顧客名・資料・解読件数・要確認件数）
+  const project = await db.prepare(`SELECT customer_name FROM projects WHERE id = ?`).get(projectId) as { customer_name: string } | undefined;
+  const artifacts = await db.prepare(`SELECT original_filename FROM artifacts WHERE project_id = ? AND parse_status = 'done'`)
+    .all(projectId) as { original_filename: string }[];
+  const findingStats = await db.prepare(
+    `SELECT COUNT(*) AS total,
+       SUM(CASE WHEN kpiee_target = 'needs_customer_confirmation' THEN 1 ELSE 0 END) AS needs_confirm
+     FROM findings WHERE project_id = ?`,
+  ).get(projectId) as { total: number; needs_confirm: number } | undefined;
+
+  const readme = [
+    `# KPIEE オンボーディング成果物パッケージ — ${project?.customer_name ?? ''}（v${latest.v}）`,
+    '',
+    '> **使い方**: この zip の中身（このファイルを含む全ファイル）を AI アシスタント（Claude など）に添付し、',
+    '> このファイルの下部「AI への依頼文」をそのまま貼り付けてください。',
+    '> データフロー図と平易な説明に自動で整理されます。',
+    '',
+    '## 同梱ファイル',
+    '| ファイル | 内容 | 主な読者 |',
+    '|---|---|---|',
+    '| 01_解読リポート.md | 顧客シートの数式ロジックを AI が解読した根拠つきレポート | 検収担当 |',
+    '| 02_マッピング表.md | 元シートの各ロジック → KPIEE 機能 → **最終成果物での反映先** の対応表 | 全員（トレーサビリティの中心） |',
+    '| 03_sql_job.sql | KPIEE データコネクタの SQL ジョブ（Snowflake 方言）。元データを集計データへ変換 | エンジニア |',
+    '| 04_master.csv | レポート軸マスタ（分類表）。SQL が結合して使う | エンジニア |',
+    '| 05_レポート設定表.md | 集計データを最終帳票の形に配置するレポート設定（人が読む表） | 全員 |',
+    '| 05_レポート設定_api.json | 同上の API 投入用 JSON | エンジニア |',
+    '',
+    '## このプロジェクトについて',
+    `- 顧客: ${project?.customer_name ?? '—'}`,
+    `- 取り込んだ資料: ${artifacts.length} ファイル（${artifacts.map(a => a.original_filename).join(' / ') || '—'}）`,
+    `- 解読項目: ${findingStats?.total ?? 0} 件（うち顧客確認待ち ${findingStats?.needs_confirm ?? 0} 件）`,
+    '',
+    '---',
+    '',
+    '## AI への依頼文（ここから下をそのまま AI に貼り付け）',
+    '',
+    'あなたはデータ移行内容の説明役です。添付の KPIEE オンボーディング成果物パッケージ',
+    '（01_解読リポート / 02_マッピング表 / 03_sql_job.sql / 04_master.csv / 05_レポート設定表）を読み、',
+    '非エンジニアの関係者が一目で理解できる形で、日本語で以下を出力してください。',
+    '',
+    '1. **データフロー図**（Mermaid の flowchart コードブロック）:',
+    '   元データ（シート） → SQL ジョブの主要な変換（CTE/結合/判定） → 集計データ →',
+    '   レポートの軸・指標 → 最終帳票、の流れを1枚で。02_マッピング表の',
+    '   「シート要素（元の場所）」と「→ 最終成果物での反映先」を対応させること。',
+    '2. **成果物の平易な説明**: 各ファイルが何で、KPIEE のどこに投入されるかを表で。',
+    '3. **元シート → 最終成果物の対応要約**: 重要なロジック 10 件程度を',
+    '   「元の場所 → 何をしている → 最終的にどこへ」の3列表で。',
+    '4. **人が確認すべき点**: 手入力の疑い・顧客確認待ち・検証 NG など、02 と 01 から拾って一覧に。',
+    '',
+    '図は必ず Mermaid コードブロックで出力し、専門用語（VLOOKUP・GROUP BY 等）は避けて',
+    '業務の言葉で説明してください。',
+    '',
+  ].join('\n');
+
   res.attachment(`kpiee-onboarding-package-v${latest.v}.zip`);
   const archive = new ZipArchive();
   archive.pipe(res);
+  archive.append(readme, { name: '00_はじめに_AIで可視化.md' });
   for (const item of items) {
     archive.append(item.content, { name: fileNames[item.kind] ?? `${item.kind}.txt` });
   }

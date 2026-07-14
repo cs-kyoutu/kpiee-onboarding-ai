@@ -68,7 +68,11 @@ export function generateInstruction(assetNames: string[]): string {
 1. sql: SQLジョブ用 SQL（制約に従うこと。テーブル名は登録済みデータファイル名のみ）
    - 重要: 最終帳票の表構造を直接再現する集計クエリにすること（行=帳票の行ラベル、列=帳票の列）
 2. master_csv: 軸マスタ CSV（必要な場合。不要なら空文字列）
-3. report_config: レポート設定の中間表現 JSON`;
+3. report_config: レポート設定の中間表現 JSON
+4. finding_outputs: 承認済み解読項目「全件」について、その項目が最終成果物のどこに反映されたかを
+   finding_id（findings JSON の id）と対応付けて出すこと。反映先は人が追跡できる具体名で書く
+   （例: SQL列「PL_BS判定」（hierarchy CTE） / レポート指標「取込金額」 / Y軸計算行「売上総利益」 /
+   マスタCSV（勘定科目） / 反映不要（表示用のため））。1件も漏らさないこと`;
 }
 
 /** P3 検証 NG 時の再生成指示 */

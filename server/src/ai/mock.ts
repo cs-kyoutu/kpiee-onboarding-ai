@@ -181,6 +181,8 @@ export function mockGenerate(
       metrics: numericCols.map(c => ({ name: c, source_column: c, aggregation: 'sum' })),
       value_filters: [],
     },
+    // モックは findings と紐付かないため空。マッピング表の該当列は「—」表示になる
+    finding_outputs: [],
   };
 }
 

@@ -322,7 +322,7 @@ export async function runGenerate(projectId: number): Promise<{ runId: number; v
     const version = prev.v + 1;
 
     const decodeReport = await buildDecodeReport(projectId, approved);
-    const mappingTable = buildMappingTable(approved);
+    const mappingTable = buildMappingTable(approved, generation.finding_outputs);
     const configTable = buildConfigTable(generation.report_config);
 
     const validationStatus = validationOk ? 'passed' : 'failed';
@@ -405,13 +405,15 @@ async function buildDecodeReport(projectId: number, findings: Finding[]): Promis
 }
 
 /** マッピング表（Markdown テーブル）を組み立てる */
-function buildMappingTable(findings: Finding[]): string {
+function buildMappingTable(findings: Finding[], findingOutputs?: { finding_id: number; output: string }[]): string {
+  // 「この項目が最終成果物のどこになったか」を人が追跡できるように、生成結果の finding_outputs を対応付ける
+  const outputOf = new Map((findingOutputs ?? []).map(o => [o.finding_id, o.output]));
   const lines = [
-    '| # | シート要素 | 数式 | ロジック種別 | KPIEE 機能 | 説明 |',
-    '|---|---|---|---|---|---|',
+    '| # | シート要素（元の場所） | 数式 | ロジック種別 | KPIEE 機能 | → 最終成果物での反映先 | 説明 |',
+    '|---|---|---|---|---|---|---|',
   ];
   for (const f of findings) {
-    lines.push(`| ${f.id} | ${f.source_ref} | ${f.formula_raw ?? ''} | ${f.logic_type} | ${f.kpiee_target} | ${f.explanation.replace(/\|/g, '\\|')} |`);
+    lines.push(`| ${f.id} | ${f.source_ref} | ${f.formula_raw ?? ''} | ${f.logic_type} | ${f.kpiee_target} | ${(outputOf.get(Number(f.id)) ?? '—').replace(/\|/g, '\\|')} | ${f.explanation.replace(/\|/g, '\\|')} |`);
   }
   return lines.join('\n');
 }

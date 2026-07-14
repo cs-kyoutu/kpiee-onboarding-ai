@@ -180,8 +180,24 @@ export const GENERATION_SCHEMA = {
       required: ['report_name', 'x_axis', 'y_axis', 'metrics', 'value_filters'],
       additionalProperties: false,
     },
+    finding_outputs: {
+      type: 'array',
+      description: '承認済み解読項目（findings）それぞれが最終成果物のどこに反映されたかの対応表。全項目分を必ず出す',
+      items: {
+        type: 'object',
+        properties: {
+          finding_id: { type: 'integer', description: '解読項目の id（findings JSON の id）' },
+          output: {
+            type: 'string',
+            description: '反映先を具体的に。例: SQL列「PL_BS判定」（hierarchy CTE） / レポート指標「取込金額」 / Y軸計算行「売上総利益」 / マスタCSV（勘定科目） / 反映不要（表示用のため） / 顧客確認待ちのため未反映',
+          },
+        },
+        required: ['finding_id', 'output'],
+        additionalProperties: false,
+      },
+    },
   },
-  required: ['sql', 'sql_explanation', 'master_csv', 'report_config'],
+  required: ['sql', 'sql_explanation', 'master_csv', 'report_config', 'finding_outputs'],
   additionalProperties: false,
 } as const;
 
@@ -198,6 +214,8 @@ export interface GenerationResult {
   sql_explanation: string;
   master_csv: string;
   report_config: ReportConfig;
+  /** 各解読項目 → 最終成果物のどこに反映されたか（トレーサビリティ。マッピング表の「→ 最終成果物」列になる） */
+  finding_outputs: { finding_id: number; output: string }[];
 }
 
 /** P4 照合: 不一致原因分類のスキーマ */
