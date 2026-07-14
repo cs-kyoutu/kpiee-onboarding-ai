@@ -22,9 +22,12 @@ export interface ShapeCaps {
 const DEFAULT_CAPS: ShapeCaps = { headerRows: 3, sampleRows: 5, patterns: 60, patternCells: 40, rowCells: 80, formulaLen: 400 };
 // 最小（これ以上は縮めない）
 const MIN_CAPS: ShapeCaps = { headerRows: 1, sampleRows: 1, patterns: 8, patternCells: 8, rowCells: 24, formulaLen: 120 };
-// 予算（文字数）。指示文・承認findings・出力余地を残して 1M トークン未満に収める目安。
-// 日本語比率が高いと文字/token 比が下がるため保守的に設定（最悪 ≒2.5文字/token でも ~800k tokens）。
-const TARGET_CHARS = 2_000_000;
+// 予算（文字数）。合計固定ではなく「1ファイルあたり予算 × ファイル数」を上限とし、総量キャップで頭打ちにする。
+// 合計固定だとファイル数が増えるほど1ファイルあたりが薄くなる（例: 5ファイルで合計20万は1ファイル≒4万相当）。
+// ファイル数比例にすれば、ファイルが増えても各ファイルの詳細さを一定に保てる。
+// 日本語比率が高いと文字/token 比が下がる（最悪 ≒2.5文字/token）。下記は概算トークンをコメント併記。
+const PER_FILE_CHARS = 120_000;   // ≒ 48k tokens/ファイル（各ファイルが保つ詳細さ）
+const MAX_TOTAL_CHARS = 600_000;  // ≒ 240k tokens。多数ファイル時の総量キャップ（コスト暴走防止）
 const MAX_SHRINK_ATTEMPTS = 8;
 
 export interface FormulaPattern {
@@ -132,11 +135,13 @@ export interface ShapeInput { parsed: ParsedArtifact; roles: Record<string, stri
  * プロジェクト内の全アーティファクトを、合計が予算内に収まるよう適応的に整形する。
  * 既定の詳細さで一度整形し、超過していれば上限を段階的に縮めて再整形（シート毎の手調整不要）。
  */
-export function shapeArtifactsToBudget(items: ShapeInput[], budget: number = TARGET_CHARS): ShapedArtifact[] {
+export function shapeArtifactsToBudget(items: ShapeInput[], budget?: number): ShapedArtifact[] {
+  // 予算は「1ファイルあたり × ファイル数」を総量キャップで頭打ちにする（明示指定があればそれを優先）。
+  const effectiveBudget = budget ?? Math.min(PER_FILE_CHARS * Math.max(1, items.length), MAX_TOTAL_CHARS);
   let caps = DEFAULT_CAPS;
   let shaped = items.map(i => shapeArtifact(i.parsed, i.roles, i.kind, i.filename, caps));
   for (let attempt = 0; attempt < MAX_SHRINK_ATTEMPTS; attempt++) {
-    if (JSON.stringify(shaped).length <= budget || capsAtMin(caps)) break;
+    if (JSON.stringify(shaped).length <= effectiveBudget || capsAtMin(caps)) break;
     caps = shrink(caps);
     shaped = items.map(i => shapeArtifact(i.parsed, i.roles, i.kind, i.filename, caps));
   }
