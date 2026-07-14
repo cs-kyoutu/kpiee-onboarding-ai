@@ -281,16 +281,23 @@ export async function runGenerate(projectId: number): Promise<{ runId: number; v
     let lastErrors: string[] = [];
     let totalTokens = { input: 0, output: 0 };
 
+    // 試行間で不変の固定プロンプト（指示＋承認済み findings＋原本構造＋スクリプト）は一度だけ組み立てる。
+    // callStructured の cachePrefix でこれをキャッシュ対象にし、再生成のエラー指摘だけを suffix で可変にする。
+    // これで巨大な <artifacts> ブロックを再試行のたびに再課金せず cache_read（~0.1x）で読める（②コスト削減）。
+    const stablePrompt = aiAvailable()
+      ? `${generateInstruction(assetNames)}\n\n<approved_findings>\n${JSON.stringify(approved)}\n</approved_findings>\n\n<artifacts>\n${JSON.stringify(
+          shapeArtifactsToBudget(collections.artifacts.map(a =>
+            ({ parsed: a.parsed, roles: a.roles, kind: a.row.kind, filename: a.row.original_filename }))),
+        )}\n</artifacts>${await scriptsBlock(projectId)}`
+      : '';
+
     // P3 検証 NG → エラーをコンテキストへ追加して P2 を再実行（最大 MAX_REGENERATION 回）
     for (let attempt = 1; attempt <= MAX_REGENERATION; attempt++) {
       if (aiAvailable()) {
-        const payload = shapeArtifactsToBudget(collections.artifacts.map(a =>
-          ({ parsed: a.parsed, roles: a.roles, kind: a.row.kind, filename: a.row.original_filename })));
-        const feedback = lastErrors.length > 0 ? `\n\n${regenerateInstruction(lastErrors)}` : '';
         const result = await callStructured<GenerationResult>(
-          projectId, 'generate',
-          `${generateInstruction(assetNames)}\n\n<approved_findings>\n${JSON.stringify(approved)}\n</approved_findings>\n\n<artifacts>\n${JSON.stringify(payload)}\n</artifacts>${await scriptsBlock(projectId)}${feedback}`,
+          projectId, 'generate', stablePrompt,
           GENERATION_SCHEMA as unknown as Record<string, unknown>,
+          { cachePrefix: true, suffix: lastErrors.length > 0 ? `\n\n${regenerateInstruction(lastErrors)}` : undefined },
         );
         generation = result.data;
         totalTokens.input += result.inputTokens;

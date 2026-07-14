@@ -58,8 +58,19 @@ export async function callStructured<T>(
   stage: string,
   userContent: string,
   schema: Record<string, unknown>,
+  // cachePrefix=true のとき userContent を「試行間で不変のキャッシュ対象ブロック」として扱い、
+  // 変化する部分（再生成のエラー指摘など）は suffix に分離する。これで再試行は userContent 分を
+  // cache_read（~0.1x）で読めるため、巨大な原本ブロックの再課金を避けられる。
+  opts?: { cachePrefix?: boolean; suffix?: string },
 ): Promise<StructuredCallResult<T>> {
   if (!client) throw new Error('ANTHROPIC_API_KEY が未設定です（モックモードを使用してください）');
+
+  const userMessage: Anthropic.MessageParam['content'] = opts?.cachePrefix
+    ? [
+        { type: 'text', text: userContent, cache_control: { type: 'ephemeral' } },
+        ...(opts.suffix ? [{ type: 'text' as const, text: opts.suffix }] : []),
+      ]
+    : userContent;
 
   // 長時間処理になり得るためストリーミングで呼び出し、finalMessage で完全な応答を得る
   const stream = client.messages.stream({
@@ -78,7 +89,7 @@ export async function callStructured<T>(
         cache_control: { type: 'ephemeral' },
       },
     ],
-    messages: [{ role: 'user', content: userContent }],
+    messages: [{ role: 'user', content: userMessage }],
   });
 
   const message = await stream.finalMessage();
