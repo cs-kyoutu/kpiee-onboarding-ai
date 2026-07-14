@@ -2,7 +2,7 @@
 // AI Q&A パネル。解読済みシートに対する自由質問へ、セル単位の根拠付きで答える。
 // AI はバックエンドのドリルダウン道具（get_cell / trace_formula 等）を呼んで実データを参照するため、
 // 「AS250 はどう作られている？」のような出所追跡にもセル根拠付きで回答できる。
-import { nextTick, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { getChat, askChat, type ChatMessage } from '../api'
 
 const props = defineProps<{ projectId: number }>()
@@ -12,6 +12,7 @@ const question = ref('')
 const sending = ref(false)
 const error = ref('')
 const log = ref<HTMLElement | null>(null)
+let pollTimer: ReturnType<typeof setInterval> | null = null
 
 // ツール名 → 表示ラベル（辿った根拠を人にわかる言葉で示す）
 const TOOL_LABELS: Record<string, string> = {
@@ -52,9 +53,29 @@ async function scrollToEnd() {
   if (log.value) log.value.scrollTop = log.value.scrollHeight
 }
 
-async function load() {
-  messages.value = await getChat(props.projectId)
+async function load(): Promise<boolean> {
+  const state = await getChat(props.projectId)
+  messages.value = state.messages
   await scrollToEnd()
+  return state.pending
+}
+
+// 回答は非同期で生成されるため、pending が false になる（=assistant メッセージが追記される）まで
+// 数秒間隔でポーリングする。同期 POST 待ちにしない（ALB の 60 秒タイムアウトで
+// 「Request timed out」になっていた問題への対処）。
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+  sending.value = false
+}
+function startPolling() {
+  if (pollTimer) return
+  sending.value = true
+  pollTimer = setInterval(async () => {
+    try {
+      const pending = await load()
+      if (!pending) stopPolling()
+    } catch { /* 一時的な取得失敗は次のポーリングで回復する */ }
+  }, 3000)
 }
 
 async function send(text?: string) {
@@ -67,16 +88,22 @@ async function send(text?: string) {
   sending.value = true
   await scrollToEnd()
   try {
-    await askChat(props.projectId, q)
-    await load() // 永続化された確定版（tool_trace 付き）で置き換える
+    const { pending } = await askChat(props.projectId, q)
+    await load()
+    if (pending) startPolling()
+    else sending.value = false
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
-  } finally {
     sending.value = false
   }
 }
 
-onMounted(load)
+onMounted(async () => {
+  // 処理中にリロード/タブ復帰しても続きから拾えるように、初回ロードで pending なら再開する
+  const pending = await load()
+  if (pending) startPolling()
+})
+onBeforeUnmount(stopPolling)
 </script>
 
 <template>
@@ -102,7 +129,7 @@ onMounted(load)
           </details>
         </div>
       </div>
-      <div v-if="sending" class="msg assistant"><div class="bubble"><div class="who">AI</div><div class="content muted">考え中…（セルを参照しています）</div></div></div>
+      <div v-if="sending" class="msg assistant"><div class="bubble"><div class="who">AI</div><div class="content muted">考え中…（セル参照が必要な質問は数分かかることがあります）</div></div></div>
       <div v-if="messages.length === 0 && !sending" class="muted" style="padding: 1rem">
         まだ質問がありません。下の例から試せます。
       </div>

@@ -68,7 +68,7 @@ export function googleDisconnect(): Promise<{ ok: boolean }> {
  * 本番(1プロセス)は同一オリジン、開発は別ポートの API サーバー(:8787)へ直接ナビゲートする。 */
 export function googleAuthUrl(): string {
   const origin = import.meta.env.VITE_API_ORIGIN
-    || (import.meta.env.DEV ? `${window.location.protocol}//${window.location.hostname}:8787` : window.location.origin)
+    || (import.meta.env.DEV ? `${window.location.protocol}//${window.location.hostname}:8788` : window.location.origin)
   return `${origin}/api/google/auth`
 }
 
@@ -256,13 +256,14 @@ export interface ChatMessage {
   tool_trace?: string | null   // AI が辿ったツール呼び出し（[{tool, input}] の JSON）
   created_at: string
 }
-export interface AskResult { answer: string; trace: { tool: string; input: Record<string, unknown> }[] }
+/** Q&A は非同期処理: POST は受付のみ（202）、回答は GET のポーリングで届く（ALB タイムアウト対策） */
+export interface ChatState { messages: ChatMessage[]; pending: boolean }
 
-export function getChat(projectId: number): Promise<ChatMessage[]> {
-  return get<ChatMessage[]>(`/projects/${projectId}/chat`)
+export function getChat(projectId: number): Promise<ChatState> {
+  return get<ChatState>(`/projects/${projectId}/chat`)
 }
-export function askChat(projectId: number, question: string): Promise<AskResult> {
-  return post<AskResult>(`/projects/${projectId}/chat`, { question })
+export function askChat(projectId: number, question: string): Promise<{ pending: boolean }> {
+  return post<{ pending: boolean }>(`/projects/${projectId}/chat`, { question })
 }
 
 export interface SheetPreview {

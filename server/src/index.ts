@@ -17,7 +17,7 @@ import { classifySheetRoles, type SheetClassification } from './preprocess/class
 import { analyzeBuffer, analyzeArtifacts } from './preprocess/relations.js';
 import { artifactSetSignature, getCachedRelationGraph, setCachedRelationGraph, invalidateRelationGraph } from './relationsCache.js';
 import { runDecode, runGenerate, runMatch, tableNameOf } from './pipeline/orchestrator.js';
-import { ask as qaAsk, getHistory as qaHistory } from './qa/agent.js';
+import { startAsk as qaStartAsk, isAskPending as qaIsPending, getHistory as qaHistory } from './qa/agent.js';
 import { invalidateBooks } from './qa/tools.js';
 import { aiAvailable, MODEL, estimateCostUsd } from './ai/client.js';
 import {
@@ -603,18 +603,21 @@ app.get('/api/projects/:id/questions/export', async (req, res) => {
 });
 
 // ---- 対話Q&A（解読済みシートへの自由質問。セル単位の根拠付き回答）----
+// 回答生成は数分かかることがあるため非同期: POST は即 202 を返し、フロントは GET をポーリングして
+// assistant メッセージの追記（=回答完了）と pending フラグで状態を検知する（ALB 60秒タイムアウト対策）。
 app.get('/api/projects/:id/chat', async (req, res) => {
-  res.json(await qaHistory(Number(req.params.id)));
+  const projectId = Number(req.params.id);
+  res.json({ messages: await qaHistory(projectId), pending: qaIsPending(projectId) });
 });
 
 app.post('/api/projects/:id/chat', async (req, res) => {
   const { question } = req.body as { question?: string };
   if (!question?.trim()) return res.status(400).json({ error: 'question は必須です' });
   try {
-    const result = await qaAsk(Number(req.params.id), question.trim());
-    res.json(result);
+    const result = await qaStartAsk(Number(req.params.id), question.trim());
+    res.status(202).json(result);
   } catch (e) {
-    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+    res.status(409).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });
 
