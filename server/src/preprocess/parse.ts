@@ -67,8 +67,11 @@ function normalizeValue(v: ExcelJS.CellValue): string | number | null {
   if (typeof v === 'boolean') return v ? 1 : 0;
   if (v instanceof Date) return isNaN(v.getTime()) ? null : v.toISOString().slice(0, 10);
   if (typeof v === 'object') {
-    // 数式セル: result を値として使う
+    // 数式セル: result を値として使う。result が無い（計算結果キャッシュ未保存の）数式セルは
+    // 値なしとして null にする — String(v) に落とすと "[object Object]" が値になり、
+    // 照合の CREATE TABLE で列名が衝突する（Catalog Error）などの事故になる
     if ('result' in v && v.result !== undefined) return normalizeValue(v.result as ExcelJS.CellValue);
+    if ('formula' in v || 'sharedFormula' in v) return null;
     // リッチテキスト等は文字列へ畳み込む
     if ('richText' in v) return (v.richText as { text: string }[]).map(r => r.text).join('');
     if ('text' in v) return String((v as { text: unknown }).text);

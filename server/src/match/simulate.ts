@@ -40,6 +40,22 @@ function toNumber(v: unknown): number | null {
   return isNaN(n) ? null : n;
 }
 
+/**
+ * ヘッダー名を CREATE TABLE で使える形に正規化する。
+ * 空文字は列位置（col1, col2, …）で補い、重複は「売上_2」式の連番接尾辞で一意化する。
+ * ヘッダーが数式のみ・タイトル行混入・同名列などの実務ファイルでも
+ * 「Column with name X already exists」で照合全体が落ちないようにする防波堤。
+ */
+function uniquifyHeader(names: string[]): string[] {
+  const used = new Map<string, number>();
+  return names.map((raw, i) => {
+    const base = raw.trim() !== '' ? raw.trim() : `col${i + 1}`;
+    const n = used.get(base) ?? 0;
+    used.set(base, n + 1);
+    return n === 0 ? base : `${base}_${n + 1}`;
+  });
+}
+
 /** 解析済みアーティファクトの先頭シートをヘッダー＋データ行列へ変換する */
 function toGrid(parsed: ParsedArtifact): { header: string[]; data: (string | number | null)[][] } {
   const sheet = parsed.sheets[0];
@@ -49,7 +65,7 @@ function toGrid(parsed: ParsedArtifact): { header: string[]; data: (string | num
     for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64);
     return n - 1;
   };
-  const header = (sheet.rows[0]?.cells ?? []).map(c => String(c.value ?? ''));
+  const header = uniquifyHeader((sheet.rows[0]?.cells ?? []).map(c => String(c.value ?? '')));
   const data = sheet.rows.slice(1).map(r => {
     const arr: (string | number | null)[] = new Array(header.length).fill(null);
     for (const c of r.cells) {
