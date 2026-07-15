@@ -31,7 +31,41 @@ export function aiAvailable(): boolean {
   return !!process.env.ANTHROPIC_API_KEY;
 }
 
-const client = aiAvailable() ? new Anthropic() : null;
+// timeout: SDK 既定（10分）だと thinking 付きの長い応答やイベントループ渋滞時に
+// 「Request timed out.」で Q&A が落ちるため 15 分へ延長。maxRetries は SDK の自動再試行
+//（接続エラー・429/5xx、ストリーム開始前のみ）で、開始後の失敗は下の withTransientRetry が拾う。
+const client = aiAvailable() ? new Anthropic({ timeout: 15 * 60 * 1000, maxRetries: 3 }) : null;
+
+/** 一時的な接続・過負荷エラーか（呼び直しで回復が見込めるもの） */
+function isTransientAiError(e: unknown): boolean {
+  if (e instanceof Anthropic.APIConnectionError) return true; // タイムアウト含む
+  if (e instanceof Anthropic.APIError) {
+    const s = Number(e.status ?? 0);
+    return s === 429 || s === 500 || s === 502 || s === 503 || s === 504 || s === 529;
+  }
+  return false;
+}
+
+/**
+ * 一時エラーに限り指数バックオフで呼び直す。
+ * Q&A のツールループ等で 1 ターンだけ落ちた場合に、ループ全体（＝それまでのツール結果）を
+ * 捨てずにそのターンだけやり直すための包み。恒久エラー（400 系・refusal 等）は即座に投げ直す。
+ */
+async function withTransientRetry<T>(label: string, fn: () => Promise<T>, attempts = 3): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (!isTransientAiError(e) || i === attempts) throw e;
+      const waitMs = 2000 * i * i; // 2s → 8s
+      console.warn(`[ai:${label}] 一時エラー（${i}/${attempts}）: ${e instanceof Error ? e.message : String(e)} — ${waitMs}ms 後に再試行`);
+      await new Promise(r => setTimeout(r, waitMs));
+    }
+  }
+  throw lastErr;
+}
 
 // prepare は同期（遅延コンパイル）。実行(.run)は非同期なので呼び出し側で await する。
 const insertUsage = db.prepare(`
@@ -72,27 +106,29 @@ export async function callStructured<T>(
       ]
     : userContent;
 
-  // 長時間処理になり得るためストリーミングで呼び出し、finalMessage で完全な応答を得る
-  const stream = client.messages.stream({
-    model: MODEL,
-    max_tokens: 64000,
-    thinking: { type: 'adaptive' },
-    output_config: {
-      effort: 'high',
-      format: { type: 'json_schema', schema },
-    },
-    system: [
-      {
-        type: 'text',
-        text: KPIEE_CONSTRAINTS,
-        // 固定の制約プロンプトはプロジェクト内の多段呼び出しで再利用されるためキャッシュする
-        cache_control: { type: 'ephemeral' },
+  // 長時間処理になり得るためストリーミングで呼び出し、finalMessage で完全な応答を得る。
+  // タイムアウト・過負荷などの一時エラーはこの呼び出し単位で再試行する（固定部はキャッシュ読取で再課金軽微）
+  const message = await withTransientRetry(stage, async () => {
+    const stream = client.messages.stream({
+      model: MODEL,
+      max_tokens: 64000,
+      thinking: { type: 'adaptive' },
+      output_config: {
+        effort: 'high',
+        format: { type: 'json_schema', schema },
       },
-    ],
-    messages: [{ role: 'user', content: userMessage }],
+      system: [
+        {
+          type: 'text',
+          text: KPIEE_CONSTRAINTS,
+          // 固定の制約プロンプトはプロジェクト内の多段呼び出しで再利用されるためキャッシュする
+          cache_control: { type: 'ephemeral' },
+        },
+      ],
+      messages: [{ role: 'user', content: userMessage }],
+    });
+    return await stream.finalMessage();
   });
-
-  const message = await stream.finalMessage();
 
   await insertUsage.run(
     projectId,
@@ -156,15 +192,19 @@ export async function callWithTools(
   let inTok = 0, outTok = 0;
 
   for (let turn = 0; turn < maxTurns; turn++) {
-    const stream = client.messages.stream({
-      model: MODEL,
-      max_tokens: 16000,
-      thinking: { type: 'adaptive' },
-      system: [{ type: 'text', text: systemText, cache_control: { type: 'ephemeral' } }],
-      tools: tools as unknown as Anthropic.Tool[],
-      messages,
+    // 1 ターン単位で一時エラーを再試行する。ここで丸ごと投げ直すと、それまでのツール参照結果ごと
+    // 会話が失われ「Request timed out.」がユーザーに露出していた（2026-07-15 の Q&A 頻発エラー）。
+    const msg = await withTransientRetry('qa', async () => {
+      const stream = client.messages.stream({
+        model: MODEL,
+        max_tokens: 16000,
+        thinking: { type: 'adaptive' },
+        system: [{ type: 'text', text: systemText, cache_control: { type: 'ephemeral' } }],
+        tools: tools as unknown as Anthropic.Tool[],
+        messages,
+      });
+      return await stream.finalMessage();
     });
-    const msg = await stream.finalMessage();
     inTok += msg.usage.input_tokens; outTok += msg.usage.output_tokens;
     await insertUsage.run(projectId, 'qa', MODEL, msg.usage.input_tokens, msg.usage.output_tokens,
       msg.usage.cache_read_input_tokens ?? 0, msg.usage.cache_creation_input_tokens ?? 0);

@@ -388,7 +388,22 @@ function capGraphForResponse(g: CapGraph): CapGraph {
 // 関係グラフは「完成した派生結果物」（原本の数値を含まず、数式テキスト・構造のみ）なので DB に保存し、
 // アーティファクト集合が変わらない限り再計算せず即返す（findings 等と同じ保存許容等級）。原本そのもの
 // （raw バイト・全構造化 JSON）は保存しない方針（C3/C5）は不変で、キャッシュミス時のみ Drive から取り直す。
+// 進行中の再計算（プロジェクト単位）。関係グラフの再計算は CPU 重量級で、複数タブ・複数人が
+// 関係図/要確認を同時に開くと同じ計算が並走してイベントループを長時間塞ぎ、ヘルスチェック失敗
+// →タスク再起動→また再計算… の悪循環になる（2026-07-15 の全体遅延の原因）。
+// single-flight: 同じプロジェクトの再計算は 1 本だけ走らせ、後続リクエストはその完了を待って相乗りする。
+const relationGraphInflight = new Map<number, Promise<{ graph: Awaited<ReturnType<typeof analyzeArtifacts>>; fileCount: number } | null>>();
+
 async function loadProjectRelationGraph(projectId: number): Promise<{ graph: Awaited<ReturnType<typeof analyzeArtifacts>>; fileCount: number } | null> {
+  const inflight = relationGraphInflight.get(projectId);
+  if (inflight) return inflight;
+  const p = loadProjectRelationGraphUncached(projectId)
+    .finally(() => relationGraphInflight.delete(projectId));
+  relationGraphInflight.set(projectId, p);
+  return p;
+}
+
+async function loadProjectRelationGraphUncached(projectId: number): Promise<{ graph: Awaited<ReturnType<typeof analyzeArtifacts>>; fileCount: number } | null> {
   const rows = await db.prepare(
     `SELECT id, storage_key, original_filename FROM artifacts WHERE project_id = ? AND parse_status = 'done' AND storage_key IS NOT NULL`,
   ).all(projectId) as { id: number; storage_key: string; original_filename: string }[];

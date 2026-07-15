@@ -171,14 +171,35 @@ onBeforeUnmount(stopPolling)
 .msg.assistant { justify-content: flex-start; }
 .bubble {
   max-width: 80%;
-  padding: 0.5rem 0.75rem;
-  border-radius: 10px;
+  padding: 10px 14px;
+  border-radius: 12px;
   background: #fff;
-  border: 1px solid #e2e2e2;
+  border: 1px solid var(--border);
+  box-shadow: var(--sh-sm);
 }
-.msg.user .bubble { background: #e8f0fe; border-color: #c6dafc; }
-.who { font-size: 0.7rem; color: #888; margin-bottom: 0.2rem; }
-.content { white-space: pre-wrap; line-height: 1.5; }
+.msg.user .bubble { background: var(--primary-soft); border-color: #c6dafc; }
+.who { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; color: var(--muted-2); margin-bottom: 4px; }
+/* 本文: アプリ全体（13〜14px）と揃え、和文向けに行間・字間をゆったり取る */
+.content {
+  white-space: pre-wrap;
+  font-size: 14px;
+  line-height: 1.85;
+  letter-spacing: 0.015em;
+  font-feature-settings: "palt";
+  color: var(--text);
+}
+/* renderMd が生成するインライン装飾。code が既定の Courier のまま混ざると悪目立ちするため統一 */
+.content :deep(code) {
+  font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin: 0 1px;
+}
+.msg.user .content :deep(code) { background: #dbe7fd; border-color: #c6dafc; }
+.content :deep(strong) { font-weight: 700; color: #111827; }
 .trace { margin-top: 0.4rem; font-size: 0.8rem; }
 .trace summary { cursor: pointer; color: #666; }
 .trace ul { margin: 0.3rem 0 0; padding-left: 1rem; }
