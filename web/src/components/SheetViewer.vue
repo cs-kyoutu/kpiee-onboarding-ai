@@ -29,6 +29,16 @@ const displayValue = (v: string | number | null | undefined): string | number =>
   return masking.value && isNumericValue(v) ? '•••' : v
 }
 
+// 数式セル（黄色ハイライト）の数値結果は常に伏せて「数値」とだけ表示する。
+// 数式の確認に実数値は不要で、取込直後のプレビューでも顧客の実数値を画面に出さないため（トグルでも表示しない）。
+const isFormulaNumeric = (cell?: { formula?: string; value: string | number | null }): boolean =>
+  !!cell?.formula && isNumericValue(cell.value)
+const displayCell = (cell?: { formula?: string; value: string | number | null }): string | number => {
+  if (!cell) return ''
+  if (isFormulaNumeric(cell)) return '数値'
+  return displayValue(cell.value)
+}
+
 const activeSheet = computed(() => props.sheets[activeSheetIdx.value])
 
 /** ハイライト対象の参照がアクティブシートのセルと一致するか（行範囲圧縮分はプレフィックス一致で吸収） */
@@ -98,7 +108,7 @@ function cellAt(row: SheetPreview['sheets'][0]['rows'][0], col: string) {
     <div v-if="selectedCell" class="panel" style="padding: 8px 12px; margin-bottom: 8px">
       <strong class="mono">{{ selectedCell.ref }}</strong>:
       <span v-if="selectedCell.formula" class="mono">={{ selectedCell.formula }}</span>
-      <span class="muted"> → {{ displayValue(selectedCell.value) }}</span>
+      <span class="muted"> → {{ displayCell(selectedCell) }}</span>
     </div>
 
     <div v-if="activeSheet" class="sheet-viewer">
@@ -117,10 +127,10 @@ function cellAt(row: SheetPreview['sheets'][0]['rows'][0], col: string) {
             </th>
             <td
               v-for="col in columnHeaders" :key="col"
-              :class="{ formula: !!cellAt(row, col)?.formula, highlight: isHighlighted(activeSheet.name, `${col}${row.rowNumber}`), masked: masking && isNumericValue(cellAt(row, col)?.value) }"
+              :class="{ formula: !!cellAt(row, col)?.formula, highlight: isHighlighted(activeSheet.name, `${col}${row.rowNumber}`), masked: masking && isNumericValue(cellAt(row, col)?.value), 'num-label': isFormulaNumeric(cellAt(row, col)) }"
               class="mono"
               @click="cellAt(row, col) && (selectedCell = cellAt(row, col)!)"
-            >{{ displayValue(cellAt(row, col)?.value) }}</td>
+            >{{ displayCell(cellAt(row, col)) }}</td>
           </tr>
         </tbody>
       </table>
@@ -138,4 +148,5 @@ function cellAt(row: SheetPreview['sheets'][0]['rows'][0], col: string) {
 }
 .mask-toggle.on { background: var(--warn-bg); border-color: var(--warn); color: var(--warn); font-weight: 600 }
 td.masked { color: var(--muted-2); letter-spacing: 1px }
+td.num-label { color: var(--warn); font-size: 11px; font-weight: 600 }
 </style>
