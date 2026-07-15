@@ -93,8 +93,14 @@ app.delete('/api/projects/:id', async (req, res) => {
   const projectId = Number(req.params.id);
   const project = await db.prepare(`SELECT id FROM projects WHERE id = ?`).get(projectId);
   if (!project) return res.status(404).json({ error: 'project not found' });
-  // 外部キー制約のため子テーブルから順に削除する
+  // 外部キー制約のため子テーブルから順に削除する。
+  // projects を参照する表を1つでも漏らすと pg では FK 違反で全体ロールバックし
+  // 「削除ボタンが効かない」症状になる（chat_messages 等の追加漏れで実際に発生）。
+  // 新しい project_id 参照表を足したら必ずここにも追加すること。
   await db.tx(async t => {
+    await t.prepare(`DELETE FROM chat_messages WHERE project_id = ?`).run(projectId);
+    await t.prepare(`DELETE FROM project_overviews WHERE project_id = ?`).run(projectId);
+    await t.prepare(`DELETE FROM relation_graphs WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM ai_usage_logs WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM customer_questions WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM findings WHERE project_id = ?`).run(projectId);

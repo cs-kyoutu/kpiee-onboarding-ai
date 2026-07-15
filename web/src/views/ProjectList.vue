@@ -60,9 +60,11 @@ onMounted(load)
     <button class="primary" @click="showForm = !showForm">＋ 新規プロジェクト</button>
   </div>
 
+  <!-- 削除失敗などフォーム外の操作エラーもここで見えるように、フォームの外に置く -->
+  <p v-if="error" class="error-box">{{ error }}</p>
+
   <div v-if="showForm" class="panel">
     <h2>プロジェクト作成（UC-01）</h2>
-    <p v-if="error" class="error-box">{{ error }}</p>
     <div style="display: grid; gap: 8px; max-width: 480px">
       <label>顧客名 <input v-model="customerName" type="text" placeholder="例: 株式会社サンプル" /></label>
       <label>概要 <textarea v-model="description" rows="2" placeholder="例: 月次予実管理帳票の移行" /></label>
