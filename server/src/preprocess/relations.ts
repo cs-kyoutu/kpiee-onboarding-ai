@@ -105,7 +105,7 @@ function looksNumeric(s: string): boolean {
 // ============================================================
 // (1) 表領域(region)検出
 // ============================================================
-export interface RegionColumn { c: number; name: string; hasFormula: boolean; mixedFormula: boolean }
+export interface RegionColumn { c: number; name: string; hasFormula: boolean; mixedFormula: boolean; manualNumeric: number }
 export interface Region {
   id: string; file: string; sheet: string;
   r0: number; r1: number; c0: number; c1: number;
@@ -194,9 +194,13 @@ export function detectRegions(g: RawGrid): Region[] {
         const name = headerCell && typeof headerCell.value === 'string' ? headerCell.value : `${colLetter(c)}列`;
         const withF = body.filter(x => x.formula).length;
         const hasFormula = withF > 0;
-        // 数式列なのに一部セルだけ数式なし=手入力上書き疑い（S4）
-        const mixedFormula = withF > 0 && withF < body.length && body.length >= 3;
-        columns.push({ c, name, hasFormula, mixedFormula });
+        // 手入力上書き疑い（S4）: 数式が主体の列に「数式なしの数値セル」が混じる場合だけ。
+        // 見出し・小計ラベル・注記などの文字列セルは数式を持たないのが当然でノイズになるため数えない。
+        // 逆に手入力列の末尾に合計数式が1つだけある形（数式が少数派）は「入力列」であって上書きではないので除外。
+        const manualNumeric = body.filter(x => !x.formula &&
+          (typeof x.value === 'number' || (typeof x.value === 'string' && looksNumeric(x.value)))).length;
+        const mixedFormula = withF >= 3 && manualNumeric > 0 && withF > manualNumeric;
+        columns.push({ c, name, hasFormula, mixedFormula, manualNumeric });
       }
 
       const rowsSet = new Set<number>();
@@ -651,7 +655,7 @@ function assembleGraph(regions: Region[], fEdges: Edge[], copyEdges: Edge[]): Re
         warnings.push({
           kind: 'mixed_formula_column',
           ref: `${reg.id}:${col.name}`,
-          message: `列「${col.name}」は数式列だが一部セルが手入力で上書きされている可能性（特別値引き等の例外処理疑い）`,
+          message: `列「${col.name}」は数式列だが ${col.manualNumeric} セルが数式なしの数値（手入力上書きの可能性、特別値引き等の例外処理疑い）`,
         });
       }
     }

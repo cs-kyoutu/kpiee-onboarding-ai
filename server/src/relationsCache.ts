@@ -11,8 +11,12 @@ import type { RelationGraph } from './preprocess/relations.js';
 
 export interface CacheableArtifact { id: number; storage_key: string; original_filename: string }
 
+/** 解析ロジックの版。relations.ts の判定（警告・辺・領域）を変えたら +1 して旧キャッシュを自然失効させる */
+const ANALYZER_VERSION = 2;
+
 /**
- * アーティファクト集合の署名。追加・削除・再取込（storage_key 変化）を検知する。
+ * アーティファクト集合の署名。追加・削除・再取込（storage_key 変化）に加え、
+ * 解析ロジックの版（ANALYZER_VERSION）も含めるため、判定変更後は旧キャッシュが自動で無効になる。
  * 同じ集合なら同じ署名になるよう、正規化してソートしてからハッシュする。
  * 明示的な無効化（invalidateRelationGraph）と二重の安全網として働く。
  */
@@ -21,7 +25,7 @@ export function artifactSetSignature(arts: CacheableArtifact[]): string {
     .map(a => `${a.id}:${a.storage_key}:${a.original_filename}`)
     .sort()
     .join('|');
-  return crypto.createHash('sha1').update(norm).digest('hex');
+  return crypto.createHash('sha1').update(`v${ANALYZER_VERSION}|${norm}`).digest('hex');
 }
 
 /** 保存済み関係グラフを返す（署名一致時のみ。無い/古い/壊れている場合は null で再計算に回す）。 */
