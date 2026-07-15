@@ -1,5 +1,6 @@
 // Anthropic Claude API クライアント（設計書 §7.1）。
-// - モデル: claude-opus-4-8（数式解読・SQL生成は高難度推論のため）
+// - モデル: claude-sonnet-5（コスト重視。opus 比 約40%減で、コーディング・エージェント作業は Opus 級。
+//   解読・生成の品質は match（照合）一致率で確認し、不足なら claude-opus-4-8 へ戻す）
 // - thinking: adaptive（複雑な数式チェーン追跡に必須）
 // - 構造化出力: output_config.format（json_schema）でパースエラー排除
 // - ストリーミング: 長時間処理のタイムアウト回避（finalMessage で完全な応答を取得）
@@ -11,10 +12,12 @@ import Anthropic from '@anthropic-ai/sdk';
 import { db } from '../db.js';
 import { KPIEE_CONSTRAINTS } from './prompts.js';
 
-export const MODEL = 'claude-opus-4-8';
+export const MODEL = 'claude-sonnet-5';
 
-// claude-opus-4-8 の単価（per 1M tokens）: 入力 $5 / 出力 $25 / キャッシュ読取 ~$0.5
-export const PRICING = { input: 5, output: 25, cacheRead: 0.5 };
+// claude-sonnet-5 の単価（per 1M tokens）: 入力 $3 / 出力 $15 / キャッシュ読取 ~$0.3
+// （2026-08-31 まで導入価格 $2/$10 だが、控えめに見積もるため標準価格で計上する。
+//   注意: /usage のコスト概算は現行 PRICING で全履歴を再計算するため、opus 時代の過去分は不正確になる）
+export const PRICING = { input: 3, output: 15, cacheRead: 0.3 };
 
 /** トークン使用量から概算コスト（USD）を求める */
 export function estimateCostUsd(u: {
