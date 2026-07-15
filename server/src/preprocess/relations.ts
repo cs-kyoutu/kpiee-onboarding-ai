@@ -185,21 +185,51 @@ export function detectRegions(g: RawGrid): Region[] {
         if (rowCells.length >= 2 && labels >= rowCells.length / 2 && nextSignal > 0) { headerRow = r; break; }
       }
 
-      const columns: RegionColumn[] = [];
+      // 1パス目: 列ごとの本体セルと数式セル数（ヘッダー行は除く）
+      const colStats = new Map<number, { body: RawCell[]; withF: number }>();
       for (let c = c0; c <= c1; c++) {
         const colCells = bandByCol.get(c);
         if (!colCells || colCells.length === 0) continue;
         const body = headerRow === null ? colCells : colCells.filter(x => x.r !== headerRow);
-        const headerCell = headerRow !== null ? colCells.find(x => x.r === headerRow) : undefined;
+        colStats.set(c, { body, withF: body.filter(x => x.formula).length });
+      }
+      // 2パス目: 「行ぐるみで数式なし」の構造的な手入力行を検出する。
+      // 業績管理表のように入力行（数値手打ち）と計算行（数式）が縦に交互に並ぶ表では、
+      // 列方向で見るとほぼ全列が数式+手入力の混在になり誤検出だらけになる。
+      // 設計上の入力行は上書きではないので、数式を持つ列群（候補列）の中で半数以上が数式なしの行を除外し、
+      // 「その行では他列は数式なのに自分だけ数式が消えている」孤立セルだけを上書き疑いとして残す。
+      const candidateCols = new Set([...colStats].filter(([, s]) => s.withF >= 2).map(([c]) => c));
+      const rowNoF = new Map<number, number>();
+      const rowTotal = new Map<number, number>();
+      for (const c of candidateCols) {
+        for (const x of colStats.get(c)!.body) {
+          rowTotal.set(x.r, (rowTotal.get(x.r) ?? 0) + 1);
+          if (!x.formula) rowNoF.set(x.r, (rowNoF.get(x.r) ?? 0) + 1);
+        }
+      }
+      const isManualRow = (r: number) => {
+        const n = rowNoF.get(r) ?? 0;
+        return n >= 2 && n * 2 >= (rowTotal.get(r) ?? 0);
+      };
+
+      const columns: RegionColumn[] = [];
+      for (let c = c0; c <= c1; c++) {
+        const st = colStats.get(c);
+        if (!st) continue;
+        const { body, withF } = st;
+        const headerCell = headerRow !== null ? bandByCol.get(c)?.find(x => x.r === headerRow) : undefined;
         const name = headerCell && typeof headerCell.value === 'string' ? headerCell.value : `${colLetter(c)}列`;
-        const withF = body.filter(x => x.formula).length;
         const hasFormula = withF > 0;
-        // 手入力上書き疑い（S4）: 数式が主体の列に「数式なしの数値セル」が混じる場合だけ。
-        // 見出し・小計ラベル・注記などの文字列セルは数式を持たないのが当然でノイズになるため数えない。
-        // 逆に手入力列の末尾に合計数式が1つだけある形（数式が少数派）は「入力列」であって上書きではないので除外。
-        const manualNumeric = body.filter(x => !x.formula &&
+        // 手入力上書き疑い（S4）: 手入力行を除いた本体（=数式であるべき側）で再判定する。
+        // 対象は「数式なしの数値セル」のみ — 見出し・小計ラベル・注記などの文字列セルは
+        // 数式を持たないのが当然でノイズになるため数えない。除外後も数式が主体（>=2 かつ多数派）で
+        // ある列に数値セルが残る場合だけを上書き疑いとする。手入力列の末尾に合計数式が1つある形も
+        // 「数式 > 手入力数値」を満たさず自然に除外される。
+        const bodyEff = body.filter(x => !isManualRow(x.r));
+        const withFEff = bodyEff.filter(x => x.formula).length;
+        const manualNumeric = bodyEff.filter(x => !x.formula &&
           (typeof x.value === 'number' || (typeof x.value === 'string' && looksNumeric(x.value)))).length;
-        const mixedFormula = withF >= 3 && manualNumeric > 0 && withF > manualNumeric;
+        const mixedFormula = withFEff >= 2 && manualNumeric > 0 && withFEff > manualNumeric;
         columns.push({ c, name, hasFormula, mixedFormula, manualNumeric });
       }
 
