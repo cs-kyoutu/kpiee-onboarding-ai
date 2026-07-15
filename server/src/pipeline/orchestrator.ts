@@ -56,7 +56,8 @@ async function scriptsBlock(projectId: number): Promise<string> {
 
 async function loadArtifacts(projectId: number): Promise<{ row: ArtifactRow; parsed: ParsedArtifact }[]> {
   const rows = await db.prepare(
-    `SELECT id, kind, original_filename, storage_key, parsed_key, parse_status, sheet_roles FROM artifacts WHERE project_id = ?`,
+    // ORDER BY id: decode/generate/match が同じ順序で入力（=同じテーブル名割り当て）を見るように固定する
+    `SELECT id, kind, original_filename, storage_key, parsed_key, parse_status, sheet_roles FROM artifacts WHERE project_id = ? ORDER BY id`,
   ).all(projectId) as ArtifactRow[];
   // 無保存モードでは parsed_key が無いので materializeParsed が原本を Drive から取り直してパースする。
   // 逐次処理でメモリのピークを抑える（全ファイルのパース結果を同時展開しない）。
@@ -117,6 +118,16 @@ export async function collectByRole(projectId: number): Promise<RoleCollections>
     }
 
     unknownSheets.push(...pick('unknown').map(s => `${a.row.original_filename}!${s.name}`));
+  }
+
+  // 同名シートがファイル違いで重複する場合（top:end マーカーの「end」等、部門別ワークブックで頻出）、
+  // そのままだと照合の CREATE TABLE が「Table already exists」で落ちるため連番で一意化する。
+  // loadArtifacts が id 順で安定しているので、decode/generate/match は常に同じ名前割り当てを見る。
+  const seenNames = new Map<string, number>();
+  for (const input of inputs) {
+    const n = seenNames.get(input.tableName) ?? 0;
+    seenNames.set(input.tableName, n + 1);
+    if (n > 0) input.tableName = `${input.tableName}_${n + 1}`;
   }
 
   return { inputs, working, finalOutput, unknownSheets, artifacts };
