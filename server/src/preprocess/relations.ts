@@ -375,14 +375,30 @@ function buildLocator(regions: Region[]): LocateFn {
   };
 }
 
+/**
+ * 数式の「行番号を除いた形」= ドラッグ複製の指紋。セル行番号だけを # に潰し、
+ * シート名の末尾数字（`!` の直前）は保存する（`Sheet1!` と `Sheet2!` を混同しない）。
+ * 定数（1.08 等）は # 化されるが、定数は辺を生まないので列レベル辺の出力は不変。
+ * 同一(ファイル,シート,列,この指紋)のセルは同じ列レベル辺を生む（=フィルダウン）ため、
+ * 代表1セルだけ処理すれば足りる。実測: 業績管理表で数式セル40万→一意指紋1.6万(4%)、約24倍削減。
+ */
+function formulaShape(f: string): string {
+  return f.replace(/\d+/g, (m, off: number, s: string) => s[off + m.length] === '!' ? m : '#');
+}
+
 export function formulaEdges(grids: RawGrid[], regions: Region[]): Edge[] {
   const edges = new Map<string, Edge>();
   const locate = buildLocator(regions); // region をシート単位に索引化（呼び出しごとの全件探索を回避）
+  // フィルダウンで構造的に同一な数式セルの重複処理を避けるための既処理指紋集合。
+  const seen = new Set<string>();
   for (const g of grids) {
     for (const cell of g.cells) {
       if (!cell.formula) continue;
       const dst = locate(g.file, g.name, cell.c, cell.r);
       if (!dst) continue;
+      const shapeKey = `${dst.region.id} ${dst.colName} ${formulaShape(cell.formula)}`;
+      if (seen.has(shapeKey)) continue;
+      seen.add(shapeKey);
       for (const ref of extractRefs(cell.formula, g.name)) {
         const type = classifyRef(cell.formula, ref);
         for (let c = ref.c0; c <= ref.c1; c++) {
@@ -670,6 +686,10 @@ export interface RelationGraph {
   edges: Edge[];
   warnings: RelationWarning[];
   sheetStructures: SheetStructure[];
+  // 巨大グラフでは保存前に辺を領域ペア単位へ集約する（メイン側の JSON.parse / 集約コストを抑えるため）。
+  // その際に元の総辺数と集約済みフラグを添える（UI 表示・キャッシュ再利用の双方で使う）。
+  edgeTotal?: number;
+  edgeCollapsed?: boolean;
 }
 
 /**
@@ -719,6 +739,12 @@ export async function analyzeBuffer(buffer: Buffer): Promise<RelationGraph> {
  * 出力グラフは全グリッドを同時保持する analyzeGrids と一致する（scripts の diff テストで検証）。
  * ファイルが 1 つなら自然にそのファイル単体の解析になる。
  */
+// イベントループへ制御を返す。関係分析は同期CPUが連続するため、これを挟まないと
+// 単一プロセスの Node がリクエスト（/api/projects・/healthz 等）を長時間さばけず、
+// 一覧表示の遅延や ALB ヘルスチェック失敗→タスク再起動の悪循環を招く（2026-07-15 の全体遅延）。
+// ファイル間・重処理ステップ間で毎回譲ることで、最大連続ブロックを「単一ステップ（exceljs 読込 ~数秒）」に抑える。
+const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve));
+
 export async function analyzeArtifacts(arts: { filename: string; load: () => Promise<Buffer> }[]): Promise<RelationGraph> {
   const regionsAll: Region[] = [];
   const fEdgesAll: Edge[] = [];
@@ -730,10 +756,14 @@ export async function analyzeArtifacts(arts: { filename: string; load: () => Pro
     // このファイルのグリッドはこのブロック内でのみ生存し、次ファイルへ進む際に GC される
     const grids = await gridsFromArtifact(a.filename, buffer);
     if (grids.length === 0) continue;
+    await yieldToEventLoop(); // exceljs 読込（同期CPU重）直後に一度譲る
     const regions = grids.flatMap(detectRegions);
     regionsAll.push(...regions);
+    await yieldToEventLoop();
     fEdgesAll.push(...formulaEdges(grids, regions)); // 数式参照はファイル内で解決するのでファイル単位で確定
+    await yieldToEventLoop();
     fpsAll.push(...fingerprintColumns(grids, regions)); // 生の値は捨て、指紋だけ持ち越す
+    await yieldToEventLoop(); // 次ファイルへ進む前に譲る
   }
   // 数式で連結済みの列ペア（無向）。コピー推定の重複ノイズ抑制に使う
   const formulaLinked = new Set(fEdgesAll.map(e => unorderedPair(e.from, e.to)));

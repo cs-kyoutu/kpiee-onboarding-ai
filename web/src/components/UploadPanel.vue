@@ -4,7 +4,7 @@
 // 1ファイルに raw / 中間 / 帳票 が混在するワークブック向けの「自動分類」に対応する。
 // 自動分類はシート間の数式参照グラフによる推定のため、プレビューで確認・修正できる。
 import { ref, computed, onMounted } from 'vue'
-import { uploadFile, importSheet, listDriveSheets, deleteArtifact, googleStatus, googleAuthUrl, googleDisconnect, get, patch, type Artifact, type SheetPreview, type SheetClassification, type DriveSheet, type GoogleStatus } from '../api'
+import { uploadFile, importSheet, listDriveSheets, browseDrive, deleteArtifact, googleStatus, googleAuthUrl, googleDisconnect, get, patch, type Artifact, type SheetPreview, type SheetClassification, type DriveSheet, type DriveFolder, type GoogleStatus } from '../api'
 import SheetViewer from './SheetViewer.vue'
 
 const props = defineProps<{ projectId: number; artifacts: Artifact[] }>()
@@ -19,6 +19,11 @@ const showDrive = ref(false)
 const driveSheets = ref<DriveSheet[]>([])
 const driveQuery = ref('')
 const driveLoading = ref(false)
+// フォルダ別ブラウズ: 'browse'=階層ナビ / 'search'=名前検索（全ドライブ横断・平面）
+const driveMode = ref<'browse' | 'search'>('browse')
+const driveFolders = ref<DriveFolder[]>([])
+// パンくず。空配列＝マイドライブ直下。各要素 { id, name } はそのフォルダを表す
+const folderStack = ref<{ id: string; name: string }[]>([])
 // 複数選択して一括取り込み（チェックした分だけまとめて投入）
 const selectedDriveIds = ref<string[]>([])
 // 一括取り込みの進捗（done / total）。null のとき非表示
@@ -66,6 +71,8 @@ async function doDisconnect() {
   await googleDisconnect()
   showDrive.value = false
   driveSheets.value = []
+  driveFolders.value = []
+  folderStack.value = []
   googleMsg.value = 'Google 連携を解除しました'
   await refreshGoogleStatus()
 }
@@ -123,11 +130,45 @@ async function doImport(urlOrId: string) {
   }
 }
 
-// ドライブから一覧を取得（検索語があれば名前で絞り込み）
-async function loadDriveSheets() {
+// 現在のフォルダ（パンくず末尾。空ならマイドライブ直下）の中身を取得する
+async function loadFolder(folderId?: string) {
+  driveMode.value = 'browse'
   driveLoading.value = true
   error.value = ''
+  selectedDriveIds.value = []
   try {
+    const { folders, files } = await browseDrive(folderId)
+    driveFolders.value = folders
+    driveSheets.value = files
+  } catch (err) {
+    error.value = String(err)
+  } finally {
+    driveLoading.value = false
+  }
+}
+
+// フォルダへ入る（パンくずに積む）
+async function enterFolder(f: DriveFolder) {
+  folderStack.value.push({ id: f.id, name: f.name })
+  await loadFolder(f.id)
+}
+
+// パンくずの指定位置へ戻る（index<0 でマイドライブ直下）
+async function goToCrumb(index: number) {
+  folderStack.value = index < 0 ? [] : folderStack.value.slice(0, index + 1)
+  const top = folderStack.value[folderStack.value.length - 1]
+  await loadFolder(top?.id)
+}
+
+// 検索ボタン: 検索語があれば全ドライブ横断の平面検索、空ならフォルダ表示へ戻る
+async function loadDriveSheets() {
+  if (!driveQuery.value.trim()) { folderStack.value = []; await loadFolder(); return }
+  driveMode.value = 'search'
+  driveLoading.value = true
+  error.value = ''
+  selectedDriveIds.value = []
+  try {
+    driveFolders.value = []
     driveSheets.value = await listDriveSheets(driveQuery.value)
   } catch (err) {
     error.value = String(err)
@@ -136,9 +177,16 @@ async function loadDriveSheets() {
   }
 }
 
+// 検索結果からフォルダ表示へ戻る
+async function backToBrowse() {
+  driveQuery.value = ''
+  folderStack.value = []
+  await loadFolder()
+}
+
 async function toggleDrive() {
   showDrive.value = !showDrive.value
-  if (showDrive.value && driveSheets.value.length === 0) await loadDriveSheets()
+  if (showDrive.value && driveFolders.value.length === 0 && driveSheets.value.length === 0) await loadFolder()
 }
 
 async function pickDriveSheet(s: DriveSheet) {
@@ -269,11 +317,39 @@ function rolesSummary(a: Artifact): string {
 
     <div v-if="showDrive" class="drive-browse">
       <div class="toolbar" style="margin-bottom:8px">
-        <input v-model="driveQuery" type="text" placeholder="名前で検索（空欄で最近の50件）" style="max-width:360px" @keyup.enter="loadDriveSheets" />
+        <input v-model="driveQuery" type="text" placeholder="名前で検索（空欄でフォルダ表示）" style="max-width:360px" @keyup.enter="loadDriveSheets" />
         <button @click="loadDriveSheets" :disabled="driveLoading">{{ driveLoading ? '検索中…' : '検索' }}</button>
       </div>
+
+      <!-- パンくず（フォルダ別ブラウズ時のみ）。マイドライブ→サブフォルダの経路を表示・移動 -->
+      <div v-if="driveMode === 'browse'" class="drive-crumbs">
+        <a href="#" @click.prevent="goToCrumb(-1)">📁 ドライブ（マイドライブ＋共有）</a>
+        <template v-for="(c, i) in folderStack" :key="c.id">
+          <span class="sep">›</span>
+          <a href="#" @click.prevent="goToCrumb(i)">{{ c.name }}</a>
+        </template>
+      </div>
+      <!-- 検索モードの案内＋フォルダ表示へ戻る導線 -->
+      <div v-else class="drive-crumbs">
+        <span class="muted">「{{ driveQuery }}」の検索結果（全ドライブ横断）</span>
+        <span class="sep">·</span>
+        <a href="#" @click.prevent="backToBrowse">📁 フォルダ表示に戻る</a>
+      </div>
+
+      <!-- 読み込み中の明示（Google Drive API 応答待ち。1秒前後かかるため無反応に見せない） -->
+      <p v-if="driveLoading" class="muted" style="padding:10px 6px">⏳ Google ドライブを読み込み中…</p>
+
+      <!-- サブフォルダ（クリックで移動）。ブラウズ時のみ -->
+      <ul v-if="!driveLoading && driveMode === 'browse' && driveFolders.length > 0" class="drive-list folders">
+        <li v-for="f in driveFolders" :key="f.id" class="folder-row" @click="enterFolder(f)">
+          <div class="ds-icon">📁</div>
+          <div class="ds-name">{{ f.name }}</div>
+          <div class="ds-meta">フォルダ</div>
+          <button @click.stop="enterFolder(f)">開く</button>
+        </li>
+      </ul>
       <!-- 複数選択して一括取り込み。チェックした分だけまとめて投入できる -->
-      <div v-if="driveSheets.length > 0" class="drive-bulk">
+      <div v-if="!driveLoading && driveSheets.length > 0" class="drive-bulk">
         <label class="ds-check">
           <input type="checkbox" :checked="allDriveSelected" @change="toggleSelectAll" />
           すべて選択
@@ -285,7 +361,7 @@ function rolesSummary(a: Artifact): string {
           選択した {{ selectedDriveIds.length }} 件を取り込む
         </button>
       </div>
-      <ul class="drive-list">
+      <ul v-if="!driveLoading" class="drive-list">
         <li v-for="s in driveSheets" :key="s.id" :class="{ picked: selectedDriveIds.includes(s.id) }">
           <label class="ds-check">
             <input type="checkbox" :checked="selectedDriveIds.includes(s.id)" :disabled="importing" @change="toggleDriveSelect(s.id)" />
@@ -294,7 +370,9 @@ function rolesSummary(a: Artifact): string {
           <div class="ds-meta">{{ (s.modifiedTime || '').slice(0, 10) }}</div>
           <button :disabled="importing" @click="pickDriveSheet(s)">単独で取り込む</button>
         </li>
-        <li v-if="!driveLoading && driveSheets.length === 0" class="muted" style="justify-content:center">該当するスプレッドシートがありません</li>
+        <li v-if="!driveLoading && driveSheets.length === 0 && driveFolders.length === 0" class="muted" style="justify-content:center">
+          {{ driveMode === 'search' ? '該当するスプレッドシートがありません' : 'このフォルダに表ファイル・サブフォルダはありません' }}
+        </li>
       </ul>
     </div>
 
@@ -380,6 +458,15 @@ function rolesSummary(a: Artifact): string {
 .ds-check { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; cursor: pointer; }
 .drive-bulk { display: flex; align-items: center; gap: 12px; padding: 8px 6px; border-bottom: 1px solid #eef1f4; font-size: 13px; }
 .drive-bulk .grow { flex: 1; }
+/* フォルダ別ブラウズ: パンくず・フォルダ行 */
+.drive-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 13px; }
+.drive-crumbs a { color: #1b6ec2; text-decoration: none; }
+.drive-crumbs a:hover { text-decoration: underline; }
+.drive-crumbs .sep { color: var(--muted); }
+.drive-list.folders { max-height: none; margin-bottom: 4px; }
+.folder-row { cursor: pointer; }
+.folder-row:hover { background: #f0f4f8; }
+.ds-icon { width: 20px; text-align: center; }
 .row-actions { display: flex; gap: 6px; }
 .row-actions .danger { border-color: #dc3545; color: #dc3545; background: #fff; }
 .row-actions .danger:hover { background: #fdecee; }

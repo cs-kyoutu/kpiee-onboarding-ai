@@ -68,6 +68,7 @@ export async function exchangeCodeAndStore(code: string, redirectUri: string): P
 /** Web OAuth 連携を解除する（保存トークンを破棄） */
 export function disconnect(): void {
   clearRefreshToken();
+  clearFolderCache(); // 別アカウントに切り替えたとき、前アカウントのフォルダ一覧が残らないように
 }
 
 /** 認証クライアントを返す。対象アカウント本人の Web OAuth(refresh token) のみを使う（SA/ADC は廃止）。 */
@@ -100,8 +101,10 @@ function gErr(e: unknown): string {
 const MIME_NATIVE = 'application/vnd.google-apps.spreadsheet';
 const MIME_XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const MIME_CSV = 'text/csv';
+const MIME_FOLDER = 'application/vnd.google-apps.folder';
 
 export interface DriveSheet { id: string; name: string; modifiedTime?: string; mimeType?: string }
+export interface DriveFolder { id: string; name: string }
 
 /** ログイン中アカウントがアクセスできる表ファイル一覧（Google シート + アップロード xlsx/CSV）。名前で絞り込み可 */
 export async function listSpreadsheets(search?: string): Promise<DriveSheet[]> {
@@ -123,6 +126,61 @@ export async function listSpreadsheets(search?: string): Promise<DriveSheet[]> {
     return (res.data.files ?? []).map(f => ({ id: f.id ?? '', name: f.name ?? '(無題)', modifiedTime: f.modifiedTime ?? undefined, mimeType: f.mimeType ?? undefined }));
   } catch (e) {
     throw new Error(`Google ドライブ一覧の取得に失敗: ${gErr(e)}`);
+  }
+}
+
+/**
+ * 指定フォルダ直下の「サブフォルダ + 表ファイル」を返す（フォルダ別ブラウズ用）。
+ * folderId 未指定なら「マイドライブ」直下（'root'）。フォルダを先頭に、名前順で並べる。
+ * 検索は listSpreadsheets（全ドライブ横断・平面）を使うので、ここは階層ナビ専用。
+ */
+// フォルダ内容の短期キャッシュ。同じフォルダの再表示・パンくずでの上下移動を即座にするため。
+// Google Drive API の往復（~1秒）が体感遅延の主因で、コードでは短縮できないので、
+// 一度取得した一覧を短時間だけ保持する。取り込みは既存ファイルの選択が主で、閲覧中に
+// ドライブ側が更新されることは稀なため、短い TTL（45秒）なら実害はほぼない。
+const folderCache = new Map<string, { at: number; data: { folders: DriveFolder[]; files: DriveSheet[] } }>();
+const FOLDER_CACHE_TTL_MS = 45_000;
+
+/** フォルダ内容キャッシュを破棄する（取り込み等でドライブ内容が変わり得るときに呼ぶ）。 */
+export function clearFolderCache(): void {
+  folderCache.clear();
+}
+
+export async function listFolderChildren(folderId?: string): Promise<{ folders: DriveFolder[]; files: DriveSheet[] }> {
+  const cacheKey = folderId && folderId.trim() ? folderId.trim() : '__root__';
+  const now = Date.now();
+  const hit = folderCache.get(cacheKey);
+  if (hit && now - hit.at < FOLDER_CACHE_TTL_MS) return hit.data;
+
+  const drive = google.drive({ version: 'v3', auth: authClient() });
+  const typeFilter = `(mimeType='${MIME_FOLDER}' or mimeType='${MIME_NATIVE}' or mimeType='${MIME_XLSX}' or mimeType='${MIME_CSV}')`;
+  // ルート（フォルダ未指定）では「マイドライブ直下」に加え「自分に共有されたトップ項目」も見せる。
+  // 実運用では対象データが共有フォルダ（例: ForAI / 各社実績データ）に置かれ、マイドライブ直下が空なことが多いため。
+  // 特定フォルダ配下は通常どおり親 ID で辿る（共有フォルダの中も読み取り権限があれば辿れる）。
+  const scope = folderId && folderId.trim()
+    ? `'${folderId.trim().replace(/['\\]/g, '\\$&')}' in parents`
+    : `('root' in parents or sharedWithMe=true)`;
+  const q = `trashed=false and ${scope} and ${typeFilter}`;
+  try {
+    const res = await drive.files.list({
+      q,
+      fields: 'files(id,name,modifiedTime,mimeType)',
+      orderBy: 'folder,name', // フォルダを先に、続いて名前順
+      pageSize: 200,
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true,
+    });
+    const folders: DriveFolder[] = [];
+    const files: DriveSheet[] = [];
+    for (const f of res.data.files ?? []) {
+      if (f.mimeType === MIME_FOLDER) folders.push({ id: f.id ?? '', name: f.name ?? '(無題)' });
+      else files.push({ id: f.id ?? '', name: f.name ?? '(無題)', modifiedTime: f.modifiedTime ?? undefined, mimeType: f.mimeType ?? undefined });
+    }
+    const data = { folders, files };
+    folderCache.set(cacheKey, { at: now, data });
+    return data;
+  } catch (e) {
+    throw new Error(`Google ドライブのフォルダ取得に失敗: ${gErr(e)}`);
   }
 }
 

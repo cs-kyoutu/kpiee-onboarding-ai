@@ -6,6 +6,7 @@ import { get, post, deleteProject, type Project } from '../api'
 
 const router = useRouter()
 const projects = ref<Project[]>([])
+const loading = ref(true) // 初回読込中フラグ。読込中に「プロジェクトがありません」を誤表示しないため
 const showForm = ref(false)
 const customerName = ref('')
 const description = ref('')
@@ -21,7 +22,12 @@ const STATUS_LABELS: Record<string, string> = {
 }
 
 async function load() {
-  projects.value = await get<Project[]>('/projects')
+  loading.value = true
+  try {
+    projects.value = await get<Project[]>('/projects')
+  } finally {
+    loading.value = false
+  }
 }
 
 async function createProject() {
@@ -72,6 +78,8 @@ onMounted(load)
     </div>
   </div>
 
+  <p v-if="loading" class="muted">読み込み中…</p>
+
   <div class="card-grid">
     <div v-for="p in projects" :key="p.id" class="project-card" @click="router.push(`/projects/${p.id}`)">
       <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px">
@@ -91,5 +99,5 @@ onMounted(load)
     </div>
   </div>
 
-  <p v-if="projects.length === 0" class="muted">プロジェクトがありません。「＋ 新規プロジェクト」から作成してください。</p>
+  <p v-if="!loading && projects.length === 0" class="muted">プロジェクトがありません。「＋ 新規プロジェクト」から作成してください。</p>
 </template>

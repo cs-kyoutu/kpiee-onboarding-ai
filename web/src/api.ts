@@ -47,10 +47,16 @@ export function deleteArtifact(artifactId: number): Promise<{ ok: boolean }> {
   return del<{ ok: boolean }>(`/artifacts/${artifactId}`)
 }
 
-/** ドライブ内の Google スプレッドシート一覧（名前で絞り込み可） */
+/** ドライブ内の Google スプレッドシート一覧（名前で絞り込み可。全ドライブ横断・平面） */
 export interface DriveSheet { id: string; name: string; modifiedTime?: string }
 export function listDriveSheets(q?: string): Promise<DriveSheet[]> {
   return get<DriveSheet[]>(`/google/spreadsheets${q ? `?q=${encodeURIComponent(q)}` : ''}`)
+}
+
+/** フォルダ別ブラウズ: 指定フォルダ（未指定=マイドライブ直下）のサブフォルダ + 表ファイル */
+export interface DriveFolder { id: string; name: string }
+export function browseDrive(folderId?: string): Promise<{ folders: DriveFolder[]; files: DriveSheet[] }> {
+  return get<{ folders: DriveFolder[]; files: DriveSheet[] }>(`/google/drive${folderId ? `?folder=${encodeURIComponent(folderId)}` : ''}`)
 }
 
 // ---- Google Web ログイン（OAuth）----

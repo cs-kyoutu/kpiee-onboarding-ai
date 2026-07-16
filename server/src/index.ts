@@ -14,14 +14,15 @@ import { putObject, removeObject } from './storage.js';
 import { materializeBuffer, materializeParsed, driveKey } from './artifacts.js';
 import { parseArtifact, type ParsedArtifact } from './preprocess/parse.js';
 import { classifySheetRoles, type SheetClassification } from './preprocess/classify.js';
-import { analyzeBuffer, analyzeArtifacts } from './preprocess/relations.js';
+import { analyzeBuffer, analyzeArtifacts, type RelationGraph } from './preprocess/relations.js';
+import { analyzeArtifactsInWorker } from './preprocess/analyzeInWorker.js';
 import { artifactSetSignature, getCachedRelationGraph, setCachedRelationGraph, invalidateRelationGraph } from './relationsCache.js';
 import { runDecode, runGenerate, runMatch, tableNameOf } from './pipeline/orchestrator.js';
 import { startAsk as qaStartAsk, isAskPending as qaIsPending, getHistory as qaHistory } from './qa/agent.js';
 import { invalidateBooks } from './qa/tools.js';
 import { aiAvailable, MODEL, estimateCostUsd } from './ai/client.js';
 import {
-  googleConfigured, fetchDriveFile, listSpreadsheets, extractSpreadsheetId,
+  googleConfigured, fetchDriveFile, listSpreadsheets, listFolderChildren, extractSpreadsheetId,
   oauthClientConfigured, connectionStatus, buildAuthUrl, exchangeCodeAndStore, disconnect,
 } from './google/drive.js';
 
@@ -150,6 +151,9 @@ async function ingestArtifact(projectId: number, filename: string, buffer: Buffe
   }
   invalidateBooks(projectId); // Q&A 用ワークブックキャッシュを破棄（新規取込で内容が変わるため）
   await invalidateRelationGraph(projectId); // 関係グラフの保存キャッシュも破棄（アーティファクト変更で構造が変わる）
+  // 取込後にワーカーで関係グラフを先行計算してキャッシュを温める（＝関係/要確認タブを開いた時に即表示）。
+  // 複数ファイルの連続取込は debounce で最後の1回にまとめ、無駄な再計算を避ける。
+  schedulePrecomputeRelations(projectId);
   return artifactId;
 }
 
@@ -215,11 +219,21 @@ app.post('/api/google/disconnect', async (_req, res) => {
   res.json({ ok: true });
 });
 
-// ドライブ内の Google スプレッドシート一覧（URL を貼らず選んで取り込むため）
+// ドライブ内の Google スプレッドシート一覧（URL を貼らず選んで取り込むため）。名前検索は全ドライブ横断・平面。
 app.get('/api/google/spreadsheets', async (req, res) => {
   if (!googleConfigured()) return res.status(400).json({ error: 'Google 連携が未設定です' });
   try {
     res.json(await listSpreadsheets(typeof req.query.q === 'string' ? req.query.q : undefined));
+  } catch (e) {
+    res.status(502).json({ error: String(e) });
+  }
+});
+
+// フォルダ別ブラウズ: 指定フォルダ（既定=マイドライブ直下）のサブフォルダ + 表ファイルを返す。
+app.get('/api/google/drive', async (req, res) => {
+  if (!googleConfigured()) return res.status(400).json({ error: 'Google 連携が未設定です' });
+  try {
+    res.json(await listFolderChildren(typeof req.query.folder === 'string' ? req.query.folder : undefined));
   } catch (e) {
     res.status(502).json({ error: String(e) });
   }
@@ -363,12 +377,10 @@ interface CapGraph { regions: unknown[]; edges: RelEdgeLike[]; warnings?: unknow
 // SVG図は元々領域単位に集約して描くため、この圧縮後も構造は保たれる。
 const EDGE_CAP = 2000;
 const WARN_CAP = 300;
-function capGraphForResponse(g: CapGraph): CapGraph {
-  const edges = g.edges;
-  const warnings = (g.warnings ?? []) as unknown[];
-  if (edges.length <= EDGE_CAP) {
-    return warnings.length <= WARN_CAP ? g : { ...g, warnings: warnings.slice(0, WARN_CAP), warningTotal: warnings.length };
-  }
+// 辺を「(from領域→to領域, 種別)ごとに最も確信度の高い1辺」へ集約する。上限以下なら素通し。
+// キャッシュ保存前とレスポンス整形の両方で使う（＝巨大な生辺をメインで何度も舐めない）。
+function collapseGraphEdges(edges: RelEdgeLike[]): { edges: RelEdgeLike[]; edgeTotal?: number; edgeCollapsed?: boolean } {
+  if (edges.length <= EDGE_CAP) return { edges };
   const regionIdOf = (key: string) => key.slice(0, key.indexOf(':'));
   const best = new Map<string, RelEdgeLike>();
   for (const e of edges) {
@@ -380,14 +392,29 @@ function capGraphForResponse(g: CapGraph): CapGraph {
   if (collapsed.length > EDGE_CAP) {
     collapsed = collapsed.sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0)).slice(0, EDGE_CAP);
   }
+  return { edges: collapsed, edgeTotal: edges.length, edgeCollapsed: true };
+}
+
+function capGraphForResponse(g: CapGraph): CapGraph {
+  const warnings = (g.warnings ?? []) as unknown[];
+  const { edges, edgeTotal, edgeCollapsed } = collapseGraphEdges(g.edges);
+  const capWarn = warnings.length > WARN_CAP;
+  if (!edgeCollapsed && !capWarn) return g;
   return {
     ...g,
-    edges: collapsed,
-    edgeTotal: edges.length,      // 集約前の総辺数（UI 表示用）
-    edgeCollapsed: true,          // 領域ペア単位に集約済みのフラグ
-    warnings: warnings.slice(0, WARN_CAP),
-    warningTotal: warnings.length,
+    edges,
+    ...(edgeCollapsed ? { edgeTotal, edgeCollapsed } : {}),
+    ...(capWarn ? { warnings: warnings.slice(0, WARN_CAP), warningTotal: warnings.length } : {}),
   };
+}
+
+// 保存前に辺だけを集約する（warnings・sheetStructures は /要確認 が全件必要なのでそのまま）。
+// これで巨大プロジェクトでもキャッシュ本体が小さくなり、キャッシュ命中時の JSON.parse と
+// attachAiFindings/capGraphForResponse がメインを長く止めなくなる。
+function collapseEdgesForCache(g: RelationGraph): RelationGraph {
+  const { edges, edgeTotal, edgeCollapsed } = collapseGraphEdges(g.edges as unknown as RelEdgeLike[]);
+  if (!edgeCollapsed) return g;
+  return { ...g, edges: edges as unknown as RelationGraph['edges'], edgeTotal, edgeCollapsed };
 }
 
 // 関係グラフを（キャッシュ優先で）取得する共通処理。relations 表示と「要確認」集計で共用する。
@@ -409,6 +436,21 @@ async function loadProjectRelationGraph(projectId: number): Promise<{ graph: Awa
   return p;
 }
 
+// 取込後の関係グラフ先行計算（debounce 付き）。連続アップロードのたびに再計算しないよう、
+// 最後の取込から一定時間後に1回だけワーカー計算を起動してキャッシュを温める。
+const precomputeTimers = new Map<number, ReturnType<typeof setTimeout>>();
+function schedulePrecomputeRelations(projectId: number): void {
+  const prev = precomputeTimers.get(projectId);
+  if (prev) clearTimeout(prev);
+  const t = setTimeout(() => {
+    precomputeTimers.delete(projectId);
+    // ワーカーで計算しキャッシュへ保存（結果は捨てる）。失敗してもタブ表示時に再計算されるので致命的でない。
+    loadProjectRelationGraph(projectId).catch(e => console.error(`[relations:precompute] project=${projectId}`, e));
+  }, 1500);
+  if (typeof t.unref === 'function') t.unref(); // 保留タイマーがプロセス終了を妨げないように
+  precomputeTimers.set(projectId, t);
+}
+
 async function loadProjectRelationGraphUncached(projectId: number): Promise<{ graph: Awaited<ReturnType<typeof analyzeArtifacts>>; fileCount: number } | null> {
   const rows = await db.prepare(
     `SELECT id, storage_key, original_filename FROM artifacts WHERE project_id = ? AND parse_status = 'done' AND storage_key IS NOT NULL`,
@@ -418,10 +460,14 @@ async function loadProjectRelationGraphUncached(projectId: number): Promise<{ gr
   const signature = artifactSetSignature(supported);
   let graph = await getCachedRelationGraph(projectId, signature);
   if (!graph) {
-    // キャッシュ無し／古い → ファイル単位で遅延ロードしつつ解析（ピークメモリ＝最大単一ファイル）し、保存する
-    graph = await analyzeArtifacts(
+    // キャッシュ無し／古い → 解析して保存。解析はワーカースレッドで行い、CPU 重量級の処理が
+    // メインのイベントループ（一覧配信・ヘルスチェック）を止めないようにする。原本の取得は load() でメイン側。
+    const full = await analyzeArtifactsInWorker(
       supported.map(r => ({ filename: r.original_filename, load: () => materializeBuffer(r.storage_key) })),
     );
+    // 巨大グラフは保存前に辺を集約（warnings/構造は全件維持）。キャッシュを小さく保ち、
+    // 命中時の JSON.parse と後段処理がメインを詰まらせないようにする。
+    graph = collapseEdgesForCache(full);
     await setCachedRelationGraph(projectId, signature, graph);
   }
   return { graph, fileCount: supported.length };
