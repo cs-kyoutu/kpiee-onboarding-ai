@@ -213,13 +213,33 @@ export interface SheetStructNode { id: string; layer: number; label: string; col
 export interface SheetStructEdge { from: string; to: string; types: RelType[] }
 export interface SheetStructure { regionId: string; layerCount: number; nodes: SheetStructNode[]; edges: SheetStructEdge[]; truncated: boolean }
 
-// 全体構造の自然言語サマリ（どんなデータが・どう加工され・何として出力されるか。decode 時に AI が生成）
+// シート構成: あるシートが「どのシートからどう作られるか」
+export interface SheetComposition {
+  sheet: string
+  role: '入力' | '中間集計' | '最終出力' | 'その他'
+  composed_of: string[]
+  method: string
+  description: string
+}
+
+// テーブル定義書: 同一レイアウトのシート群に対する列・計算行の定義
+export interface TableDefinition {
+  title: string
+  applies_to: string[]
+  columns: { position: string; item: string; type: string; definition: string }[]
+  calc_rows: { label: string; definition: string }[]
+}
+
+// 全体構造の解説（decode 時に AI が生成。シート構成＋テーブル定義書）
 export interface StructureOverview {
   summary: string
-  inputs: { name: string; description: string }[]
-  steps: { title: string; description: string }[]
-  outputs: { name: string; description: string }[]
+  sheet_composition?: SheetComposition[]
+  table_definitions?: TableDefinition[]
   caveats: string[]
+  // 旧形式（過去の解読結果）との互換用。再解読すると新形式に置き換わる
+  inputs?: { name: string; description: string }[]
+  steps?: { title: string; description: string }[]
+  outputs?: { name: string; description: string }[]
 }
 
 export interface RelationGraph {

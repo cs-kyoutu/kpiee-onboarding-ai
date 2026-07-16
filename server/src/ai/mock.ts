@@ -3,7 +3,7 @@
 // パッケージングの全フローを動作確認できるようにするための決定的（deterministic）実装。
 // 実運用では client.ts の Claude 呼び出しが使われる。
 import type { ParsedArtifact, ParsedSheet } from '../preprocess/parse.js';
-import type { Finding, GenerationResult, StructureOverview } from './schemas.js';
+import type { Finding, GenerationResult, StructureOverview, SheetComposition, TableDefinition } from './schemas.js';
 
 /** 数式文字列からロジック種別を推定する単純なヒューリスティック */
 function classifyFormula(formula: string): Finding['logic_type'] {
@@ -84,35 +84,77 @@ export function mockDecode(workingSheets: ParsedArtifact[]): Finding[] {
 }
 
 /**
+ * シート1枚からテーブル定義書を機械生成する（モック用）。
+ * ヘッダー行を列定義とみなし、2行目のセルから型と出所（手入力/数式）を推定する。
+ */
+function mockTableDef(title: string, appliesTo: string[], sheet: ParsedSheet | undefined): TableDefinition | null {
+  if (!sheet) return null;
+  const headerCells = sheet.rows[0]?.cells ?? [];
+  const colOf = (ref: string) => ref.replace(/\d+/g, '');
+  const dataByCol = new Map((sheet.rows[1]?.cells ?? []).map(c => [colOf(c.ref), c]));
+  const columns = headerCells.slice(0, 12).map(c => {
+    const col = colOf(c.ref);
+    const d = dataByCol.get(col);
+    return {
+      position: `${col}列`,
+      item: String(c.value ?? `${col}列`),
+      type: typeof d?.value === 'number' ? '数値' : '文字列',
+      definition: d?.formula ? `数式 =${d.formula.slice(0, 60)}` : '手入力または値貼り付け（自動推定）',
+    };
+  });
+  if (columns.length === 0) return null;
+  return { title, applies_to: appliesTo, columns, calc_rows: [] };
+}
+
+/**
  * 全体構造サマリのモック生成。
- * AI 不在でも UI を確認できるよう、役割別コレクションから機械的に「入力→加工→出力」を組み立てる。
+ * AI 不在でも UI を確認できるよう、役割別コレクションから機械的に
+ * 「シート構成（どのシートからどう作られるか）＋テーブル定義書」を組み立てる。
  */
 export function mockOverview(collections: {
   inputs: { tableName: string; parsed: ParsedArtifact }[];
   working: ParsedArtifact[];
   finalOutput: ParsedArtifact | null;
 }): StructureOverview {
-  const inputs = collections.inputs.map(i => ({
-    name: i.tableName,
-    description: `インプットデータ（${i.parsed.sheets[0]?.rows.length ?? 0} 行程度）。集計・引き当ての出発点になります。`,
-  }));
+  const inputNames = collections.inputs.map(i => i.tableName);
   const workingNames = collections.working.flatMap(w => w.sheets.map(s => s.name));
-  const steps = workingNames.length
-    ? workingNames.map((name, i) => ({
-        title: `${i + 1}. ${name} で加工`,
-        description: `中間シート「${name}」で、入力データを集計・計算・引き当てして整えます。`,
-      }))
-    : [{ title: '加工', description: '入力データを集計・計算して帳票の形に整えます。' }];
   const outName = collections.finalOutput?.sheets[0]?.name;
-  const outputs = outName
-    ? [{ name: outName, description: 'これらの加工結果をまとめた最終帳票です。' }]
-    : [];
+
+  const sheet_composition: SheetComposition[] = [
+    ...inputNames.map(name => ({
+      sheet: name,
+      role: '入力' as const,
+      composed_of: [],
+      method: '手入力・取込データ',
+      description: '集計・引き当ての出発点になるインプットデータです。',
+    })),
+    ...workingNames.map(name => ({
+      sheet: name,
+      role: '中間集計' as const,
+      composed_of: inputNames,
+      method: '集計・計算（数式構成からの自動推定）',
+      description: '入力データを集計・計算・引き当てして整える中間シートです。',
+    })),
+    ...(outName ? [{
+      sheet: outName,
+      role: '最終出力' as const,
+      composed_of: workingNames.length ? workingNames : inputNames,
+      method: '加工結果の転記・合算（自動推定）',
+      description: '加工結果をまとめた最終帳票です。',
+    }] : []),
+  ];
+
+  const table_definitions = [
+    mockTableDef('入力データ', inputNames, collections.inputs[0]?.parsed.sheets[0]),
+    mockTableDef('中間シート（共通レイアウト）', workingNames, collections.working[0]?.sheets[0]),
+    ...(outName ? [mockTableDef('最終帳票', [outName], collections.finalOutput?.sheets[0])] : []),
+  ].filter((d): d is TableDefinition => d !== null);
+
   return {
-    summary: `${inputs.length} 種類の入力データを、${workingNames.length || 1} 段階の加工を経て${outName ? `「${outName}」という帳票` : 'レポート'}として出力する構成です。（自動推定の概要）`,
-    inputs,
-    steps,
-    outputs,
-    caveats: ['この概要は数式・シート構成からの自動推定です。AI解読（②）を実行すると、より正確な説明に置き換わります。'],
+    summary: `${inputNames.length} 種類の入力データを、${workingNames.length || 1} 段階の加工を経て${outName ? `「${outName}」という帳票` : 'レポート'}として出力する構成です。（自動推定の概要）`,
+    sheet_composition,
+    table_definitions,
+    caveats: ['この概要は数式・シート構成からの自動推定です。AI解読（②）を実行すると、より正確な定義書に置き換わります。'],
   };
 }
 

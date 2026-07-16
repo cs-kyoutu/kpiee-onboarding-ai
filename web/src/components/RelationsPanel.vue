@@ -59,8 +59,14 @@ const regionById = computed(() => {
 })
 const multiFile = computed(() => (graph.value?.fileCount ?? 0) > 1)
 
-// 全体構造の自然言語サマリ（decode 実行後に付与される。未実行なら null）
+// 全体構造の解説（decode 実行後に付与される。未実行なら null）
 const overview = computed(() => graph.value?.overview ?? null)
+// 旧形式（入力→加工→出力）で保存された過去の解読結果か。新フィールドが無い場合のみ従来のフロー表示へ
+const isLegacyOverview = computed(() =>
+  !!overview.value && !(overview.value.sheet_composition?.length || overview.value.table_definitions?.length))
+// シート構成の役割バッジ色
+const roleClass = (role: string) =>
+  role === '入力' ? 'role-in' : role === '中間集計' ? 'role-mid' : role === '最終出力' ? 'role-out' : 'role-etc'
 
 // 列の表示/折りたたみ（既定は折りたたみ＝表どうしの繋がりだけ見せて見やすく）
 const showColumns = ref(false)
@@ -396,49 +402,107 @@ function colLetterRef(c: number): string {
         </div>
         <p v-if="!graph.hasFindings" class="ai-banner">
           まだ「② AI解読」が未実行です。実行すると各シートの<strong>意味づけ</strong>が関係図に融合され、表をクリックすると AI の解読内容が表示されます。
-          あわせて、下記の<strong>全体構造の解説</strong>（データの流れの要約）も生成されます。
+          あわせて、下記の<strong>全体構造の解説</strong>（シート構成とテーブル定義書）も生成されます。
         </p>
 
-        <!-- 全体構造の解説（AI が「入力→加工→出力」を平易な日本語で要約） -->
+        <!-- 全体構造の解説（①シート構成 → ②テーブル定義書。旧形式の保存結果はフロー表示に自動フォールバック） -->
         <div v-if="overview" class="overview">
           <div class="ov-head">
             <span class="ov-ico">🗺️</span>
-            <h3>全体構造の解説 — どのデータが、どう加工され、どう出力されるか</h3>
+            <h3>全体構造の解説 — シート構成とテーブル定義書</h3>
           </div>
           <p class="ov-summary">{{ overview.summary }}</p>
 
-          <!-- 入力 → 加工 → 出力 の3段フロー -->
-          <div class="ov-flow">
+          <!-- ① シート構成: どのシートが合わさってどのシートになるか -->
+          <template v-if="overview.sheet_composition?.length">
+            <div class="ov-sec-title">シート構成（どのシートから作られるか）</div>
+            <div class="ov-table-wrap">
+              <table class="ov-table">
+                <thead>
+                  <tr><th>シート</th><th>役割</th><th>構成元</th><th>作られ方</th><th>説明</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(sc, i) in overview.sheet_composition" :key="i">
+                    <td class="ov-strong">{{ sc.sheet }}</td>
+                    <td><span class="ov-role" :class="roleClass(sc.role)">{{ sc.role }}</span></td>
+                    <td>
+                      <template v-if="sc.composed_of.length">
+                        <span v-for="(s, j) in sc.composed_of" :key="j" class="ov-chip">{{ s }}</span>
+                      </template>
+                      <span v-else class="muted">—</span>
+                    </td>
+                    <td>{{ sc.method }}</td>
+                    <td class="muted">{{ sc.description }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+
+          <!-- ② テーブル定義書（同一レイアウトのシート群は1つの定義書にまとまる） -->
+          <template v-for="(def, di) in (overview.table_definitions ?? [])" :key="`def-${di}`">
+            <div class="ov-sec-title">
+              テーブル定義書{{ (overview.table_definitions?.length ?? 0) > 1 ? ` ${di + 1}` : '' }}: {{ def.title }}
+            </div>
+            <div class="ov-applies">
+              <span class="muted">適用シート:</span>
+              <span v-for="(s, j) in def.applies_to" :key="j" class="ov-chip">{{ s }}</span>
+            </div>
+            <div class="ov-table-wrap">
+              <table class="ov-table">
+                <thead>
+                  <tr><th>位置</th><th>項目</th><th>型</th><th>定義・出所</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(col, j) in def.columns" :key="j">
+                    <td class="ov-pos">{{ col.position }}</td>
+                    <td class="ov-strong">{{ col.item }}</td>
+                    <td>{{ col.type }}</td>
+                    <td>{{ col.definition }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div v-if="def.calc_rows.length" class="ov-calcrows">
+              <div class="ov-calcrows-title">計算行（行方向の集計・計算）</div>
+              <ul>
+                <li v-for="(cr, j) in def.calc_rows" :key="j"><strong>{{ cr.label }}</strong>：{{ cr.definition }}</li>
+              </ul>
+            </div>
+          </template>
+
+          <!-- 旧形式（入力→加工→出力フロー）: 過去の解読結果の表示互換。再解読すると新形式に置き換わる -->
+          <div v-if="isLegacyOverview" class="ov-flow">
             <section class="ov-col ov-in">
               <div class="ov-col-title">📥 入力データ</div>
               <ul>
-                <li v-for="(it, i) in overview.inputs" :key="i">
+                <li v-for="(it, i) in (overview.inputs ?? [])" :key="i">
                   <strong>{{ it.name }}</strong>
                   <span class="muted">{{ it.description }}</span>
                 </li>
-                <li v-if="overview.inputs.length === 0" class="muted">（入力データの特定なし）</li>
+                <li v-if="(overview.inputs ?? []).length === 0" class="muted">（入力データの特定なし）</li>
               </ul>
             </section>
             <div class="ov-arrow">→</div>
             <section class="ov-col ov-step">
               <div class="ov-col-title">⚙️ 加工の流れ</div>
               <ol>
-                <li v-for="(st, i) in overview.steps" :key="i">
+                <li v-for="(st, i) in (overview.steps ?? [])" :key="i">
                   <strong>{{ st.title }}</strong>
                   <span class="muted">{{ st.description }}</span>
                 </li>
-                <li v-if="overview.steps.length === 0" class="muted">（加工ステップの特定なし）</li>
+                <li v-if="(overview.steps ?? []).length === 0" class="muted">（加工ステップの特定なし）</li>
               </ol>
             </section>
             <div class="ov-arrow">→</div>
             <section class="ov-col ov-out">
               <div class="ov-col-title">📤 出力（帳票・レポート）</div>
               <ul>
-                <li v-for="(o, i) in overview.outputs" :key="i">
+                <li v-for="(o, i) in (overview.outputs ?? [])" :key="i">
                   <strong>{{ o.name }}</strong>
                   <span class="muted">{{ o.description }}</span>
                 </li>
-                <li v-if="overview.outputs.length === 0" class="muted">（出力物の特定なし）</li>
+                <li v-if="(overview.outputs ?? []).length === 0" class="muted">（出力物の特定なし）</li>
               </ul>
             </section>
           </div>
@@ -759,7 +823,7 @@ h3 { font-size:14px; margin:20px 0 8px; }
 .ss-ai-meta { display:flex; flex-wrap:wrap; align-items:center; gap:5px; margin-bottom:3px }
 .ss-ai-exp { color:#374151 }
 
-/* 全体構造の解説（入力→加工→出力フロー） */
+/* 全体構造の解説（シート構成＋テーブル定義書。ov-flow は旧形式互換表示） */
 .overview { margin:14px 0; padding:16px 18px; border:1px solid #d6e4f5; border-radius:12px; background:linear-gradient(180deg,#f6faff 0%,#fcfdff 100%); }
 .ov-head { display:flex; align-items:center; gap:8px; margin-bottom:6px }
 .ov-head h3 { margin:0; font-size:15px; color:#10325c }
@@ -786,6 +850,26 @@ h3 { font-size:14px; margin:20px 0 8px; }
   .ov-flow { flex-direction:column }
   .ov-arrow { justify-content:center; transform:rotate(90deg) }
 }
+
+/* シート構成・テーブル定義書 */
+.ov-sec-title { margin:16px 0 6px; font-weight:700; font-size:13.5px; color:#10325c; padding-left:8px; border-left:3px solid #1565c0 }
+.ov-table-wrap { overflow-x:auto; background:#fff; border:1px solid #e3e7ec; border-radius:10px }
+.ov-table { width:100%; border-collapse:collapse; font-size:13px }
+.ov-table th { text-align:left; padding:8px 12px; background:#f2f6fb; color:#3b4657; font-size:12px; white-space:nowrap; border-bottom:1px solid #e3e7ec }
+.ov-table td { padding:8px 12px; border-bottom:1px solid #eef1f5; line-height:1.55; vertical-align:top }
+.ov-table tr:last-child td { border-bottom:none }
+.ov-strong { font-weight:600; color:#1b212b; white-space:nowrap }
+.ov-pos { font-family:ui-monospace, Consolas, monospace; white-space:nowrap; color:#374151 }
+.ov-role { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11.5px; font-weight:600; white-space:nowrap }
+.ov-role.role-in { background:#e7f6ec; color:#046b2d }
+.ov-role.role-mid { background:#e8f0fb; color:#0d4ea6 }
+.ov-role.role-out { background:#fdeee2; color:#b34700 }
+.ov-role.role-etc { background:#eef0f3; color:#4b5563 }
+.ov-chip { display:inline-block; margin:1px 4px 1px 0; padding:1px 8px; background:#eef3fa; border:1px solid #d9e4f2; border-radius:999px; font-size:12px; color:#274766; white-space:nowrap }
+.ov-applies { margin:0 0 6px; font-size:12.5px; line-height:1.9 }
+.ov-calcrows { margin:8px 0 0; padding:8px 14px; background:#f8fafc; border:1px dashed #d7dee8; border-radius:8px }
+.ov-calcrows-title { font-weight:700; font-size:12.5px; color:#3b4657; margin-bottom:4px }
+.ov-calcrows ul { margin:0; padding-left:18px; font-size:13px; line-height:1.8; color:#26303c }
 
 /* 案内・注意 */
 .ai-banner { margin:8px 0; padding:10px 14px; background:#f7f8fa; border:1px solid #eceff3; border-left:3px solid var(--primary); border-radius:8px; font-size:13px; line-height:1.6 }

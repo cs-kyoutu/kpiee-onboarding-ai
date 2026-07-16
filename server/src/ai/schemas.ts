@@ -15,48 +15,71 @@ export const KPIEE_TARGETS = [
 export const FINDINGS_SCHEMA = {
   type: 'object',
   properties: {
-    // 全体構造の解説（関係者が一読して把握できる平易な日本語の要約）。
-    // 「どんなデータが・どう加工され・何として出力されるか」をストーリーとして示す。
+    // 全体構造の解説（テーブル定義書スタイル）。
+    // まず「どのシートが合わさってどのシートになるか」（シート構成）を示し、
+    // 次に各シートの列・計算行を定義書として示す。同一レイアウトのシートは1つの定義書にまとめる。
     overview: {
       type: 'object',
       properties: {
         summary: { type: 'string', description: '全体像を平易な日本語で2〜4文。専門用語は避け、関係者（非エンジニア）が読んで分かる表現で' },
-        inputs: {
+        sheet_composition: {
           type: 'array',
-          description: '出発点となる入力データ（基幹CSV・手入力シート等）',
+          description: '各シートが「どのシートからどう作られるか」の一覧。処理の流れが追える順（入力→中間→最終出力）に並べる',
           items: {
             type: 'object',
             properties: {
-              name: { type: 'string', description: 'データ名（ファイル名・シート名など）' },
-              description: { type: 'string', description: 'どんなデータか（何が何件くらい入っているか）を平易に' },
+              sheet: { type: 'string', description: '対象シート名（ファイル名が要る場合は「ファイル名!シート名」）' },
+              role: { enum: ['入力', '中間集計', '最終出力', 'その他'], description: 'このシートの役割' },
+              composed_of: {
+                type: 'array',
+                description: '構成元のシート名。入力シート（手入力・取込）は空配列',
+                items: { type: 'string' },
+              },
+              method: { type: 'string', description: '構成元からの作られ方。例: 3-D参照 SUM(top:end!〃) による同一位置セルの合算 / SUMIF集計 / 値の手コピー。入力シートは「手入力」等' },
+              description: { type: 'string', description: 'このシートが何の表かを平易に1文で' },
             },
-            required: ['name', 'description'],
+            required: ['sheet', 'role', 'composed_of', 'method', 'description'],
             additionalProperties: false,
           },
         },
-        steps: {
+        table_definitions: {
           type: 'array',
-          description: '入力から出力に至るまでの加工ステップ（処理の流れ順）',
+          description: 'シートのテーブル定義書。同一レイアウトのシート群は1つの定義書にまとめ、applies_to に適用シートを列挙する',
           items: {
             type: 'object',
             properties: {
-              title: { type: 'string', description: 'このステップの短い見出し（例: 売上を拠点別に集計）' },
-              description: { type: 'string', description: '何を・どう加工するかを平易な日本語で1〜2文' },
+              title: { type: 'string', description: '定義書名（例: 部門別業績シート（共通レイアウト） / FY 集計シート）' },
+              applies_to: { type: 'array', description: 'このレイアウトが適用されるシート名の一覧', items: { type: 'string' } },
+              columns: {
+                type: 'array',
+                description: '列（横方向）の定義。反復する列群（月次×実績/予算/前期 等）は1行にまとめてよい',
+                items: {
+                  type: 'object',
+                  properties: {
+                    position: { type: 'string', description: '列位置（例: B列 / E〜AN列）' },
+                    item: { type: 'string', description: '項目名（例: 勘定科目コード / 月次 実績・予算・前期）' },
+                    type: { type: 'string', description: 'データ型・内容（例: 数値 / 文字列 / 日付）' },
+                    definition: { type: 'string', description: '定義・出所。手入力なのか、数式（=SUM(top:end!〃) 等）なら何を意味するのかを平易に' },
+                  },
+                  required: ['position', 'item', 'type', 'definition'],
+                  additionalProperties: false,
+                },
+              },
+              calc_rows: {
+                type: 'array',
+                description: '行方向の集計行・計算行の定義（例: 売上高(P1000)＝SUM(E6:E47)＝明細行の合計）。無ければ空配列',
+                items: {
+                  type: 'object',
+                  properties: {
+                    label: { type: 'string', description: '行ラベル（例: 売上高(P1000)）' },
+                    definition: { type: 'string', description: '計算の定義を平易に（数式と意味）' },
+                  },
+                  required: ['label', 'definition'],
+                  additionalProperties: false,
+                },
+              },
             },
-            required: ['title', 'description'],
-            additionalProperties: false,
-          },
-        },
-        outputs: {
-          type: 'array',
-          description: '最終的に出力される帳票・レポート',
-          items: {
-            type: 'object',
-            properties: {
-              name: { type: 'string', description: '出力物の名前（帳票名・レポート名）' },
-              description: { type: 'string', description: '誰が何のために見る何の表か、を平易に' },
-            },
-            required: ['name', 'description'],
+            required: ['title', 'applies_to', 'columns', 'calc_rows'],
             additionalProperties: false,
           },
         },
@@ -66,7 +89,7 @@ export const FINDINGS_SCHEMA = {
           items: { type: 'string' },
         },
       },
-      required: ['summary', 'inputs', 'steps', 'outputs', 'caveats'],
+      required: ['summary', 'sheet_composition', 'table_definitions', 'caveats'],
       additionalProperties: false,
     },
     findings: {
@@ -101,12 +124,28 @@ export interface Finding {
   confidence: 'high' | 'medium' | 'low';
 }
 
-/** 全体構造の自然言語サマリ（どんなデータが・どう加工され・何として出力されるか） */
+/** シート構成: あるシートが「どのシートからどう作られるか」 */
+export interface SheetComposition {
+  sheet: string;
+  role: '入力' | '中間集計' | '最終出力' | 'その他';
+  composed_of: string[];
+  method: string;
+  description: string;
+}
+
+/** テーブル定義書: 同一レイアウトのシート群に対する列・計算行の定義 */
+export interface TableDefinition {
+  title: string;
+  applies_to: string[];
+  columns: { position: string; item: string; type: string; definition: string }[];
+  calc_rows: { label: string; definition: string }[];
+}
+
+/** 全体構造の解説（テーブル定義書スタイル: シート構成＋定義書） */
 export interface StructureOverview {
   summary: string;
-  inputs: { name: string; description: string }[];
-  steps: { title: string; description: string }[];
-  outputs: { name: string; description: string }[];
+  sheet_composition: SheetComposition[];
+  table_definitions: TableDefinition[];
   caveats: string[];
 }
 
