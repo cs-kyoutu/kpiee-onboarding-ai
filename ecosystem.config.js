@@ -15,6 +15,8 @@ module.exports = {
       cwd: path.join(root, 'server'),
       script: path.join(root, 'server', 'node_modules', 'tsx', 'dist', 'cli.mjs'),
       args: 'src/index.ts', // .env は cwd(server) から読み込まれる
+      // ポート 8787 は別常駐(slack-agent のレポート配信サーバー)が使用中のため 8788 に分離。
+      env: { PORT: '8788' },
       windowsHide: true,
       autorestart: true,
       out_file: path.join(root, 'logs', 'pm2-server-out.log'),
