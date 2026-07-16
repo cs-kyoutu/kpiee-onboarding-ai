@@ -39,8 +39,19 @@ async function refreshGoogleStatus() {
   try { googleConn.value = await googleStatus() } catch { /* 未起動時などは無視 */ }
 }
 
+// 連携済みなら、ボタンを押す前にルート（マイドライブ＋共有）を裏で先読みしておく。
+// これで「Google ドライブから選択」を押した瞬間にキャッシュから即表示できる。
+function prefetchRoot() {
+  if (!googleConn.value.connected || clientFolderCache.has(rootKey)) return
+  browseDrive().then(d => {
+    clientFolderCache.set(rootKey, d)
+    prefetchSubfolders(d.folders) // 直下フォルダも先読み（1階層先まで温める）
+  }).catch(() => { /* noop */ })
+}
+
 onMounted(async () => {
   await refreshGoogleStatus()
+  prefetchRoot()
   // OAuth コールバックからの戻り（?google=connected/denied/error）を処理
   const params = new URLSearchParams(window.location.search)
   const g = params.get('google')
@@ -49,7 +60,7 @@ onMounted(async () => {
       : g === 'denied' ? 'Google へのアクセスが拒否されました'
       : `Google 接続でエラーが発生しました${params.get('msg') ? '：' + params.get('msg') : ''}`
     window.history.replaceState({}, '', window.location.pathname) // URL からパラメータ除去
-    if (g === 'connected') await refreshGoogleStatus()
+    if (g === 'connected') { await refreshGoogleStatus(); prefetchRoot() }
   }
 })
 
@@ -130,16 +141,43 @@ async function doImport(urlOrId: string) {
   }
 }
 
-// 現在のフォルダ（パンくず末尾。空ならマイドライブ直下）の中身を取得する
+// クライアント側キャッシュ（フォルダID→中身）。同一セッション内の再訪・戻る操作を即時にする。
+// さらに、表示中フォルダの「サブフォルダ」を裏で先読みしておき、クリック時に待ち時間ゼロで開けるようにする。
+// 体感遅延の主因は Google Drive API の往復(~1秒)で、これは1回ごとには縮められないため、
+// 「次に開きそうなフォルダを前もって取っておく」ことで実質的に待たせない。
+type FolderData = { folders: DriveFolder[]; files: DriveSheet[] }
+const clientFolderCache = new Map<string, FolderData>()
+const rootKey = '__root__'
+const keyOf = (folderId?: string) => folderId || rootKey
+
+// サブフォルダの中身を裏で先読み（失敗は無視。本命操作時に取り直される）
+function prefetchSubfolders(folders: DriveFolder[]) {
+  for (const f of folders.slice(0, 30)) {
+    if (clientFolderCache.has(f.id)) continue
+    browseDrive(f.id).then(d => clientFolderCache.set(f.id, d)).catch(() => { /* noop */ })
+  }
+}
+
+// 現在のフォルダ（パンくず末尾。空ならマイドライブ直下）の中身を表示する。
+// キャッシュにあればスピナーなしで即表示。無ければ取得してキャッシュ。どちらの場合もサブフォルダを先読み。
 async function loadFolder(folderId?: string) {
   driveMode.value = 'browse'
-  driveLoading.value = true
   error.value = ''
   selectedDriveIds.value = []
+  const cached = clientFolderCache.get(keyOf(folderId))
+  if (cached) {
+    driveFolders.value = cached.folders
+    driveSheets.value = cached.files
+    prefetchSubfolders(cached.folders)
+    return
+  }
+  driveLoading.value = true
   try {
-    const { folders, files } = await browseDrive(folderId)
-    driveFolders.value = folders
-    driveSheets.value = files
+    const data = await browseDrive(folderId)
+    clientFolderCache.set(keyOf(folderId), data)
+    driveFolders.value = data.folders
+    driveSheets.value = data.files
+    prefetchSubfolders(data.folders)
   } catch (err) {
     error.value = String(err)
   } finally {
