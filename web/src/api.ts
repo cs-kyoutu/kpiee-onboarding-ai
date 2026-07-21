@@ -164,6 +164,43 @@ export interface MatchResult {
   }[]
 }
 
+// ---- KPIEE 実装プレビュー（照合の拡張） ----
+type Cell = string | number | null
+
+export interface KpieePreview {
+  available: boolean
+  message?: string
+  reportName?: string
+  sql?: string
+  dataFile?: { columns: string[]; rows: Cell[][] }
+  rendered?: { groupCol: string; metricNames: string[]; rows: { key: string; cells: (number | null)[] }[] }
+  finalOutput?: { header: string[]; rows: Cell[][] } | null
+  comparison?: {
+    total: number
+    matched: number
+    matchRate: number
+    missingColumns: string[]
+    mismatches: { label: string; column: string; expected: number; actual: number | null }[]
+  } | null
+  notes?: string[]
+}
+
+export interface ImplItem { source: string; kpieeTarget: string; status: 'ok' | 'warn' | 'blocked'; how: string }
+export interface ImplReport {
+  available: boolean
+  message?: string
+  items: ImplItem[]
+  summary: { ok: number; warn: number; blocked: number }
+  markdown: string
+}
+
+export function getKpieePreview(projectId: number): Promise<KpieePreview> {
+  return get<KpieePreview>(`/projects/${projectId}/kpiee-preview`)
+}
+export function getKpieeImplReport(projectId: number): Promise<ImplReport> {
+  return get<ImplReport>(`/projects/${projectId}/kpiee-impl-report`)
+}
+
 export interface CustomerQuestion {
   id: number
   finding_id?: number | null

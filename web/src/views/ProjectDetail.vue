@@ -149,7 +149,7 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
       <button :class="{ active: tab === 'attention' }" @click="tab = 'attention'">⚠ 要確認</button>
       <button :class="{ active: tab === 'review' }" @click="tab = 'review'">✅ 解読検収</button>
       <button :class="{ active: tab === 'deliverables' }" @click="tab = 'deliverables'">📄 成果物</button>
-      <button :class="{ active: tab === 'match' }" @click="tab = 'match'">🔢 数値照合</button>
+      <button :class="{ active: tab === 'match' }" @click="tab = 'match'">🔢 KPIEE再現・照合</button>
       <button :class="{ active: tab === 'questions' }" @click="tab = 'questions'">💬 顧客確認事項</button>
       <button :class="{ active: tab === 'chat' }" @click="tab = 'chat'">🤖 AI Q&A</button>
     </div>
