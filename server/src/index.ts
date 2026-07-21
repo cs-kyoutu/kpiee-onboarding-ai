@@ -19,6 +19,7 @@ import { analyzeArtifactsInWorker } from './preprocess/analyzeInWorker.js';
 import { artifactSetSignature, getCachedRelationGraph, setCachedRelationGraph, invalidateRelationGraph } from './relationsCache.js';
 import { runDecode, runGenerate, runMatch, tableNameOf } from './pipeline/orchestrator.js';
 import { buildKpieePreview, buildImplReport } from './match/kpieePreview.js';
+import { gatherSummary, buildSummaryDocx, buildSummaryMarkdown } from './summaryDoc.js';
 import { startAsk as qaStartAsk, isAskPending as qaIsPending, getHistory as qaHistory } from './qa/agent.js';
 import { invalidateBooks } from './qa/tools.js';
 import { aiAvailable, MODEL, estimateCostUsd } from './ai/client.js';
@@ -747,6 +748,7 @@ app.get('/api/projects/:id/package', async (req, res) => {
     '## 同梱ファイル',
     '| ファイル | 内容 | 主な読者 |',
     '|---|---|---|',
+    '| 00_整理資料_シート一覧・定義書・要確認.docx / .md | ①ファイル別シート一覧 ②テーブル定義書 ③手入力・要確認リストを見やすくまとめた資料（Word/Markdown） | 全員（まず最初に読む） |',
     '| 01_解読リポート.md | 顧客シートの数式ロジックを AI が解読した根拠つきレポート | 検収担当 |',
     '| 02_マッピング表.md | 元シートの各ロジック → KPIEE 機能 → **最終成果物での反映先** の対応表 | 全員（トレーサビリティの中心） |',
     '| 03_sql_job.sql | KPIEE データコネクタの SQL ジョブ（Snowflake 方言）。元データを集計データへ変換 | エンジニア |',
@@ -789,10 +791,24 @@ app.get('/api/projects/:id/package', async (req, res) => {
     '',
   ].join('\n');
 
+  // 整理資料（①ファイル別シート一覧 ②テーブル定義書 ③手入力・要確認リスト）を Word/Markdown で同梱。
+  // 保存済みデータから決定的に生成（AI 呼び出しなし）。失敗しても本体パッケージは出せるよう握りつぶす。
+  let summaryDocx: Buffer | null = null;
+  let summaryMd = '';
+  try {
+    const summary = await gatherSummary(projectId);
+    summaryMd = buildSummaryMarkdown(summary);
+    summaryDocx = await buildSummaryDocx(summary);
+  } catch (e) {
+    summaryMd = `整理資料の生成に失敗しました: ${String(e)}`;
+  }
+
   res.attachment(`kpiee-onboarding-package-v${latest.v}.zip`);
   const archive = new ZipArchive();
   archive.pipe(res);
   archive.append(readme, { name: '00_はじめに_AIで可視化.md' });
+  if (summaryDocx) archive.append(summaryDocx, { name: '00_整理資料_シート一覧・定義書・要確認.docx' });
+  if (summaryMd) archive.append(summaryMd, { name: '00_整理資料_シート一覧・定義書・要確認.md' });
   for (const item of items) {
     archive.append(item.content, { name: fileNames[item.kind] ?? `${item.kind}.txt` });
   }
