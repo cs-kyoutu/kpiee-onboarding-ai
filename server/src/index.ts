@@ -18,12 +18,13 @@ import { analyzeBuffer, analyzeArtifacts, type RelationGraph } from './preproces
 import { analyzeArtifactsInWorker } from './preprocess/analyzeInWorker.js';
 import { artifactSetSignature, getCachedRelationGraph, setCachedRelationGraph, invalidateRelationGraph } from './relationsCache.js';
 import { runDecode, runGenerate, runMatch, tableNameOf } from './pipeline/orchestrator.js';
+import { buildKpieePreview, buildImplReport } from './match/kpieePreview.js';
 import { startAsk as qaStartAsk, isAskPending as qaIsPending, getHistory as qaHistory } from './qa/agent.js';
 import { invalidateBooks } from './qa/tools.js';
 import { aiAvailable, MODEL, estimateCostUsd } from './ai/client.js';
 import {
   googleConfigured, fetchDriveFile, listSpreadsheets, listFolderChildren, extractSpreadsheetId,
-  oauthClientConfigured, connectionStatus, buildAuthUrl, exchangeCodeAndStore, disconnect,
+  oauthClientConfigured, connectionStatus, buildAuthUrl, exchangeCodeAndStore, disconnect, warmupDrive,
 } from './google/drive.js';
 
 const app = express();
@@ -627,6 +628,24 @@ app.get('/api/projects/:id/match-results', async (req, res) => {
   res.json({ ...result, mismatches: JSON.parse(result.mismatches) });
 });
 
+// ---- KPIEE 実装プレビュー（照合の拡張: report_config 層まで含めた再現・可否） ----
+// Tier2: SQLジョブ出力 → KPIEE レポート再現 → 顧客帳票と突き合わせた構造化データ
+app.get('/api/projects/:id/kpiee-preview', async (req, res) => {
+  try {
+    res.json(await buildKpieePreview(Number(req.params.id)));
+  } catch (e) {
+    res.status(502).json({ error: String(e) });
+  }
+});
+// Tier1: 各解読項目・指標が KPIEE でどう実装されるか／実装不可かの分類
+app.get('/api/projects/:id/kpiee-impl-report', async (req, res) => {
+  try {
+    res.json(await buildImplReport(Number(req.params.id)));
+  } catch (e) {
+    res.status(502).json({ error: String(e) });
+  }
+});
+
 // ---- 顧客確認事項（UC-10, SC-07） ----
 app.get('/api/projects/:id/questions', async (req, res) => {
   res.json(await db.prepare(`SELECT * FROM customer_questions WHERE project_id = ? ORDER BY id`).all(req.params.id));
@@ -870,4 +889,7 @@ const PORT = Number(process.env.PORT ?? 8787);
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[kpiee-onboarding-ai] API server: http://localhost:${PORT}`);
   console.log(`[kpiee-onboarding-ai] AI mode: ${aiAvailable() ? MODEL : 'mock（ANTHROPIC_API_KEY 未設定）'}`);
+  // Google 連携済みなら接続を事前に温める（access_token 交換・DNS・TLS・ルート一覧を先に済ませ、
+  // 最初の「ドライブから選択」でユーザーが初回コストを負わないようにする）。best-effort。
+  void warmupDrive();
 });

@@ -43,8 +43,7 @@ async function refreshGoogleStatus() {
 // これで「Google ドライブから選択」を押した瞬間にキャッシュから即表示できる。
 function prefetchRoot() {
   if (!googleConn.value.connected || clientFolderCache.has(rootKey)) return
-  browseDrive().then(d => {
-    clientFolderCache.set(rootKey, d)
+  fetchFolder().then(d => {
     prefetchSubfolders(d.folders) // 直下フォルダも先読み（1階層先まで温める）
   }).catch(() => { /* noop */ })
 }
@@ -146,15 +145,30 @@ async function doImport(urlOrId: string) {
 // 体感遅延の主因は Google Drive API の往復(~1秒)で、これは1回ごとには縮められないため、
 // 「次に開きそうなフォルダを前もって取っておく」ことで実質的に待たせない。
 type FolderData = { folders: DriveFolder[]; files: DriveSheet[] }
-const clientFolderCache = new Map<string, FolderData>()
+// フォルダID→「取得の Promise」を保持する（結果そのものではなく）。
+// これにより、裏で走っている先読みと本命クリックが同じ1本の取得に合流し、
+// 「先読み中にクリック → もう1回取りに行って二重に待つ」を防ぐ。クリックは進行中の先読みをそのまま待つ。
+const clientFolderCache = new Map<string, Promise<FolderData>>()
+const resolvedFolders = new Set<string>() // 既に解決済み（＝待たずに即表示できる）フォルダの鍵
 const rootKey = '__root__'
 const keyOf = (folderId?: string) => folderId || rootKey
+
+// キャッシュ済み or 進行中の取得を返す。無ければ開始してキャッシュ。失敗時は鍵を外して再試行可能にする。
+function fetchFolder(folderId?: string): Promise<FolderData> {
+  const key = keyOf(folderId)
+  const hit = clientFolderCache.get(key)
+  if (hit) return hit
+  const p = browseDrive(folderId)
+  clientFolderCache.set(key, p)
+  p.then(() => resolvedFolders.add(key)).catch(() => clientFolderCache.delete(key))
+  return p
+}
 
 // サブフォルダの中身を裏で先読み（失敗は無視。本命操作時に取り直される）
 function prefetchSubfolders(folders: DriveFolder[]) {
   for (const f of folders.slice(0, 30)) {
     if (clientFolderCache.has(f.id)) continue
-    browseDrive(f.id).then(d => clientFolderCache.set(f.id, d)).catch(() => { /* noop */ })
+    fetchFolder(f.id).catch(() => { /* noop */ })
   }
 }
 
@@ -164,17 +178,12 @@ async function loadFolder(folderId?: string) {
   driveMode.value = 'browse'
   error.value = ''
   selectedDriveIds.value = []
-  const cached = clientFolderCache.get(keyOf(folderId))
-  if (cached) {
-    driveFolders.value = cached.folders
-    driveSheets.value = cached.files
-    prefetchSubfolders(cached.folders)
-    return
-  }
-  driveLoading.value = true
+  const key = keyOf(folderId)
+  const instant = resolvedFolders.has(key) // 解決済みならスピナー無しで即表示（従来どおりの体感）
+  const p = fetchFolder(folderId)          // 進行中の先読みがあれば合流、無ければここで開始
+  if (!instant) driveLoading.value = true
   try {
-    const data = await browseDrive(folderId)
-    clientFolderCache.set(keyOf(folderId), data)
+    const data = await p
     driveFolders.value = data.folders
     driveSheets.value = data.files
     prefetchSubfolders(data.folders)

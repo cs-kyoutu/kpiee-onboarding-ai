@@ -69,17 +69,37 @@ export async function exchangeCodeAndStore(code: string, redirectUri: string): P
 export function disconnect(): void {
   clearRefreshToken();
   clearFolderCache(); // 別アカウントに切り替えたとき、前アカウントのフォルダ一覧が残らないように
+  cachedOauth = null;  // 使い回している OAuth2 クライアント（＝前アカウントの access_token）も破棄
 }
 
-/** 認証クライアントを返す。対象アカウント本人の Web OAuth(refresh token) のみを使う（SA/ADC は廃止）。 */
+/** 認証クライアントを返す。対象アカウント本人の Web OAuth(refresh token) のみを使う（SA/ADC は廃止）。
+ *
+ * OAuth2 クライアントは refresh_token ごとに1個だけ生成して使い回す（シングルトン）。
+ * googleapis は access_token（refresh_token をトークンエンドポイントで交換した短命トークン, ~1時間）を
+ * このインスタンス内部にキャッシュし、期限が近づくと自動更新する。毎回 new すると access_token が捨てられ、
+ * Drive 呼び出しのたびに「トークン交換の往復」が1回余計に走る（＝初回が遅い主因の一つ）。
+ * インスタンスを固定すれば、その往復は実質「サーバー起動後の1回だけ」で済む。
+ * refresh_token が変わったら（再連携時）鍵が変わるので自動で作り直す。 */
+let cachedOauth: { token: string; client: InstanceType<typeof google.auth.OAuth2> } | null = null;
 function authClient() {
   const refreshToken = currentRefreshToken();
   if (!oauthClientConfigured() || !refreshToken) {
     throw new Error('Google 連携が未設定です（OAuth クライアントと本人同意による refresh_token が必要です）');
   }
+  if (cachedOauth && cachedOauth.token === refreshToken) return cachedOauth.client;
   const oauth = new google.auth.OAuth2(process.env.GOOGLE_OAUTH_CLIENT_ID, process.env.GOOGLE_OAUTH_CLIENT_SECRET);
   oauth.setCredentials({ refresh_token: refreshToken });
+  cachedOauth = { token: refreshToken, client: oauth };
   return oauth;
+}
+
+/** リモート接続（access_token/TLS）を事前に温める。起動時に1回呼ぶと、最初のユーザー操作が
+ * トークン交換・DNS・TLS の初回コストを負わずに済む。失敗しても致命的でないので握りつぶす。 */
+export async function warmupDrive(): Promise<void> {
+  if (!googleConfigured()) return;
+  try {
+    await listFolderChildren(); // ルート取得＝トークン交換＋TLS＋files.list を一括で温め、folderCache も充填
+  } catch { /* 温めは best-effort。失敗は無視（本番の初回操作で取り直される） */ }
 }
 
 function gErr(e: unknown): string {
