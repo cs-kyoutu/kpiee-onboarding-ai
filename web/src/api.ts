@@ -232,17 +232,24 @@ export function deleteScript(scriptId: number): Promise<{ ok: boolean }> {
 // ---- シート関係性グラフ ----
 export type RelType = 'lookup-join' | 'filter-key' | 'filtered-agg' | 'aggregation' | 'passthrough' | 'derived' | 'copy'
 
-export interface RelRegionColumn { c: number; name: string; hasFormula: boolean; mixedFormula: boolean }
+export interface RelColumnStats { filled: number; uniq: number; text: number }
+export interface RelRegionColumn { c: number; name: string; hasFormula: boolean; mixedFormula: boolean; stats?: RelColumnStats }
 /** decode の解読項目（AI解読の融合用） */
 export interface RelAiFinding { logic_type: string; kpiee_target: string; explanation: string; confidence: string; source_ref: string }
+/** キー・軸の推定。primary=単独で行を一意に定める列 / axis=複合軸の構成列（部署 × 月 等） */
+export interface RelRegionKey { column: string; c: number; role: 'primary' | 'axis'; confidence: number; evidence: string[] }
+export interface RelRegionKeys { keys: RelRegionKey[]; axisNote?: string; colAxis?: string }
 export interface RelRegion {
   id: string; file: string; sheet: string
   r0: number; r1: number; c0: number; c1: number
   headerRow: number | null
   columns: RelRegionColumn[]
   dataRowCount: number
+  keys?: RelRegionKeys  // 主キー・軸の推定（値の一意性＋数式のキー利用から）
   ai?: RelAiFinding[]   // このシートに対する AI解読（decode 実行後に付与）
 }
+/** 表と表を結ぶキー列の対応（a=数式側, b=参照される側, via=引き当て先の列） */
+export interface RelKeyLink { a: string; b: string; via: string; fn: string; evidence: string; count: number }
 export interface RelEdge {
   from: string; to: string; type: RelType
   evidence: string; confidence: number
@@ -289,6 +296,7 @@ export interface RelationGraph {
   regions: RelRegion[]
   edges: RelEdge[]
   warnings: RelWarning[]
+  keyLinks?: RelKeyLink[] // 表と表を結ぶキー列の対応（VLOOKUP/SUMIFS 等の引数位置から抽出）
   fileCount: number
   hasFindings?: boolean // decode 済みで AI解読が融合されているか
   overview?: StructureOverview // 全体構造の自然言語サマリ（decode 実行後に付与）

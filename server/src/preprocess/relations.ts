@@ -105,13 +105,26 @@ function looksNumeric(s: string): boolean {
 // ============================================================
 // (1) 表領域(region)検出
 // ============================================================
-export interface RegionColumn { c: number; name: string; hasFormula: boolean; mixedFormula: boolean; manualNumeric: number }
+// 列の値統計（キー・軸検出の材料）。filled=非空値数 / uniq=一意値数 / text=非数値文字列数
+export interface ColumnStats { filled: number; uniq: number; text: number }
+export interface RegionColumn { c: number; name: string; hasFormula: boolean; mixedFormula: boolean; manualNumeric: number; stats?: ColumnStats }
+
+// ---- キー・軸（この表は何を軸に1行が決まるか） ----
+// role: primary=単独で行を一意に定める列 / axis=複合軸の構成列（例: 部署 × 月）
+export interface RegionKey { column: string; c: number; role: 'primary' | 'axis'; confidence: number; evidence: string[] }
+export interface RegionKeys {
+  keys: RegionKey[];
+  axisNote?: string;  // 「部署 × 月 の組合せで1行が決まる」等の要約
+  colAxis?: string;   // 列方向の軸（月次系列ヘッダー等）の要約
+}
+
 export interface Region {
   id: string; file: string; sheet: string;
   r0: number; r1: number; c0: number; c1: number;
   headerRow: number | null;
   columns: RegionColumn[];
   dataRowCount: number;
+  keys?: RegionKeys;  // キー・軸の推定（構造的根拠 + 数式からのキー利用根拠を融合）
 }
 
 /** 1グリッドを空行/空列の run で矩形分割し、表領域を返す（縦積み・横並びの複数表に対応） */
@@ -184,6 +197,17 @@ export function detectRegions(g: RawGrid): Region[] {
           (typeof x.value === 'number' || !!x.formula || (typeof x.value === 'string' && looksNumeric(x.value)))).length;
         if (rowCells.length >= 2 && labels >= rowCells.length / 2 && nextSignal > 0) { headerRow = r; break; }
       }
+      // フォールバック: 全列が文字列の表（社員マスタ等）は「直下に数値・数式がある」条件を
+      // 満たせずヘッダー未検出になる。先頭行が数式なし・全て非数値文字列で、
+      // 下に2行以上データがあれば見出し行とみなす（キー・軸の列名表示に効く）
+      if (headerRow === null) {
+        const rowCells = inByRow.get(r0) ?? [];
+        const labels = rowCells.filter(x => typeof x.value === 'string' && !looksNumeric(x.value)).length;
+        const rowsBelow = [...inByRow.keys()].filter(r => r > r0).length;
+        if (rowCells.length >= 2 && labels === rowCells.length && !rowCells.some(x => x.formula) && rowsBelow >= 2) {
+          headerRow = r0;
+        }
+      }
 
       // 1パス目: 列ごとの本体セルと数式セル数（ヘッダー行は除く）
       const colStats = new Map<number, { body: RawCell[]; withF: number }>();
@@ -230,7 +254,14 @@ export function detectRegions(g: RawGrid): Region[] {
         const manualNumeric = bodyEff.filter(x => !x.formula &&
           (typeof x.value === 'number' || (typeof x.value === 'string' && looksNumeric(x.value)))).length;
         const mixedFormula = withFEff >= 2 && manualNumeric > 0 && withFEff > manualNumeric;
-        columns.push({ c, name, hasFormula, mixedFormula, manualNumeric });
+        // キー・軸検出用の値統計（本体セルのみ、ヘッダー除外済み）
+        const vals = body.filter(x => x.value !== null).map(x => x.value as string | number);
+        const stats: ColumnStats = {
+          filled: vals.length,
+          uniq: new Set(vals.map(fpVal)).size,
+          text: vals.filter(v => typeof v === 'string' && !looksNumeric(v)).length,
+        };
+        columns.push({ c, name, hasFormula, mixedFormula, manualNumeric, stats });
       }
 
       const rowsSet = new Set<number>();
@@ -241,11 +272,107 @@ export function detectRegions(g: RawGrid): Region[] {
       // ヘッダー検出できず実データ1行以下は結合タイトル等。表でないので除外
       if (headerRow === null && dataRowCount < 2) continue;
 
+      // キー・軸の構造的検出（値の一意性・複合軸・時系列ヘッダー）。数式からのキー利用根拠は
+      // 辺の確定後に enrichKeysWithUsage で融合する（ここでは値だけから分かることを出す）
+      const keys = detectStructuralKeys(columns, c => bandByCol.get(c), headerRow, dataRowCount);
+
       // id はファイルを含めて一意化（複数ファイルで同名シートがあっても衝突しない）。Excel のシート名・ファイル名は ':' を含めないので ':' を列区切りに使える
-      regions.push({ id: `${g.file}／${g.name}#${++idx}`, file: g.file, sheet: g.name, r0, r1, c0, c1, headerRow, columns, dataRowCount });
+      regions.push({ id: `${g.file}／${g.name}#${++idx}`, file: g.file, sheet: g.name, r0, r1, c0, c1, headerRow, columns, dataRowCount, keys });
     }
   }
   return regions;
+}
+
+// ============================================================
+// (1b) キー・軸検出（この表は何を軸に1行が決まるか）
+// ============================================================
+// 「4月」「2024/4」「2024年4月」「Q1」「第1四半期」等、時系列ヘッダーらしい列名
+const SERIES_HEADER = /(^|[^0-9])\d{1,2}月|^\d{4}[年\/.\-]\s*\d{1,2}|^\d{1,2}\/\d{1,2}$|^(Q[1-4]|第[1-4]四半期)/;
+
+/**
+ * 値だけから分かる構造的なキー・軸を検出する。
+ *  (a) 単独一意列 = 主キー候補。ただし右側の数値列（金額等）は「たまたま全行違う」ことが多いので、
+ *      文字列主体 or 先頭側の列に限る（それ以外は数式からキー利用の根拠が出た時のみ昇格）。
+ *  (b) 主キーが無い表は、左から次元列（低カディナリティ・文字列主体）を重ねて
+ *      行が一意になる最小の組を探す（例: 部署 × 月 のクロス集計表）。
+ *  (c) 列方向の軸: 月次などの反復ヘッダーが並ぶ場合は「列方向は時系列」と要約する。
+ */
+function detectStructuralKeys(
+  columns: RegionColumn[],
+  cellsOf: (c: number) => RawCell[] | undefined,
+  headerRow: number | null,
+  dataRowCount: number,
+): RegionKeys | undefined {
+  if (dataRowCount < 3 || columns.length < 2) return undefined;
+  // 列ごとの 行→正規化値。複合軸のタプル判定に使う（ヘッダー行・空値は除外）
+  const valByCol = new Map<number, Map<number, string>>();
+  for (const col of columns) {
+    const m = new Map<number, string>();
+    for (const x of cellsOf(col.c) ?? []) {
+      if (x.r === headerRow || x.value === null) continue;
+      m.set(x.r, fpVal(x.value));
+    }
+    valByCol.set(col.c, m);
+  }
+
+  const keys: RegionKey[] = [];
+  // (a) 単独一意列（主キー候補）。数値主体の一意列は「金額がたまたま全行違う」だけのことが
+  // 多いので、最左列（ID が置かれる定位置）に限る。それ以外の一意列は文字列主体のみ。
+  for (const col of columns) {
+    const st = col.stats!;
+    if (st.filled >= Math.max(3, dataRowCount * 0.9) && st.uniq === st.filled && st.uniq >= 3
+      && (st.text * 2 >= st.filled || col.c === columns[0].c)) {
+      keys.push({
+        column: col.name, c: col.c, role: 'primary', confidence: 0.85,
+        evidence: [`全${st.filled}行で値がすべて異なる（重複なし）`],
+      });
+    }
+  }
+
+  // (b) 複合軸（主キーが無い場合のみ。例: 部署 × 月）
+  // 軸列は左端に置かれるのが通例なので候補は左から12列まで。超大規模表はタプル生成が
+  // 支配的コストになる（凍結の温床）ため打ち切り、主キー・キー利用の根拠だけに頼る
+  let axisNote: string | undefined;
+  if (keys.length === 0 && dataRowCount <= 200_000) {
+    const dims = columns.filter(col => {
+      const st = col.stats!;
+      return !col.hasFormula && st.filled >= dataRowCount * 0.5 && st.uniq >= 2 && st.uniq < st.filled
+        && (st.text * 2 >= st.filled || st.uniq <= Math.max(24, st.filled * 0.3));
+    }).slice(0, 12);
+    const combo: RegionColumn[] = [];
+    let bestDistinct = 0;
+    for (const col of dims) {
+      if (combo.length >= 4) break;
+      const tentative = [...combo, col];
+      // 組の全列が値を持つ行だけでタプルを作る（合計行などキー欠損行は自然に除外される）
+      const rows = [...(valByCol.get(tentative[0].c)?.keys() ?? [])];
+      const tuples: string[] = [];
+      for (const r of rows) {
+        const parts = tentative.map(t => valByCol.get(t.c)?.get(r));
+        if (parts.some(p => p === undefined)) continue;
+        tuples.push(parts.join('\u0001'));
+      }
+      if (tuples.length < dataRowCount * 0.6) continue; // カバー率が低すぎる組は不採用
+      const distinct = new Set(tuples).size;
+      if (distinct <= bestDistinct) continue; // 足しても行を区別できるようにならない列はスキップ
+      combo.push(col);
+      bestDistinct = distinct;
+      if (distinct === tuples.length) {
+        axisNote = `${combo.map(c => `「${c.name}」`).join(' × ')} の組合せで1行が決まる（${tuples.length}行で重複なし）`;
+        for (const c of combo) keys.push({ column: c.name, c: c.c, role: 'axis', confidence: 0.8, evidence: [axisNote] });
+        break;
+      }
+    }
+  }
+
+  // (c) 列方向の軸（自動命名 "AB列" は除外し、実ヘッダー名だけを見る）
+  const seriesCols = columns.filter(c => !/^[A-Z]+列$/.test(c.name) && SERIES_HEADER.test(c.name));
+  const colAxis = seriesCols.length >= 4
+    ? `列方向は時系列（${seriesCols.slice(0, 3).map(c => c.name).join('・')} … 全${seriesCols.length}列）を軸に展開`
+    : undefined;
+
+  if (keys.length === 0 && !colAxis) return undefined;
+  return { keys, axisNote, colAxis };
 }
 
 // ============================================================
@@ -337,6 +464,12 @@ function classifyRef(formula: string, ref: Ref): RelType {
     if (ref.argIndex === 0) return 'filter-key';
     return 'lookup-join';
   }
+  if (f === 'XLOOKUP') {
+    // XLOOKUP(検索値=key, 検索範囲=key, 戻り範囲=source, ...). 引数0,1=key, 引数2=source
+    return ref.argIndex <= 1 ? 'filter-key' : 'lookup-join';
+  }
+  // MATCH(検索値, 検索範囲, 型) は位置を返すだけでデータ源でない。両引数とも結合キー
+  if (f === 'MATCH') return 'filter-key';
   if (/\b(XLOOKUP|INDEX|MATCH)\b/.test(F)) return 'lookup-join';
   if (/\b(SUM|AVERAGE|MAX|MIN|COUNT|PRODUCT)\b/.test(F)) return 'aggregation';
   // 単一セルの転記（=Sheet!A1 / =A1 のみ）
@@ -386,8 +519,40 @@ function formulaShape(f: string): string {
   return f.replace(/\d+/g, (m, off: number, s: string) => s[off + m.length] === '!' ? m : '#');
 }
 
-export function formulaEdges(grids: RawGrid[], regions: Region[]): Edge[] {
+// ---- 表と表を結ぶ「キーの対応」 ----
+// a=数式側（ローカル）のキー列, b=参照される側（リモート）のキー列, via=引き当て先（数式が書かれた列）
+// 例: 売上明細.商品ID(a) ⇔ 商品マスタ.商品ID(b) via 売上明細.単価 (VLOOKUP)
+export interface KeyLink { a: string; b: string; via: string; fn: string; evidence: string; count: number }
+
+/**
+ * 関数の引数位置から「(ローカルキー引数, リモートキー範囲引数)」の対を返す。
+ * VLOOKUP(検索値, テーブル, …) / XLOOKUP(検索値, 検索範囲, …) / MATCH(検索値, 検索範囲, …) → (0,1)
+ * SUMIF(範囲, 条件, …) → 条件(1) がローカル・範囲(0) がリモート
+ * SUMIFS(合計範囲, 条件範囲1, 条件1, …) → (条件k+1, 条件範囲k) の対の列
+ * ※ 条件が定数（"承認済" 等）ならローカル側の参照が無く対は生まれない（filter-key 辺のみ残る）
+ * ※ IFERROR 等で包まれた数式は引数位置が取れないため対象外（トップレベル関数のみ）
+ */
+function keyPairArgs(f: string | undefined, maxArg: number): [number, number][] {
+  if (f === 'VLOOKUP' || f === 'XLOOKUP' || f === 'MATCH') return [[0, 1]];
+  if (f === 'SUMIF' || f === 'AVERAGEIF' || f === 'COUNTIF') return [[1, 0]];
+  if (f === 'SUMIFS' || f === 'AVERAGEIFS') {
+    const out: [number, number][] = [];
+    for (let k = 1; k + 1 <= maxArg; k += 2) out.push([k + 1, k]);
+    return out;
+  }
+  if (f === 'COUNTIFS') {
+    const out: [number, number][] = [];
+    for (let k = 0; k + 1 <= maxArg; k += 2) out.push([k + 1, k]);
+    return out;
+  }
+  return [];
+}
+
+const KEY_LINK_CAP = 800;
+
+export function formulaLineage(grids: RawGrid[], regions: Region[]): { edges: Edge[]; keyLinks: KeyLink[] } {
   const edges = new Map<string, Edge>();
+  const keyLinks = new Map<string, KeyLink>();
   const locate = buildLocator(regions); // region をシート単位に索引化（呼び出しごとの全件探索を回避）
   // フィルダウンで構造的に同一な数式セルの重複処理を避けるための既処理指紋集合。
   const seen = new Set<string>();
@@ -399,9 +564,15 @@ export function formulaEdges(grids: RawGrid[], regions: Region[]): Edge[] {
       const shapeKey = `${dst.region.id} ${dst.colName} ${formulaShape(cell.formula)}`;
       if (seen.has(shapeKey)) continue;
       seen.add(shapeKey);
-      for (const ref of extractRefs(cell.formula, g.name)) {
-        const type = classifyRef(cell.formula, ref);
+      const fname = topFunc(cell.formula);
+      const refs = extractRefs(cell.formula, g.name);
+      for (const ref of refs) {
+        const baseType = classifyRef(cell.formula, ref);
         for (let c = ref.c0; c <= ref.c1; c++) {
+          // VLOOKUP のテーブル参照の先頭列は「照合されるキー列」なので lookup-join でなく filter-key
+          //（テーブルが1列だけなら、キー自身が戻り値なので lookup-join のまま）
+          const type: RelType = (fname === 'VLOOKUP' && ref.argIndex === 1 && c === ref.c0 && ref.c1 > ref.c0)
+            ? 'filter-key' : baseType;
           // 数式参照は同一ファイル内で解決（Excel 数式はファイルをまたがない）
           const src = locate(g.file, ref.sheet, c, ref.r0);
           if (!src) continue;
@@ -416,9 +587,44 @@ export function formulaEdges(grids: RawGrid[], regions: Region[]): Edge[] {
           }
         }
       }
+      // キーの対応: ローカルキー引数 × リモートキー範囲引数を突き合わせ、表どうしを結ぶキー列の対を作る
+      // extractRefs は関数名の断片（"VLO" 等）も参照として拾うことがあるため、
+      // 同じ引数位置の参照のうち「実在の表に解決できた最初のもの」を採用する
+      const resolveArg = (ai: number) => {
+        for (const r of refs) {
+          if (r.argIndex !== ai) continue;
+          // 範囲は先頭列＝キー列（VLOOKUP テーブル・SUMIFS 条件範囲とも先頭列が照合対象）
+          const loc = locate(g.file, r.sheet, r.c0, r.r0);
+          if (loc) return loc;
+        }
+        return null;
+      };
+      const maxArg = refs.reduce((m, r) => Math.max(m, r.argIndex), -1);
+      for (const [la, ra] of keyPairArgs(fname, maxArg)) {
+        const local = resolveArg(la);
+        const remote = resolveArg(ra);
+        if (!local || !remote) continue;
+        if (local.region.id === remote.region.id) continue; // 同一表内の照合は表間キーでない
+        const a = `${local.region.id}:${local.colName}`;
+        const b = `${remote.region.id}:${remote.colName}`;
+        const lk = `${a}|${b}|${fname}`;
+        const cur = keyLinks.get(lk);
+        if (cur) cur.count++;
+        else keyLinks.set(lk, {
+          a, b, via: `${dst.region.id}:${dst.colName}`,
+          fn: fname ?? '', evidence: cell.formula, count: 1,
+        });
+      }
     }
   }
-  return [...edges.values()];
+  // 病的に多い場合は利用回数の多い対だけ残す（表示・転送とも上位で十分）
+  const links = [...keyLinks.values()].sort((x, y) => y.count - x.count);
+  return { edges: [...edges.values()], keyLinks: links.length > KEY_LINK_CAP ? links.slice(0, KEY_LINK_CAP) : links };
+}
+
+/** 後方互換ラッパ（既存スクリプト・検証ツール用）。新規コードは formulaLineage を使う */
+export function formulaEdges(grids: RawGrid[], regions: Region[]): Edge[] {
+  return formulaLineage(grids, regions).edges;
 }
 
 // ============================================================
@@ -686,18 +892,96 @@ export interface RelationGraph {
   edges: Edge[];
   warnings: RelationWarning[];
   sheetStructures: SheetStructure[];
+  keyLinks?: KeyLink[]; // 表と表を結ぶキー列の対応（VLOOKUP/SUMIFS 等の引数位置から抽出）
   // 巨大グラフでは保存前に辺を領域ペア単位へ集約する（メイン側の JSON.parse / 集約コストを抑えるため）。
   // その際に元の総辺数と集約済みフラグを添える（UI 表示・キャッシュ再利用の双方で使う）。
   edgeTotal?: number;
   edgeCollapsed?: boolean;
 }
 
+/** 根拠表示用に数式を短縮する（長大な SUMIFS 等をそのまま出さない） */
+const shortFormula = (f: string, max = 70) => f.length <= max ? f : `${f.slice(0, max)}…`;
+
+/**
+ * 構造的に検出したキー（値の一意性由来）へ、数式からの「キー利用」根拠を融合する。
+ *  - keyLinks の a 側（数式側）: 「この列をキーに ○○ の表から引き当て/集計している」
+ *  - keyLinks の b 側（参照される側）: 「○○ の数式がこの列を照合キーとして参照」
+ *  - 加えて cross-region の filter-key 辺の from 側（条件が定数で対が作れなかったケースの補完）
+ * 一意な列が右側の数値列などで構造検出から漏れていても、キー利用の根拠があれば昇格させる。
+ */
+function enrichKeysWithUsage(regions: Region[], edges: Edge[], keyLinks: KeyLink[]): void {
+  const byId = new Map(regions.map(r => [r.id, r]));
+  const regionIdOf = (k: string) => k.slice(0, k.indexOf(':'));
+  const colOf = (k: string) => k.slice(k.indexOf(':') + 1);
+  const sheetOf = (rid: string) => byId.get(rid)?.sheet ?? rid;
+
+  // 列キー → 追加根拠メッセージ（重複防止のため kind ごとに1つ）
+  const usage = new Map<string, Map<string, string>>();
+  const addUsage = (key: string, kind: string, msg: string) => {
+    let m = usage.get(key);
+    if (!m) { m = new Map(); usage.set(key, m); }
+    if (!m.has(kind)) m.set(kind, msg);
+  };
+  for (const l of keyLinks) {
+    addUsage(l.a, `out:${regionIdOf(l.b)}`,
+      `この列をキーに「${sheetOf(regionIdOf(l.b))}」の表と照合（${l.fn}、例: ${shortFormula(l.evidence)}）`);
+    addUsage(l.b, `in:${regionIdOf(l.a)}`,
+      `「${sheetOf(regionIdOf(l.a))}」の数式がこの列を照合キーとして参照（${l.fn}）`);
+  }
+  for (const e of edges) {
+    if (e.type !== 'filter-key') continue;
+    const fr = regionIdOf(e.from), to = regionIdOf(e.to);
+    if (fr === to) continue;
+    addUsage(e.from, `in:${to}`,
+      `「${sheetOf(to)}」の数式がこの列を条件キーとして参照（例: ${shortFormula(e.evidence)}）`);
+  }
+
+  for (const [key, msgs] of usage) {
+    const reg = byId.get(regionIdOf(key));
+    if (!reg) continue;
+    const colName = colOf(key);
+    const col = reg.columns.find(c => c.name === colName);
+    if (!col) continue;
+    if (!reg.keys) reg.keys = { keys: [] };
+    let k = reg.keys.keys.find(x => x.column === colName);
+    if (!k) {
+      // 構造検出に無かった列でも、キー利用の根拠があれば追加する。
+      // 値が全行一意なら主キー、そうでなければ軸（結合キー）として登録
+      const st = col.stats;
+      const uniquePrimary = !!st && st.uniq === st.filled && st.filled >= 3;
+      k = {
+        column: colName, c: col.c, role: uniquePrimary ? 'primary' : 'axis',
+        confidence: uniquePrimary ? 0.9 : 0.7,
+        evidence: uniquePrimary ? [`全${st!.filled}行で値がすべて異なる（重複なし）`] : [],
+      };
+      reg.keys.keys.push(k);
+    } else {
+      k.confidence = Math.max(k.confidence, 0.9); // 構造＋利用の両根拠が揃った
+    }
+    k.evidence.push(...msgs.values());
+  }
+  for (const reg of regions) {
+    const ks = reg.keys?.keys;
+    if (!ks) continue;
+    // 一意列が複数ある場合（社員ID と 氏名 が両方一意 等）は、最左の列と
+    // 数式からキー利用の根拠がある列だけを主キーとして残す（候補キーの羅列はノイズ）
+    const primaries = ks.filter(k => k.role === 'primary');
+    if (primaries.length > 1) {
+      const leftmost = Math.min(...primaries.map(k => k.c));
+      reg.keys!.keys = ks.filter(k => k.role !== 'primary' || k.c === leftmost || k.evidence.length > 1);
+    }
+    // 列順で安定表示（主キー→軸、左の列から）
+    reg.keys!.keys.sort((a, b) => (a.role === b.role ? a.c - b.c : a.role === 'primary' ? -1 : 1));
+  }
+}
+
 /**
  * 領域・数式辺・コピー辺からグラフを組み立てる共通処理。
  * analyzeGrids（単一パス）と analyzeArtifacts（ファイル単位）で結果を一致させるため共通化する。
  */
-function assembleGraph(regions: Region[], fEdges: Edge[], copyEdges: Edge[]): RelationGraph {
+function assembleGraph(regions: Region[], fEdges: Edge[], copyEdges: Edge[], keyLinks: KeyLink[] = []): RelationGraph {
   const edges = [...fEdges, ...copyEdges];
+  enrichKeysWithUsage(regions, edges, keyLinks);
   const warnings: RelationWarning[] = [];
   for (const reg of regions) {
     for (const col of reg.columns) {
@@ -712,16 +996,16 @@ function assembleGraph(regions: Region[], fEdges: Edge[], copyEdges: Edge[]): Re
   }
   // シート内部の階層フロー構造（一目で構造把握用）。既算出の辺からの後処理なので軽い
   const sheetStructures = buildSheetStructures(regions, edges);
-  return { regions, edges, warnings, sheetStructures };
+  return { regions, edges, warnings, sheetStructures, keyLinks };
 }
 
 export function analyzeGrids(grids: RawGrid[]): RelationGraph {
   const regions = grids.flatMap(detectRegions);
-  const fEdges = formulaEdges(grids, regions);
+  const { edges: fEdges, keyLinks } = formulaLineage(grids, regions);
   // 数式で連結済みの列ペア（無向）。コピー推定の重複ノイズ抑制に使う
   const formulaLinked = new Set(fEdges.map(e => unorderedPair(e.from, e.to)));
   const copyEdges = valueCopyEdges(grids, regions, formulaLinked);
-  return assembleGraph(regions, fEdges, copyEdges);
+  return assembleGraph(regions, fEdges, copyEdges, keyLinks);
 }
 
 export async function analyzeBuffer(buffer: Buffer): Promise<RelationGraph> {
@@ -748,6 +1032,7 @@ const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve
 export async function analyzeArtifacts(arts: { filename: string; load: () => Promise<Buffer> }[]): Promise<RelationGraph> {
   const regionsAll: Region[] = [];
   const fEdgesAll: Edge[] = [];
+  const keyLinksAll: KeyLink[] = [];
   const fpsAll: ColFingerprint[] = [];
   for (const a of arts) {
     // バッファはここで初めて取得する（Drive 等からの遅延ロード）。前ファイルの原本を保持したまま
@@ -760,7 +1045,10 @@ export async function analyzeArtifacts(arts: { filename: string; load: () => Pro
     const regions = grids.flatMap(detectRegions);
     regionsAll.push(...regions);
     await yieldToEventLoop();
-    fEdgesAll.push(...formulaEdges(grids, regions)); // 数式参照はファイル内で解決するのでファイル単位で確定
+    // 数式参照はファイル内で解決するのでファイル単位で確定（キーの対応も同様にファイル内で閉じる）
+    const lineage = formulaLineage(grids, regions);
+    fEdgesAll.push(...lineage.edges);
+    keyLinksAll.push(...lineage.keyLinks);
     await yieldToEventLoop();
     fpsAll.push(...fingerprintColumns(grids, regions)); // 生の値は捨て、指紋だけ持ち越す
     await yieldToEventLoop(); // 次ファイルへ進む前に譲る
@@ -768,5 +1056,5 @@ export async function analyzeArtifacts(arts: { filename: string; load: () => Pro
   // 数式で連結済みの列ペア（無向）。コピー推定の重複ノイズ抑制に使う
   const formulaLinked = new Set(fEdgesAll.map(e => unorderedPair(e.from, e.to)));
   const copyEdges = valueCopyEdgesFromFingerprints(fpsAll, formulaLinked);
-  return assembleGraph(regionsAll, fEdgesAll, copyEdges);
+  return assembleGraph(regionsAll, fEdgesAll, copyEdges, keyLinksAll);
 }

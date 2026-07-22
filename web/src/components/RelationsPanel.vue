@@ -8,6 +8,7 @@
 //   ④ 注意（手入力混入など）
 import { computed, ref, watch } from 'vue'
 import { get, getProjectRelations, type Artifact, type RelationGraph, type RelEdge, type RelType, type RelRegion, type SheetPreview } from '../api'
+// ①' キー・軸: 各表の主キー／軸列（何を軸に1行が決まるか）と、表どうしを結ぶキーの対応も表示する
 
 const props = defineProps<{ projectId: number; artifacts: Artifact[] }>()
 const emit = defineEmits<{ (e: 'open-attention'): void }>()
@@ -275,6 +276,7 @@ const selectedSummary = computed(() => {
   const mixedCols = r.columns.filter(c => c.mixedFormula).length
   return {
     sheet: r.sheet,
+    keys: r.keys ?? null,
     range: `${colLetterRef(r.c0)}${r.r0}:${colLetterRef(r.c1)}${r.r1}`,
     rowCount: stat?.rowCount ?? r.dataRowCount,
     totalCells: stat ? stat.rowCount * stat.columnCount : null,
@@ -339,11 +341,34 @@ const aiRegionIds = computed(() => {
   return s
 })
 
-// ノード見出し2段目の小さなメタ情報行（複数ファイル時のファイル名 / AI解読の有無 / 列数）
+// ---- キー・軸（この表は何を軸に1行が決まるか） ----
+// ノード見出し用の短い表記: 主キーがあれば「🔑 社員ID」、無ければ複合軸「軸 部署×月」
+const keyBadge = (r: RelRegion): string | null => {
+  const ks = r.keys?.keys
+  if (!ks || ks.length === 0) return null
+  const primary = ks.filter(k => k.role === 'primary').map(k => k.column)
+  if (primary.length) return `🔑${primary.join('・')}`
+  const axes = ks.filter(k => k.role === 'axis').map(k => k.column)
+  return axes.length ? `軸 ${axes.join('×')}` : null
+}
+// 列展開表示で 🔑 を付けるための、表領域→キー列名集合
+const keyColsByRegion = computed(() => {
+  const m = new Map<string, Set<string>>()
+  graph.value?.regions.forEach(r => m.set(r.id, new Set((r.keys?.keys ?? []).map(k => k.column))))
+  return m
+})
+const isKeyCol = (rid: string, col: string) => keyColsByRegion.value.get(rid)?.has(col) ?? false
+
+// 表と表を結ぶキー列の対応（利用回数の多い順）
+const keyLinks = computed(() => [...(graph.value?.keyLinks ?? [])].sort((a, b) => b.count - a.count))
+const KEYLINK_SHOW = 50
+
+// ノード見出し2段目の小さなメタ情報行（複数ファイル時のファイル名 / AI解読の有無 / キー / 列数）
 const metaLine = (r: RelRegion): string =>
   [
     multiFile.value ? nodeTitle(r).sub : null,
     aiRegionIds.value.has(r.id) ? 'AI' : null,
+    keyBadge(r),
     `${r.columns.length}列`,
   ].filter(Boolean).join(' · ')
 
@@ -568,6 +593,7 @@ function colLetterRef(c: number): string {
               <template v-if="showColumns">
                 <text v-for="(col, ci) in n.region.columns" :key="col.c"
                   :x="n.x + 12" :y="n.y + headerH + 18 + ci * COL_ROW_H" font-size="12.5" fill="#333">
+                  <tspan v-if="isKeyCol(n.region.id, col.name)">🔑</tspan>
                   {{ fitText(col.name, n.w - 30, 12.5) }}
                   <tspan v-if="col.hasFormula" fill="#e65100"> ƒ</tspan>
                   <tspan v-if="col.mixedFormula" fill="#c62828"> ⚠</tspan>
@@ -578,8 +604,35 @@ function colLetterRef(c: number): string {
         </div>
         <p class="muted caption">
           箱＝{{ multiFile ? '表（ファイル・シート単位、' : '表（シート単位、' }}1シートに複数表があれば自動分割）。矢印は「左の表 → 右の表」へデータが流れる向き。
-          列を開くと <span class="ff">ƒ</span>＝数式列、<span class="warn-mark">⚠</span>＝数式列なのに一部手入力の疑い、が表示されます。
+          見出しの 🔑 はその表の主キー（無ければ軸列）です。
+          列を開くと 🔑＝キー列、<span class="ff">ƒ</span>＝数式列、<span class="warn-mark">⚠</span>＝数式列なのに一部手入力の疑い、が表示されます。
         </p>
+
+        <!-- キーのつながり: 表と表を結ぶキー列の対応（VLOOKUP/SUMIFS 等の引数位置から抽出） -->
+        <template v-if="keyLinks.length">
+          <h3>キーのつながり — 表と表を結ぶキー列</h3>
+          <p class="muted" style="margin:-2px 0 8px">
+            数式の引数位置から「どの列とどの列が突き合わされているか」を抽出しています。
+            表の結合キー（主キー・外部キーの対応）が一目で分かります。⇔ の左が数式を書いた側、右が参照されている側です。
+          </p>
+          <table class="keylink-table">
+            <thead>
+              <tr><th>この表のキー</th><th></th><th>相手の表のキー</th><th>結合方法</th><th>根拠（実際の数式の例）</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="(l, i) in keyLinks.slice(0, KEYLINK_SHOW)" :key="i">
+                <td>{{ short(l.a) }}</td>
+                <td class="kl-arrow">⇔</td>
+                <td>{{ short(l.b) }}</td>
+                <td class="kl-fn"><span class="badge info">{{ l.fn }}</span><span v-if="l.count > 1" class="muted"> ×{{ l.count }}</span></td>
+                <td class="evidence"><code>{{ l.evidence }}</code></td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-if="keyLinks.length > KEYLINK_SHOW" class="muted" style="margin:6px 0 0">
+            利用回数の多い上位 {{ KEYLINK_SHOW }} 件を表示しています（全 {{ keyLinks.length.toLocaleString() }} 件）。
+          </p>
+        </template>
 
         <!-- 選択シートの要約 -->
         <div v-if="selectedSummary" class="sheet-summary">
@@ -591,6 +644,26 @@ function colLetterRef(c: number): string {
           <table class="ss-table">
             <tbody>
               <tr><th>表領域</th><td>{{ selectedSummary.range }}（{{ selectedSummary.colCount }}列）</td></tr>
+              <tr>
+                <th>キー・軸（推定）</th>
+                <td>
+                  <template v-if="selectedSummary.keys">
+                    <div v-for="(k, i) in selectedSummary.keys.keys" :key="i" class="key-item">
+                      <span class="key-chip" :class="k.role === 'primary' ? 'key-primary' : 'key-axis'">
+                        {{ k.role === 'primary' ? '🔑 主キー' : '軸' }}
+                      </span>
+                      <strong>{{ k.column }}</strong>
+                      <ul class="key-evidence">
+                        <!-- 軸列の根拠（組合せの説明）は下の 📐 行と重複するので個別表示から除く -->
+                        <li v-for="(ev, j) in k.evidence.filter(ev => ev !== selectedSummary!.keys!.axisNote)" :key="j">{{ ev }}</li>
+                      </ul>
+                    </div>
+                    <p v-if="selectedSummary.keys.axisNote" class="key-note">📐 {{ selectedSummary.keys.axisNote }}</p>
+                    <p v-if="selectedSummary.keys.colAxis" class="key-note">📅 {{ selectedSummary.keys.colAxis }}</p>
+                  </template>
+                  <span v-else class="muted">検出できませんでした（一意な列・軸らしい列の組が見つからない表です）</span>
+                </td>
+              </tr>
               <tr><th>総セル数</th><td>{{ selectedSummary.totalCells != null ? selectedSummary.totalCells.toLocaleString() + 'セル' : '—' }}</td></tr>
               <tr><th>行数</th><td>{{ selectedSummary.rowCount != null ? selectedSummary.rowCount.toLocaleString() + '行' : '—' }}</td></tr>
               <tr>
@@ -794,6 +867,22 @@ h3 { font-size:14px; margin:20px 0 8px; }
 .ss-table th { text-align:left; width:130px; vertical-align:top; color:#6b7280; font-weight:600; white-space:nowrap }
 .ss-table tr:last-child th, .ss-table tr:last-child td { border-bottom:none }
 .ss-chip { display:inline-block; margin:2px 5px 2px 0; padding:2px 10px; background:#eef2f7; border-radius:12px; font-size:12.5px; color:#374151 }
+
+/* キー・軸（推定） */
+.key-item { margin:2px 0 8px }
+.key-item:last-of-type { margin-bottom:2px }
+.key-chip { display:inline-block; margin-right:7px; padding:1px 9px; border-radius:999px; font-size:11.5px; font-weight:700; white-space:nowrap }
+.key-chip.key-primary { background:#fdf3e0; color:#a05a00; border:1px solid #f0dcb4 }
+.key-chip.key-axis { background:#e8f0fb; color:#0d4ea6; border:1px solid #d0e0f5 }
+.key-evidence { margin:3px 0 0; padding-left:20px; font-size:12px; color:#6b7280; line-height:1.6 }
+.key-note { margin:6px 0 0; font-size:12.5px; color:#374151 }
+
+/* キーのつながり */
+.keylink-table { width:100%; border-collapse:collapse; font-size:13px }
+.keylink-table th { text-align:left; padding:6px 8px; background:#f2f6fb; color:#3b4657; font-size:12px; white-space:nowrap; border-bottom:1px solid #e3e7ec }
+.keylink-table td { padding:6px 8px; border-bottom:1px solid #eef1f5; vertical-align:top }
+.kl-arrow { text-align:center; color:#888; white-space:nowrap }
+.kl-fn { white-space:nowrap }
 
 /* シート内部構造（階層フロー図） */
 .ss-struct { margin-top:14px; padding-top:12px; border-top:1px solid #eef1f4 }
