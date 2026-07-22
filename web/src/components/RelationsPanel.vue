@@ -221,6 +221,9 @@ const structNodeDetail = computed(() => {
 // 表と表を結ぶキー列の対応（利用回数の多い順）
 const keyLinks = computed(() => [...(graph.value?.keyLinks ?? [])].sort((a, b) => b.count - a.count))
 const KEYLINK_SHOW = 50
+// ER図の表示範囲: 既定は「対応（紐づき）に参加しているキー行・表だけ」に集約して見やすく。
+// トグルで全キー・全表（キー検出済み）に切り替えられる
+const showAllKeys = ref(false)
 
 // 共通の層割り（入次数0を左端に、最長路で層を決める。循環は打ち切り）
 function layerize(ids: string[], edges: { from: string; to: string }[]): Map<string, number> {
@@ -302,8 +305,11 @@ const keyDiagram = computed(() => {
   const withKeys = g.regions.filter(r => (r.keys?.keys?.length ?? 0) > 0)
   if (withKeys.length === 0) return null
   const linkedIds = new Set(links.flatMap(l => [regionIdOf(l.a), regionIdOf(l.b)]))
+  // 既定（集約表示）は紐づきに参加している表だけ。紐づきが1つも無いときは集約できないので全表
+  const condensed = !showAllKeys.value && links.length > 0
+  const pool = condensed ? withKeys.filter(r => linkedIds.has(r.id)) : withKeys
   // 紐づきに参加する表を優先し、残りは主キー持ちを優先。多すぎる場合は打ち切り
-  const show = [...withKeys].sort((a, b) => {
+  const show = [...pool].sort((a, b) => {
     const la = linkedIds.has(a.id) ? 1 : 0, lb = linkedIds.has(b.id) ? 1 : 0
     if (la !== lb) return lb - la
     const pa = a.keys!.keys.some(k => k.role === 'primary') ? 1 : 0
@@ -344,8 +350,15 @@ const keyDiagram = computed(() => {
     regs.forEach((r, i) => orderIndex.set(r.id, i))
   }
 
-  // 接続されているキー列（行のハイライト用）
+  // 接続されているキー列（行のハイライト・集約表示のフィルタ用）
   const connectedKeys = new Set(shownLinks.flatMap(l => [l.a, l.b]))
+  // 集約表示では紐づきに参加しているキー行だけを箱に出す（万一空になる表は全キーへフォールバック）
+  const keysOf = (r: RelRegion) => {
+    const all = r.keys!.keys
+    if (!condensed) return all
+    const conn = all.filter(k => connectedKeys.has(`${r.id}:${k.column}`))
+    return conn.length > 0 ? conn : all
+  }
   // カディナリティ: 列の値が全行一意なら 1（マスタ側）、繰り返しがあれば N（明細側）
   const cardOf = (key: string): string => {
     const st = regionById.value.get(regionIdOf(key))?.columns.find(c => c.name === colOf(key))?.stats
@@ -353,7 +366,7 @@ const keyDiagram = computed(() => {
   }
 
   // 高さ: 層ごとの合計を出し、低い層は縦中央に寄せてバランスさせる
-  const heightOf = (r: RelRegion) => KD.HEAD + r.keys!.keys.length * KD.ROW + 6
+  const heightOf = (r: RelRegion) => KD.HEAD + keysOf(r).length * KD.ROW + 6
   const layerHeights = layersSorted.map(([, regs]) => regs.reduce((s, r) => s + heightOf(r), 0) + (regs.length - 1) * KD.GY)
   const maxLayerH = Math.max(...layerHeights, 90)
 
@@ -363,7 +376,7 @@ const keyDiagram = computed(() => {
   layersSorted.forEach(([l, regs], li) => {
     let y = KD.PAD + (maxLayerH - layerHeights[li]) / 2
     for (const r of regs) {
-      const ks = r.keys!.keys
+      const ks = keysOf(r)
       const h = heightOf(r)
       const rows: KdRow[] = ks.map((k, i) => {
         const top = y + KD.HEAD + i * KD.ROW
@@ -409,7 +422,7 @@ const keyDiagram = computed(() => {
     nodes, edges,
     width: KD.PAD * 2 + (maxLayer + 1) * (KD.W + KD.GX) - KD.GX,
     height: KD.PAD * 2 + maxLayerH,
-    omitted: withKeys.length - show.length, headH: KD.HEAD, rowH: KD.ROW,
+    omitted: withKeys.length - show.length, condensed, headH: KD.HEAD, rowH: KD.ROW,
   }
 })
 
@@ -514,8 +527,12 @@ function colLetterRef(c: number): string {
                 線はキーどうしの紐づきで、端の <strong>1</strong>＝値が一意（マスタ側）、<strong>N</strong>＝繰り返しあり（明細側）。
                 線にマウスを乗せると照合方法が表示され、根拠は下の対応表で確認できます。
                 <strong>箱をクリック</strong>すると、その表の詳細（キーの根拠・統計・内部構造・AI解読）が下に表示されます。
+                <template v-if="keyDiagram.condensed">いまは<strong>対応があるキー行・表だけ</strong>に集約して表示中です。</template>
               </p>
             </div>
+            <button v-if="keyLinks.length" class="sec-action" @click="showAllKeys = !showAllKeys">
+              {{ showAllKeys ? '対応があるキーだけに集約' : 'すべてのキー・表を表示' }}
+            </button>
           </div>
           <div class="graph-wrap">
             <svg :width="keyDiagram.width" :height="keyDiagram.height" :viewBox="`0 0 ${keyDiagram.width} ${keyDiagram.height}`">
@@ -550,7 +567,12 @@ function colLetterRef(c: number): string {
             キーどうしの紐づき（数式による照合）はまだ検出されていません。各表のキーのみ表示しています。
           </p>
           <p v-if="keyDiagram.omitted > 0" class="muted" style="margin:8px 0 0">
-            紐づきの無い {{ keyDiagram.omitted }} 表は省略しています（キー検出済み。詳細は「関係の一覧」で確認できます）。
+            <template v-if="keyDiagram.condensed">
+              対応（紐づき）の無い {{ keyDiagram.omitted }} 表は非表示です。「すべてのキー・表を表示」で確認できます。
+            </template>
+            <template v-else>
+              表が多いため {{ keyDiagram.omitted }} 表を省略しています（紐づき参加・主キー持ちを優先表示）。
+            </template>
           </p>
 
         <!-- 選択シートの要約（ER図の箱をクリックすると表示: キーの根拠・統計・内部構造・AI解読） -->
@@ -918,6 +940,7 @@ h3 { font-size:14px; margin:20px 0 8px; }
 .sec-titles { min-width:0 }
 .sec-head h3 { margin:0; font-size:14.5px; color:#10325c }
 .sec-sub { margin:3px 0 0; font-size:12.5px; color:#6b7280; line-height:1.6 }
+.sec-action { margin-left:auto; white-space:nowrap; flex-shrink:0; padding:5px 12px; font-size:12.5px }
 
 /* 折りたたみセクション（関係マップ・関係の一覧など、普段は閉じておく詳細データ） */
 details.sec-fold > summary { cursor:pointer; display:flex; align-items:center; gap:8px; font-size:14px; list-style:none }
