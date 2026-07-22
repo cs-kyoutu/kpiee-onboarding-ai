@@ -404,9 +404,8 @@ function colLetterRef(c: number): string {
   <div class="panel">
     <h2>シート関係 — どの表がどう繋がっているか</h2>
     <p class="muted">
-      アップロードした全ファイルの中で「どの表のどの列が、別のどの表から計算・転記されているか」を自動解析します。
-      <span v-if="multiFile">ファイルが複数あるので、<strong>ファイルをまたぐ関係</strong>も対象です。</span>
-      手で値を貼った（数式が無い）箇所は値の一致から推定し<span style="color:#c62828">赤い破線</span>で示します。
+      「どの表のどの列が、別のどの表から計算・転記されているか」を全ファイル横断で自動解析します。
+      <span v-if="multiFile"><strong>ファイルをまたぐ関係</strong>も対象です。</span>
     </p>
 
     <div v-if="analyzableCount === 0" class="muted" style="padding:12px 0">
@@ -542,24 +541,28 @@ function colLetterRef(c: number): string {
           <p class="muted ov-foot">この解説は AI解読（②）の結果から自動生成されています。資料を追加・変更して再解読すると更新されます。</p>
         </div>
 
-        <!-- 凡例 -->
-        <div class="legend">
-          <span v-for="t in usedTypes" :key="t" class="legend-item">
-            <span class="swatch" :style="{ background: relMeta(t).color, borderStyle: relMeta(t).dashed ? 'dashed' : 'solid' }"></span>
-            <strong>{{ relMeta(t).label }}</strong>：{{ relMeta(t).desc }}
-          </span>
-        </div>
-
-        <!-- 表示切替: 列を隠すと表どうしの繋がりだけ見えて分かりやすい -->
-        <div class="graph-toolbar">
-          <button @click="showColumns = !showColumns">
-            {{ showColumns ? '列を隠す（表だけ表示）' : '各表の列も表示する' }}
-          </button>
-          <span class="muted">表をクリックすると関係するシートだけ強調され、要約が下に表示されます。もう一度クリックで解除。</span>
-        </div>
-
-        <!-- グラフ -->
-        <div class="graph-wrap">
+        <!-- 関係マップ: 凡例・グラフ・クリック時の表要約をひとつのセクションに -->
+        <section class="sec">
+          <div class="sec-head">
+            <span class="sec-ico">🔀</span>
+            <div class="sec-titles">
+              <h3>関係マップ — どの表からどの表へデータが流れるか</h3>
+              <p class="sec-sub">
+                箱＝表（シート）、矢印＝データの流れ。手コピー疑いは<span style="color:#c62828">赤い破線</span>。
+                <strong>表をクリック</strong>すると、その表のキー・内部構造・AI解読が下に表示されます。
+              </p>
+            </div>
+            <button class="sec-action" @click="showColumns = !showColumns">
+              {{ showColumns ? '列を隠す' : '各表の列も表示' }}
+            </button>
+          </div>
+          <div class="legend">
+            <span v-for="t in usedTypes" :key="t" class="legend-item">
+              <span class="swatch" :style="{ background: relMeta(t).color, borderStyle: relMeta(t).dashed ? 'dashed' : 'solid' }"></span>
+              <strong>{{ relMeta(t).label }}</strong>：{{ relMeta(t).desc }}
+            </span>
+          </div>
+          <div class="graph-wrap">
           <svg :width="layout.width" :height="layout.height" :viewBox="`0 0 ${layout.width} ${layout.height}`">
             <defs>
               <marker v-for="t in usedTypes" :key="t" :id="`arrow-${t}`" markerWidth="9" markerHeight="9"
@@ -603,38 +606,11 @@ function colLetterRef(c: number): string {
           </svg>
         </div>
         <p class="muted caption">
-          箱＝{{ multiFile ? '表（ファイル・シート単位、' : '表（シート単位、' }}1シートに複数表があれば自動分割）。矢印は「左の表 → 右の表」へデータが流れる向き。
-          見出しの 🔑 はその表の主キー（無ければ軸列）です。
-          列を開くと 🔑＝キー列、<span class="ff">ƒ</span>＝数式列、<span class="warn-mark">⚠</span>＝数式列なのに一部手入力の疑い、が表示されます。
+          見出しの 🔑＝その表の主キー（無ければ軸列）。列を開くと 🔑＝キー列、<span class="ff">ƒ</span>＝数式列、<span class="warn-mark">⚠</span>＝一部手入力の疑い。
+          {{ multiFile ? 'ファイル・シート単位で、' : '' }}1シートに複数の表があれば自動分割されます。
         </p>
 
-        <!-- キーのつながり: 表と表を結ぶキー列の対応（VLOOKUP/SUMIFS 等の引数位置から抽出） -->
-        <template v-if="keyLinks.length">
-          <h3>キーのつながり — 表と表を結ぶキー列</h3>
-          <p class="muted" style="margin:-2px 0 8px">
-            数式の引数位置から「どの列とどの列が突き合わされているか」を抽出しています。
-            表の結合キー（主キー・外部キーの対応）が一目で分かります。⇔ の左が数式を書いた側、右が参照されている側です。
-          </p>
-          <table class="keylink-table">
-            <thead>
-              <tr><th>この表のキー</th><th></th><th>相手の表のキー</th><th>結合方法</th><th>根拠（実際の数式の例）</th></tr>
-            </thead>
-            <tbody>
-              <tr v-for="(l, i) in keyLinks.slice(0, KEYLINK_SHOW)" :key="i">
-                <td>{{ short(l.a) }}</td>
-                <td class="kl-arrow">⇔</td>
-                <td>{{ short(l.b) }}</td>
-                <td class="kl-fn"><span class="badge info">{{ l.fn }}</span><span v-if="l.count > 1" class="muted"> ×{{ l.count }}</span></td>
-                <td class="evidence"><code>{{ l.evidence }}</code></td>
-              </tr>
-            </tbody>
-          </table>
-          <p v-if="keyLinks.length > KEYLINK_SHOW" class="muted" style="margin:6px 0 0">
-            利用回数の多い上位 {{ KEYLINK_SHOW }} 件を表示しています（全 {{ keyLinks.length.toLocaleString() }} 件）。
-          </p>
-        </template>
-
-        <!-- 選択シートの要約 -->
+        <!-- 選択シートの要約（マップの続きとして同じセクション内に表示） -->
         <div v-if="selectedSummary" class="sheet-summary">
           <div class="ss-head">
             <strong>{{ selectedSummary.sheet }}</strong>
@@ -783,12 +759,50 @@ function colLetterRef(c: number): string {
           </div>
         </div>
 
-        <!-- 関係リスト -->
-        <h3>関係の一覧（根拠つき）</h3>
-        <p v-if="graph.edgeCollapsed" class="muted" style="margin:-2px 0 8px">
-          関係が {{ (graph.edgeTotal ?? 0).toLocaleString() }} 件と多いため、表どうしの関係ごとに代表的な根拠のみを表示しています。
-        </p>
-        <div v-for="grp in groupedEdges" :key="grp.type" class="rel-group">
+        </section>
+
+        <!-- キーのつながり: 表と表を結ぶキー列の対応（VLOOKUP/SUMIFS 等の引数位置から抽出） -->
+        <section v-if="keyLinks.length" class="sec">
+          <div class="sec-head">
+            <span class="sec-ico">🔑</span>
+            <div class="sec-titles">
+              <h3>キーのつながり — 表と表を結ぶキー列</h3>
+              <p class="sec-sub">
+                数式の引数位置から「どの列とどの列が突き合わされているか」を抽出。
+                ⇔ の左が数式を書いた側、右が参照されている側です。
+              </p>
+            </div>
+          </div>
+          <table class="keylink-table">
+            <thead>
+              <tr><th>この表のキー</th><th></th><th>相手の表のキー</th><th>結合方法</th><th>根拠（実際の数式の例）</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="(l, i) in keyLinks.slice(0, KEYLINK_SHOW)" :key="i">
+                <td>{{ short(l.a) }}</td>
+                <td class="kl-arrow">⇔</td>
+                <td>{{ short(l.b) }}</td>
+                <td class="kl-fn"><span class="badge info">{{ l.fn }}</span><span v-if="l.count > 1" class="muted"> ×{{ l.count }}</span></td>
+                <td class="evidence"><code>{{ l.evidence }}</code></td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-if="keyLinks.length > KEYLINK_SHOW" class="muted" style="margin:6px 0 0">
+            利用回数の多い上位 {{ KEYLINK_SHOW }} 件を表示しています（全 {{ keyLinks.length.toLocaleString() }} 件）。
+          </p>
+        </section>
+
+        <!-- 関係の一覧: 件数が多いので折りたたみ（根拠を確認したい時だけ開く） -->
+        <details class="sec sec-fold">
+          <summary>
+            <span class="sec-ico">📋</span>
+            <strong>関係の一覧（根拠つき）</strong>
+            <span class="muted">全 {{ (graph.edgeTotal ?? graph.edges.length).toLocaleString() }} 件 — クリックで展開</span>
+          </summary>
+          <p v-if="graph.edgeCollapsed" class="muted" style="margin:10px 0 0">
+            関係が {{ (graph.edgeTotal ?? 0).toLocaleString() }} 件と多いため、表どうしの関係ごとに代表的な根拠のみを表示しています。
+          </p>
+          <div v-for="grp in groupedEdges" :key="grp.type" class="rel-group">
           <div class="rel-head">
             <span class="swatch" :style="{ background: relMeta(grp.type).color, borderStyle: relMeta(grp.type).dashed ? 'dashed' : 'solid' }"></span>
             <strong>{{ relMeta(grp.type).label }}</strong>
@@ -810,6 +824,7 @@ function colLetterRef(c: number): string {
             </tbody>
           </table>
         </div>
+        </details>
 
         <!-- 注意（全件の羅列は確認不能なため、ここは要約のみ。整理表示は「⚠ 要確認」タブへ） -->
         <div v-if="graph.warnings.length" class="warn-panel">
@@ -838,15 +853,29 @@ h3 { font-size:14px; margin:20px 0 8px; }
 .ff { color:#e65100; font-weight:600 }
 .warn-mark { color:#b91c1c }
 
+/* セクションカード: パネル内の大きな区切りを統一の見た目にする（マップ / キー / 一覧） */
+.sec { margin:16px 0; padding:14px 16px; border:1px solid #e3e7ec; border-radius:12px; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,0.04) }
+.sec-head { display:flex; align-items:flex-start; gap:10px; margin-bottom:12px }
+.sec-ico { font-size:18px; line-height:1.35 }
+.sec-titles { min-width:0 }
+.sec-head h3 { margin:0; font-size:14.5px; color:#10325c }
+.sec-sub { margin:3px 0 0; font-size:12.5px; color:#6b7280; line-height:1.6 }
+.sec-action { margin-left:auto; white-space:nowrap; flex-shrink:0; padding:5px 12px; font-size:12.5px }
+
+/* 折りたたみセクション（関係の一覧など、普段は閉じておく詳細データ） */
+details.sec-fold > summary { cursor:pointer; display:flex; align-items:center; gap:8px; font-size:14px; list-style:none }
+details.sec-fold > summary::-webkit-details-marker { display:none }
+details.sec-fold > summary::after { content:'▸'; margin-left:auto; color:#9aa1ad; transition:transform .15s }
+details.sec-fold[open] > summary::after { transform:rotate(90deg) }
+details.sec-fold > summary .muted { font-size:12px }
+
 /* 凡例 */
-.legend { display:flex; flex-wrap:wrap; gap:8px 18px; margin:12px 0; padding:12px 14px; background:#f7f8fa; border:1px solid #eceff3; border-radius:8px; font-size:12.5px; color:#4b5563 }
+.legend { display:flex; flex-wrap:wrap; gap:8px 18px; margin:0 0 10px; padding:10px 14px; background:#f7f8fa; border:1px solid #eceff3; border-radius:8px; font-size:12.5px; color:#4b5563 }
 .legend-item { display:inline-flex; align-items:center; gap:7px }
 .legend-item strong { color:#1f2430 }
 .swatch { display:inline-block; width:13px; height:13px; border-radius:3px; border:2px solid transparent }
 
 /* グラフ */
-.graph-toolbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin:12px 0 8px }
-.graph-toolbar .muted { font-size:12px }
 .graph-wrap { overflow-x:auto; border:1px solid #eceff3; border-radius:10px; padding:10px; background:#fcfcfd }
 
 /* 関係リスト */
@@ -856,8 +885,8 @@ h3 { font-size:14px; margin:20px 0 8px; }
 .ai-hint { margin-top:4px; font-size:12px; color:#475569; line-height:1.5 }
 .ai-hint strong { color:#155a9e; margin-right:4px }
 
-/* 選択シートの要約 */
-.sheet-summary { margin:14px 0; padding:16px 18px; border:1px solid #e3e7ec; border-radius:10px; background:#fcfdfe; box-shadow:0 1px 3px rgba(0,0,0,0.04) }
+/* 選択シートの要約（マップで選択中のノードと同じオレンジで紐づけ） */
+.sheet-summary { margin:12px 0 2px; padding:16px 18px; border:1px solid #e3e7ec; border-left:3px solid #e65100; border-radius:10px; background:#fcfdfe }
 .ss-head { display:flex; justify-content:space-between; align-items:center; gap:8px }
 .ss-head strong { font-size:16px }
 .ss-close { padding:3px 12px; font-size:12px }
