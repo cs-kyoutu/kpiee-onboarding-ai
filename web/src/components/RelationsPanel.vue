@@ -434,8 +434,8 @@ const fileFlow = computed(() => {
   return { nodes, edges, width, height: Math.max(maxY, 80) }
 })
 
-// ---- ② キー関係図（ER風: 各表のキー列だけの箱 ＋ キーどうしの紐づき線） ----
-const KD = { W: 230, HEAD: 34, ROW: 22, GX: 170, GY: 26, PAD: 16, CAP: 24 }
+// ---- ② キー関係図（ER図: キー列だけのエンティティ箱 ＋ 直角の紐づき線 ＋ 1/N 表記） ----
+const KD = { W: 230, HEAD: 34, ROW: 24, GX: 170, GY: 30, PAD: 16, CAP: 24 }
 const keyDiagram = computed(() => {
   const g = graph.value
   if (!g) return null
@@ -462,27 +462,64 @@ const keyDiagram = computed(() => {
     if (!byLayer.has(l)) byLayer.set(l, [])
     byLayer.get(l)!.push(r)
   }
-  interface KdRow { y: number; mark: string; label: string; primary: boolean }
+  const layersSorted = [...byLayer.entries()].sort((a, b) => a[0] - b[0])
+
+  // 線の交差を減らす簡易バリセンタ: 各層を「前の層にいる接続相手の平均位置」で並べ替える
+  const partnersOf = new Map<string, string[]>()
+  for (const l of shownLinks) {
+    const a = regionIdOf(l.a), b = regionIdOf(l.b)
+    if (!partnersOf.has(a)) partnersOf.set(a, [])
+    if (!partnersOf.has(b)) partnersOf.set(b, [])
+    partnersOf.get(a)!.push(b)
+    partnersOf.get(b)!.push(a)
+  }
+  const orderIndex = new Map<string, number>()
+  for (const [l, regs] of layersSorted) {
+    if (l > 0) {
+      const score = (id: string) => {
+        const ps = (partnersOf.get(id) ?? []).filter(p => (layerOf.get(p) ?? 0) < l && orderIndex.has(p))
+        return ps.length === 0 ? 1e9 : ps.reduce((s, p) => s + orderIndex.get(p)!, 0) / ps.length
+      }
+      regs.sort((x, y) => score(x.id) - score(y.id))
+    }
+    regs.forEach((r, i) => orderIndex.set(r.id, i))
+  }
+
+  // 接続されているキー列（行のハイライト用）
+  const connectedKeys = new Set(shownLinks.flatMap(l => [l.a, l.b]))
+  // カディナリティ: 列の値が全行一意なら 1（マスタ側）、繰り返しがあれば N（明細側）
+  const cardOf = (key: string): string => {
+    const st = regionById.value.get(regionIdOf(key))?.columns.find(c => c.name === colOf(key))?.stats
+    return st ? (st.uniq === st.filled ? '1' : 'N') : ''
+  }
+
+  // 高さ: 層ごとの合計を出し、低い層は縦中央に寄せてバランスさせる
+  const heightOf = (r: RelRegion) => KD.HEAD + r.keys!.keys.length * KD.ROW + 6
+  const layerHeights = layersSorted.map(([, regs]) => regs.reduce((s, r) => s + heightOf(r), 0) + (regs.length - 1) * KD.GY)
+  const maxLayerH = Math.max(...layerHeights, 90)
+
+  interface KdRow { top: number; cy: number; mark: string; label: string; primary: boolean; connected: boolean; last: boolean }
   const nodes: { id: string; x: number; y: number; w: number; h: number; title: string; sub: string | null; rows: KdRow[] }[] = []
   const rowYOf = new Map<string, number>() // `${regionId}:${col}` → 行中心の y
-  let maxY = 0
-  for (const [l, regs] of [...byLayer.entries()].sort((a, b) => a[0] - b[0])) {
-    let y = KD.PAD
+  layersSorted.forEach(([l, regs], li) => {
+    let y = KD.PAD + (maxLayerH - layerHeights[li]) / 2
     for (const r of regs) {
       const ks = r.keys!.keys
-      const h = KD.HEAD + ks.length * KD.ROW + 6
+      const h = heightOf(r)
       const rows: KdRow[] = ks.map((k, i) => {
-        const cy = y + KD.HEAD + i * KD.ROW + KD.ROW / 2
-        rowYOf.set(`${r.id}:${k.column}`, cy)
-        return { y: cy, mark: k.role === 'primary' ? '🔑' : '◇', label: k.column, primary: k.role === 'primary' }
+        const top = y + KD.HEAD + i * KD.ROW
+        const cy = top + KD.ROW / 2
+        const key = `${r.id}:${k.column}`
+        rowYOf.set(key, cy)
+        return { top, cy, mark: k.role === 'primary' ? '🔑' : '◇', label: k.column, primary: k.role === 'primary', connected: connectedKeys.has(key), last: i === ks.length - 1 }
       })
       nodes.push({ id: r.id, x: KD.PAD + l * (KD.W + KD.GX), y, w: KD.W, h, title: r.sheet, sub: multiFile.value && r.file !== r.sheet ? r.file : null, rows })
       y += h + KD.GY
-      if (y > maxY) maxY = y
     }
-  }
+  })
   const nodeById = new Map(nodes.map(n => [n.id, n]))
-  // 同じキー列ペアは関数違いでも1本にまとめる（対応表側で個別に見せる）
+
+  // 同じキー列ペアは関数違いでも1本にまとめる（関数・根拠は対応表とツールチップで見せる）
   const pairMap = new Map<string, { a: string; b: string; fns: Set<string>; count: number }>()
   for (const l of shownLinks) {
     const k = `${l.a}|${l.b}`
@@ -494,18 +531,27 @@ const keyDiagram = computed(() => {
     const na = nodeById.get(regionIdOf(p.a))!, nb = nodeById.get(regionIdOf(p.b))!
     const ya = rowYOf.get(p.a) ?? na.y + KD.HEAD / 2
     const yb = rowYOf.get(p.b) ?? nb.y + KD.HEAD / 2
-    // マスタ(b) → 数式側(a)。b が左にあれば右辺から、そうでなければ左辺から出す
+    // マスタ(b) → 利用側(a)。b が左にあれば右辺から、そうでなければ左辺から出す
     const bLeft = nb.x + nb.w <= na.x
     const x1 = bLeft ? nb.x + nb.w : nb.x
     const x2 = bLeft ? na.x : na.x + na.w
+    const midX = (x1 + x2) / 2
     return {
-      x1, y1: yb, x2, y2: ya,
-      label: [...p.fns].join('・'),
-      mx: (x1 + x2) / 2, my: (yb + ya) / 2 - 5,
-      title: `${short(p.b)} ⇔ ${short(p.a)}（${[...p.fns].join('・')}）`,
+      // ER 図らしい直角（エルボ）コネクタ
+      d: `M${x1},${yb} L${midX},${yb} L${midX},${ya} L${x2},${ya}`,
+      // 端点のカディナリティ（1=一意/マスタ, N=繰り返し/明細）
+      bCard: { x: x1 + (bLeft ? 6 : -6), y: yb - 5, anchor: bLeft ? 'start' : 'end', text: cardOf(p.b) },
+      aCard: { x: x2 + (bLeft ? -6 : 6), y: ya - 5, anchor: bLeft ? 'end' : 'start', text: cardOf(p.a) },
+      title: `${short(p.b)}（${cardOf(p.b) || '?'}） ⇔ ${short(p.a)}（${cardOf(p.a) || '?'}）｜ ${[...p.fns].join('・')}`,
     }
   })
-  return { nodes, edges, width: KD.PAD * 2 + (Math.max(0, ...nodes.map(n => (n.x - KD.PAD) / (KD.W + KD.GX))) + 1) * (KD.W + KD.GX) - KD.GX, height: Math.max(maxY, 90), omitted: withKeys.length - show.length, headH: KD.HEAD }
+  const maxLayer = Math.max(0, ...layersSorted.map(([l]) => l))
+  return {
+    nodes, edges,
+    width: KD.PAD * 2 + (maxLayer + 1) * (KD.W + KD.GX) - KD.GX,
+    height: KD.PAD * 2 + maxLayerH,
+    omitted: withKeys.length - show.length, headH: KD.HEAD, rowH: KD.ROW,
+  }
 })
 
 // ノード見出し2段目の小さなメタ情報行（複数ファイル時のファイル名 / AI解読の有無 / キー / 列数）
@@ -612,32 +658,39 @@ function colLetterRef(c: number): string {
           <div class="sec-head">
             <span class="sec-ico">🔑</span>
             <div class="sec-titles">
-              <h3>キー関係図 — 各表の主キーと、その紐づき</h3>
+              <h3>キー関係図（ER図） — 各表の主キーと、その紐づき</h3>
               <p class="sec-sub">
-                箱の中は各表の<strong>キー列だけ</strong>（🔑＝主キー、◇＝軸・結合キー）。
-                線はキーどうしの紐づき（VLOOKUP・SUMIFS 等の照合）で、左のマスタ側から右の利用側へ引いています。根拠は下の対応表で確認できます。
+                箱＝表、行＝<strong>キー列だけ</strong>（🔑＝主キー、◇＝軸・結合キー）。
+                線はキーどうしの紐づきで、端の <strong>1</strong>＝値が一意（マスタ側）、<strong>N</strong>＝繰り返しあり（明細側）。
+                線にマウスを乗せると照合方法が表示され、根拠は下の対応表で確認できます。
               </p>
             </div>
           </div>
           <div class="graph-wrap">
             <svg :width="keyDiagram.width" :height="keyDiagram.height" :viewBox="`0 0 ${keyDiagram.width} ${keyDiagram.height}`">
-              <g v-for="(e, i) in keyDiagram.edges" :key="i">
+              <!-- 紐づき線（ER らしい直角コネクタ + 1/N） -->
+              <g v-for="(e, i) in keyDiagram.edges" :key="i" class="kd-edge">
                 <title>{{ e.title }}</title>
-                <path :d="`M${e.x1},${e.y1} C${e.x1 + 55},${e.y1} ${e.x2 - 55},${e.y2} ${e.x2},${e.y2}`"
-                  fill="none" stroke="#7c3aed" stroke-width="2" />
-                <circle :cx="e.x1" :cy="e.y1" r="3.2" fill="#7c3aed" />
-                <circle :cx="e.x2" :cy="e.y2" r="3.2" fill="#7c3aed" />
-                <text :x="e.mx" :y="e.my" text-anchor="middle" font-size="10.5" fill="#7c3aed" class="halo">{{ e.label }}</text>
+                <path :d="e.d" fill="none" stroke="#7c3aed" stroke-width="1.8" />
+                <text :x="e.bCard.x" :y="e.bCard.y" :text-anchor="e.bCard.anchor" font-size="11" fill="#5b21b6" class="halo">{{ e.bCard.text }}</text>
+                <text :x="e.aCard.x" :y="e.aCard.y" :text-anchor="e.aCard.anchor" font-size="11" fill="#5b21b6" class="halo">{{ e.aCard.text }}</text>
               </g>
+              <!-- エンティティ箱（キー列だけの表） -->
               <g v-for="n in keyDiagram.nodes" :key="n.id">
                 <rect :x="n.x" :y="n.y" :width="n.w" :height="n.h" rx="8" fill="#fff" stroke="#7c3aed" stroke-width="1.5" />
                 <rect :x="n.x" :y="n.y" :width="n.w" :height="keyDiagram.headH" rx="8" fill="#7c3aed" />
+                <rect :x="n.x" :y="n.y + keyDiagram.headH - 8" :width="n.w" height="8" fill="#7c3aed" />
                 <text :x="n.x + 11" :y="n.y + (n.sub ? 15 : 21)" fill="#fff" font-size="13" font-weight="700">{{ fitText(n.title, n.w - 22, 13) }}</text>
-                <text v-if="n.sub" :x="n.x + 11" :y="n.y + 28" fill="#e4d7fb" font-size="10">{{ fitText(n.sub, n.w - 22, 10) }}</text>
-                <text v-for="(row, ri) in n.rows" :key="ri" :x="n.x + 11" :y="row.y + 4" font-size="12"
-                  :fill="row.primary ? '#1b212b' : '#4b5563'" :font-weight="row.primary ? 700 : 400">
-                  {{ row.mark }} {{ fitText(row.label, n.w - 40, 12) }}
-                </text>
+                <text v-if="n.sub" :x="n.x + 11" :y="n.y + 28" fill="#e4d7fb" font-size="10">📄 {{ fitText(n.sub, n.w - 34, 10) }}</text>
+                <template v-for="(row, ri) in n.rows" :key="ri">
+                  <!-- 紐づきに参加している行は薄紫で強調 -->
+                  <rect v-if="row.connected" :x="n.x + 1" :y="row.top" :width="n.w - 2" :height="keyDiagram.rowH" fill="#f3edfd" />
+                  <line v-if="!row.last" :x1="n.x + 1" :y1="row.top + keyDiagram.rowH" :x2="n.x + n.w - 1" :y2="row.top + keyDiagram.rowH" stroke="#eee9f8" />
+                  <text :x="n.x + 11" :y="row.cy + 4" font-size="12"
+                    :fill="row.primary ? '#1b212b' : '#4b5563'" :font-weight="row.primary ? 700 : 400">
+                    {{ row.mark }} {{ fitText(row.label, n.w - 40, 12) }}
+                  </text>
+                </template>
               </g>
             </svg>
           </div>
@@ -1099,6 +1152,10 @@ details.sec-fold > summary .muted { font-size:12px }
 
 /* 図中ラベルの白フチ（線の上でも読めるように） */
 .halo { paint-order:stroke; stroke:#fff; stroke-width:3px; font-weight:600 }
+
+/* キー関係図: 線にマウスを乗せると強調（ツールチップで照合方法を表示） */
+.kd-edge path { transition:stroke-width .1s }
+.kd-edge:hover path { stroke-width:3.2 }
 
 /* キーの対応表の小見出し */
 .kd-table-title { margin:14px 0 6px; font-weight:700; font-size:13px; color:#5b21b6; padding-left:8px; border-left:3px solid #7c3aed }
