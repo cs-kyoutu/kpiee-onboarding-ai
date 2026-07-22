@@ -69,13 +69,6 @@ const isLegacyOverview = computed(() =>
 const roleClass = (role: string) =>
   role === '入力' ? 'role-in' : role === '中間集計' ? 'role-mid' : role === '最終出力' ? 'role-out' : 'role-etc'
 
-// 列の表示/折りたたみ（既定は折りたたみ＝表どうしの繋がりだけ見せて見やすく）
-const showColumns = ref(false)
-const headerH = 40   // 2段見出し（1段目=シート名 / 2段目=小さなメタ情報）
-const COL_ROW_H = 26
-const NODE_W = 230   // ノード(表)の幅
-const COL_W = 280    // 段(layer)の横間隔
-
 // ---- 関係種別のメタ（平易な説明・色） ----
 const REL_META: Record<RelType, { label: string; desc: string; color: string; dashed?: boolean }> = {
   'filtered-agg': { label: '集計', desc: 'SUMIF 等で条件に合う行を合計', color: '#2e7d32' },
@@ -119,90 +112,6 @@ const regionLabel = (id: string) => {
 }
 const short = (key: string) => `${regionLabel(regionIdOf(key))} の「${colOf(key)}」`
 
-// グラフのノード見出し: シート名を主役にし、複数ファイル時のみファイル名を副題に出す
-const nodeTitle = (r: RelRegion): { main: string; sub: string | null } =>
-  (!multiFile.value || r.sheet === r.file) ? { main: r.sheet, sub: null } : { main: r.sheet, sub: r.file }
-
-// ---- 表領域グラフのレイアウト（依存の深さで左→右に段組み） ----
-interface Node { region: RelRegion; layer: number; x: number; y: number; w: number; h: number }
-interface RegionEdge { from: string; to: string; types: Set<RelType>; copy: boolean }
-
-const layout = computed(() => {
-  const g = graph.value
-  if (!g) return { nodes: [] as Node[], edges: [] as (RegionEdge & { x1: number; y1: number; x2: number; y2: number; color: string; dashed: boolean })[], width: 0, height: 0 }
-
-  // 表領域レベルに集約（列レベル辺 → 表どうしの辺）
-  const reMap = new Map<string, RegionEdge>()
-  for (const e of g.edges) {
-    if (e.type === 'filter-key') continue // 本線でないので図では省略
-    const from = regionIdOf(e.from), to = regionIdOf(e.to)
-    if (from === to) continue
-    const k = `${from}->${to}`
-    if (!reMap.has(k)) reMap.set(k, { from, to, types: new Set(), copy: false })
-    const re = reMap.get(k)!
-    re.types.add(e.type)
-    if (e.type === 'copy') re.copy = true
-  }
-  const regionEdges = [...reMap.values()]
-
-  // 段(layer)割り: 入次数0をソースとし、最長距離で層を決める（循環は打ち切り）
-  const ids = g.regions.map(r => r.id)
-  const incoming = new Map<string, string[]>()
-  ids.forEach(id => incoming.set(id, []))
-  for (const e of regionEdges) incoming.get(e.to)?.push(e.from)
-  const layerOf = new Map<string, number>()
-  const calc = (id: string, seen: Set<string>): number => {
-    if (layerOf.has(id)) return layerOf.get(id)!
-    if (seen.has(id)) return 0
-    seen.add(id)
-    const ins = incoming.get(id) ?? []
-    const l = ins.length === 0 ? 0 : Math.min(6, Math.max(...ins.map(p => calc(p, seen) + 1)))
-    layerOf.set(id, l)
-    return l
-  }
-  ids.forEach(id => calc(id, new Set()))
-
-  // 配置
-  const GAP_Y = 36, PAD = 20
-  const hh = headerH
-  const byLayer = new Map<number, RelRegion[]>()
-  for (const r of g.regions) {
-    const l = layerOf.get(r.id) ?? 0
-    if (!byLayer.has(l)) byLayer.set(l, [])
-    byLayer.get(l)!.push(r)
-  }
-  const nodes: Node[] = []
-  let maxY = 0
-  for (const [l, regs] of [...byLayer.entries()].sort((a, b) => a[0] - b[0])) {
-    let y = PAD
-    for (const r of regs) {
-      // 折りたたみ時は見出しのみ、展開時は列数ぶんの高さ
-      const h = showColumns.value ? hh + r.columns.length * COL_ROW_H + 8 : hh
-      nodes.push({ region: r, layer: l, x: PAD + l * COL_W, y, w: NODE_W, h })
-      y += h + GAP_Y
-      if (y > maxY) maxY = y
-    }
-  }
-  const nodeById = new Map(nodes.map(n => [n.region.id, n]))
-  const width = PAD * 2 + (Math.max(0, ...nodes.map(n => n.layer)) + 1) * COL_W
-  const height = Math.max(maxY, 120)
-
-  const edges = regionEdges.map(re => {
-    const a = nodeById.get(re.from)!, b = nodeById.get(re.to)!
-    const primary = mainTypes.find(t => re.types.has(t)) ?? 'derived'
-    const m = relMeta(primary)
-    return {
-      ...re,
-      x1: a.x + a.w, y1: a.y + a.h / 2,
-      x2: b.x, y2: b.y + b.h / 2,
-      color: re.copy ? REL_META.copy.color : m.color,
-      dashed: re.copy,
-    }
-  }).filter(e => e.x1 !== undefined)
-
-  return { nodes, edges, width, height }
-})
-
 // 列レベルの関係リスト（本線→キーの順、種別でまとめる）
 const groupedEdges = computed(() => {
   const g = graph.value
@@ -224,35 +133,10 @@ const crossFileCopies = computed(() =>
   (graph.value?.edges ?? []).filter(e =>
     e.type === 'copy' && regionById.value.get(regionIdOf(e.from))?.file !== regionById.value.get(regionIdOf(e.to))?.file).length)
 
-// ---- 表領域の選択（クリックで関係先だけ強調、他は薄く） ----
+// ---- 表領域の選択（ER図の箱クリックで下に詳細を表示。再クリックで解除） ----
 function selectRegion(id: string) {
   selected.value = selected.value === id ? null : id
 }
-
-// 表領域どうしの隣接（filter-key 等の補助線は除く、無向）
-const adjacency = computed(() => {
-  const m = new Map<string, Set<string>>()
-  const add = (a: string, b: string) => { (m.get(a) ?? m.set(a, new Set()).get(a)!).add(b) }
-  for (const e of graph.value?.edges ?? []) {
-    if (e.type === 'filter-key') continue
-    const f = regionIdOf(e.from), t = regionIdOf(e.to)
-    if (f === t) continue
-    add(f, t); add(t, f)
-  }
-  return m
-})
-
-// 選択時に「表示状態」を保つ集合（選択ノード＋その直接の関係先）
-const highlighted = computed(() => {
-  if (!selected.value) return null
-  const s = new Set<string>([selected.value])
-  adjacency.value.get(selected.value)?.forEach(id => s.add(id))
-  return s
-})
-
-const isDim = (id: string) => highlighted.value !== null && !highlighted.value.has(id)
-const edgeDim = (from: string, to: string) =>
-  highlighted.value !== null && !(highlighted.value.has(from) && highlighted.value.has(to))
 
 // ---- 選択シートの要約（日本語表示専用） ----
 const selectedSummary = computed(() => {
@@ -333,31 +217,6 @@ const structNodeDetail = computed(() => {
   const outgoing = s.edges.filter(e => e.from === node.id).map(e => ({ label: nameOf(e.to), types: e.types }))
   return { node, incoming, outgoing }
 })
-
-// AI解読がある表領域ID（グラフのノード表示用）
-const aiRegionIds = computed(() => {
-  const s = new Set<string>()
-  graph.value?.regions.forEach(r => { if (r.ai && r.ai.length) s.add(r.id) })
-  return s
-})
-
-// ---- キー・軸（この表は何を軸に1行が決まるか） ----
-// ノード見出し用の短い表記: 主キーがあれば「🔑 社員ID」、無ければ複合軸「軸 部署×月」
-const keyBadge = (r: RelRegion): string | null => {
-  const ks = r.keys?.keys
-  if (!ks || ks.length === 0) return null
-  const primary = ks.filter(k => k.role === 'primary').map(k => k.column)
-  if (primary.length) return `🔑${primary.join('・')}`
-  const axes = ks.filter(k => k.role === 'axis').map(k => k.column)
-  return axes.length ? `軸 ${axes.join('×')}` : null
-}
-// 列展開表示で 🔑 を付けるための、表領域→キー列名集合
-const keyColsByRegion = computed(() => {
-  const m = new Map<string, Set<string>>()
-  graph.value?.regions.forEach(r => m.set(r.id, new Set((r.keys?.keys ?? []).map(k => k.column))))
-  return m
-})
-const isKeyCol = (rid: string, col: string) => keyColsByRegion.value.get(rid)?.has(col) ?? false
 
 // 表と表を結ぶキー列の対応（利用回数の多い順）
 const keyLinks = computed(() => [...(graph.value?.keyLinks ?? [])].sort((a, b) => b.count - a.count))
@@ -554,15 +413,6 @@ const keyDiagram = computed(() => {
   }
 })
 
-// ノード見出し2段目の小さなメタ情報行（複数ファイル時のファイル名 / AI解読の有無 / キー / 列数）
-const metaLine = (r: RelRegion): string =>
-  [
-    multiFile.value ? nodeTitle(r).sub : null,
-    aiRegionIds.value.has(r.id) ? 'AI' : null,
-    keyBadge(r),
-    `${r.columns.length}列`,
-  ].filter(Boolean).join(' · ')
-
 // 参照関係から日本語の役割説明を自動生成
 function describe(up: number, down: number): string {
   if (up === 0 && down > 0) return '他シートの計算元になっている起点データ（マスタ／取込元）と推定されます。'
@@ -663,6 +513,7 @@ function colLetterRef(c: number): string {
                 箱＝表、行＝<strong>キー列だけ</strong>（🔑＝主キー、◇＝軸・結合キー）。
                 線はキーどうしの紐づきで、端の <strong>1</strong>＝値が一意（マスタ側）、<strong>N</strong>＝繰り返しあり（明細側）。
                 線にマウスを乗せると照合方法が表示され、根拠は下の対応表で確認できます。
+                <strong>箱をクリック</strong>すると、その表の詳細（キーの根拠・統計・内部構造・AI解読）が下に表示されます。
               </p>
             </div>
           </div>
@@ -675,11 +526,12 @@ function colLetterRef(c: number): string {
                 <text :x="e.bCard.x" :y="e.bCard.y" :text-anchor="e.bCard.anchor" font-size="11" fill="#5b21b6" class="halo">{{ e.bCard.text }}</text>
                 <text :x="e.aCard.x" :y="e.aCard.y" :text-anchor="e.aCard.anchor" font-size="11" fill="#5b21b6" class="halo">{{ e.aCard.text }}</text>
               </g>
-              <!-- エンティティ箱（キー列だけの表） -->
-              <g v-for="n in keyDiagram.nodes" :key="n.id">
-                <rect :x="n.x" :y="n.y" :width="n.w" :height="n.h" rx="8" fill="#fff" stroke="#7c3aed" stroke-width="1.5" />
-                <rect :x="n.x" :y="n.y" :width="n.w" :height="keyDiagram.headH" rx="8" fill="#7c3aed" />
-                <rect :x="n.x" :y="n.y + keyDiagram.headH - 8" :width="n.w" height="8" fill="#7c3aed" />
+              <!-- エンティティ箱（キー列だけの表）。クリックでその表の詳細を下に表示 -->
+              <g v-for="n in keyDiagram.nodes" :key="n.id" style="cursor:pointer" @click="selectRegion(n.id)">
+                <rect :x="n.x" :y="n.y" :width="n.w" :height="n.h" rx="8" fill="#fff"
+                  :stroke="n.id === selected ? '#e65100' : '#7c3aed'" :stroke-width="n.id === selected ? 2.5 : 1.5" />
+                <rect :x="n.x" :y="n.y" :width="n.w" :height="keyDiagram.headH" rx="8" :fill="n.id === selected ? '#e65100' : '#7c3aed'" />
+                <rect :x="n.x" :y="n.y + keyDiagram.headH - 8" :width="n.w" height="8" :fill="n.id === selected ? '#e65100' : '#7c3aed'" />
                 <text :x="n.x + 11" :y="n.y + (n.sub ? 15 : 21)" fill="#fff" font-size="13" font-weight="700">{{ fitText(n.title, n.w - 22, 13) }}</text>
                 <text v-if="n.sub" :x="n.x + 11" :y="n.y + 28" fill="#e4d7fb" font-size="10">📄 {{ fitText(n.sub, n.w - 34, 10) }}</text>
                 <template v-for="(row, ri) in n.rows" :key="ri">
@@ -698,8 +550,158 @@ function colLetterRef(c: number): string {
             キーどうしの紐づき（数式による照合）はまだ検出されていません。各表のキーのみ表示しています。
           </p>
           <p v-if="keyDiagram.omitted > 0" class="muted" style="margin:8px 0 0">
-            紐づきの無い {{ keyDiagram.omitted }} 表は省略しています（各表のキーは表をクリックすると関係マップの要約で確認できます）。
+            紐づきの無い {{ keyDiagram.omitted }} 表は省略しています（キー検出済み。詳細は「関係の一覧」で確認できます）。
           </p>
+
+        <!-- 選択シートの要約（ER図の箱をクリックすると表示: キーの根拠・統計・内部構造・AI解読） -->
+        <div v-if="selectedSummary" class="sheet-summary">
+          <div class="ss-head">
+            <strong>{{ selectedSummary.sheet }}</strong>
+            <button class="ss-close" @click="selected = null">閉じる</button>
+          </div>
+          <p class="muted ss-desc">{{ selectedSummary.description }}</p>
+          <table class="ss-table">
+            <tbody>
+              <tr><th>表領域</th><td>{{ selectedSummary.range }}（{{ selectedSummary.colCount }}列）</td></tr>
+              <tr>
+                <th>キー・軸（推定）</th>
+                <td>
+                  <template v-if="selectedSummary.keys">
+                    <div v-for="(k, i) in selectedSummary.keys.keys" :key="i" class="key-item">
+                      <span class="key-chip" :class="k.role === 'primary' ? 'key-primary' : 'key-axis'">
+                        {{ k.role === 'primary' ? '🔑 主キー' : '軸' }}
+                      </span>
+                      <strong>{{ k.column }}</strong>
+                      <ul class="key-evidence">
+                        <!-- 軸列の根拠（組合せの説明）は下の 📐 行と重複するので個別表示から除く -->
+                        <li v-for="(ev, j) in k.evidence.filter(ev => ev !== selectedSummary!.keys!.axisNote)" :key="j">{{ ev }}</li>
+                      </ul>
+                    </div>
+                    <p v-if="selectedSummary.keys.axisNote" class="key-note">📐 {{ selectedSummary.keys.axisNote }}</p>
+                    <p v-if="selectedSummary.keys.colAxis" class="key-note">📅 {{ selectedSummary.keys.colAxis }}</p>
+                  </template>
+                  <span v-else class="muted">検出できませんでした（一意な列・軸らしい列の組が見つからない表です）</span>
+                </td>
+              </tr>
+              <tr><th>総セル数</th><td>{{ selectedSummary.totalCells != null ? selectedSummary.totalCells.toLocaleString() + 'セル' : '—' }}</td></tr>
+              <tr><th>行数</th><td>{{ selectedSummary.rowCount != null ? selectedSummary.rowCount.toLocaleString() + '行' : '—' }}</td></tr>
+              <tr>
+                <th>数式</th>
+                <td>
+                  <span v-if="selectedSummary.formulaCells != null">数式セル {{ selectedSummary.formulaCells.toLocaleString() }}個・</span>数式列 {{ selectedSummary.formulaCols }}列
+                  <span v-if="selectedSummary.mixedCols > 0" class="warn-mark">（うち手入力混入の疑い {{ selectedSummary.mixedCols }}列）</span>
+                  <span v-if="selectedSummary.formulaCols === 0 && !selectedSummary.formulaCells" class="muted">数式なし（値のみ）</span>
+                </td>
+              </tr>
+              <tr>
+                <th>参照元（取得元）</th>
+                <td>
+                  <template v-if="selectedSummary.refUp.length">
+                    <span v-for="(s, i) in selectedSummary.refUp" :key="i" class="ss-chip">{{ s }}</span>
+                  </template>
+                  <span v-else class="muted">なし</span>
+                </td>
+              </tr>
+              <tr>
+                <th>参照先（提供先）</th>
+                <td>
+                  <template v-if="selectedSummary.refDown.length">
+                    <span v-for="(s, i) in selectedSummary.refDown" :key="i" class="ss-chip">{{ s }}</span>
+                  </template>
+                  <span v-else class="muted">なし</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <!-- このシートの内部構造（階層フロー: 入力→計算→出力） -->
+          <div v-if="structLayout" class="ss-struct">
+            <div class="ss-struct-head">このシートの内部構造（データの流れ）</div>
+            <div class="struct-wrap">
+              <svg :width="structLayout.width" :height="structLayout.height" :viewBox="`0 0 ${structLayout.width} ${structLayout.height}`">
+                <defs>
+                  <marker v-for="t in usedTypes" :key="t" :id="`sarrow-${t}`" markerWidth="8" markerHeight="8"
+                    refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+                    <path d="M0,0 L7,3 L0,6 Z" :fill="relMeta(t).color" />
+                  </marker>
+                </defs>
+                <path v-for="(e, i) in structLayout.edges" :key="i"
+                  :d="`M${e.x1},${e.y1} C${e.x1 + 40},${e.y1} ${e.x2 - 40},${e.y2} ${e.x2},${e.y2}`"
+                  fill="none" :stroke="e.color" stroke-width="1.8"
+                  :stroke-dasharray="e.dashed ? '5 4' : undefined" :marker-end="`url(#sarrow-${e.type})`" />
+                <g v-for="n in structLayout.nodes" :key="n.n.id" style="cursor:pointer"
+                  @click="selectedStructNode = (selectedStructNode === n.n.id ? null : n.n.id)">
+                  <rect :x="n.x" :y="n.y" :width="n.w" :height="n.h" rx="7" fill="#fff"
+                    :stroke="selectedStructNode === n.n.id ? '#e65100' : '#2563eb'"
+                    :stroke-width="selectedStructNode === n.n.id ? 2.5 : 1.3" />
+                  <text :x="n.x + 10" :y="n.y + (n.n.colCount > 1 ? 16 : 23)" font-size="12" font-weight="600" fill="#1b212b">{{ fitText(n.n.label, n.w - 20, 12) }}</text>
+                  <text v-if="n.n.colCount > 1" :x="n.x + 10" :y="n.y + 30" font-size="10" fill="#9aa1ad">{{ n.n.colCount }}列</text>
+                </g>
+              </svg>
+            </div>
+            <p class="muted struct-cap">
+              左＝入力、右へ行くほど計算・出力です。<strong>各ボックスをクリック</strong>すると、取得元・提供先と代表数式が下に表示されます。反復する列はまとめています{{ selectedStructure?.truncated ? '（多いため主要なグループのみ表示）' : '' }}。
+            </p>
+
+            <!-- ノードクリック時の詳細ボックス -->
+            <div v-if="structNodeDetail" class="struct-detail">
+              <div class="sd-head">
+                <strong>{{ structNodeDetail.node.label }}</strong>
+                <span v-if="structNodeDetail.node.colCount > 1" class="badge info">{{ structNodeDetail.node.colCount }}列</span>
+                <button class="sd-close" @click="selectedStructNode = null">閉じる</button>
+              </div>
+              <div class="sd-grid">
+                <div v-if="structNodeDetail.incoming.length" class="sd-block">
+                  <div class="sd-label">取得元（この計算の入力）</div>
+                  <div class="sd-chips">
+                    <span v-for="(s, i) in structNodeDetail.incoming" :key="'i' + i" class="badge info">{{ s.label }}</span>
+                  </div>
+                </div>
+                <div v-if="structNodeDetail.outgoing.length" class="sd-block">
+                  <div class="sd-label">提供先（この結果を使う）</div>
+                  <div class="sd-chips">
+                    <span v-for="(s, i) in structNodeDetail.outgoing" :key="'o' + i" class="badge">{{ s.label }}</span>
+                  </div>
+                </div>
+              </div>
+              <div v-if="structNodeDetail.node.samples.length" class="sd-block">
+                <div class="sd-label">代表的な数式（実際のセル式）</div>
+                <table class="sd-formulas">
+                  <tbody>
+                    <tr v-for="(s, i) in structNodeDetail.node.samples" :key="i">
+                      <td class="mono sd-col">{{ s.col }}</td>
+                      <td class="mono">= {{ s.formula }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p v-else class="muted" style="margin:6px 0 0">この要素は入力（数式なし）です。</p>
+              <p v-if="structNodeDetail.node.colCount > structNodeDetail.node.cols.length" class="muted" style="margin:6px 0 0">
+                （列 {{ structNodeDetail.node.colCount }} 件中 {{ structNodeDetail.node.cols.length }} 件を表示）
+              </p>
+            </div>
+          </div>
+
+          <!-- AI解読（decode の融合結果） -->
+          <div class="ss-ai">
+            <div class="ss-ai-head">AI解読</div>
+            <ul v-if="selectedSummary.ai.length" class="ss-ai-list">
+              <li v-for="(f, i) in selectedSummary.ai" :key="i">
+                <div class="ss-ai-meta">
+                  <span class="mono muted">{{ f.source_ref }}</span>
+                  <span class="badge">{{ logicLabel(f.logic_type) }}</span>
+                  <span class="badge" :class="f.kpiee_target === 'needs_customer_confirmation' ? 'warn' : 'info'">→ {{ targetLabel(f.kpiee_target) }}</span>
+                  <span class="badge" :class="f.confidence === 'high' ? 'ok' : f.confidence === 'low' ? 'ng' : 'warn'">確信度 {{ f.confidence }}</span>
+                </div>
+                <div class="ss-ai-exp">{{ f.explanation }}</div>
+              </li>
+            </ul>
+            <p v-else class="muted" style="margin:4px 0">
+              このシートの AI解読はまだありません。「② AI解読」を実行すると、各シートの意味がここに反映されます。
+            </p>
+          </div>
+        </div>
+
 
           <!-- キーの対応表（根拠つき） -->
           <template v-if="keyLinks.length">
@@ -850,227 +852,6 @@ function colLetterRef(c: number): string {
           </div>
         </div>
 
-        <!-- 関係マップ（詳細）: 情報量が多いので普段は折りたたみ。列レベルまで追いたい時に開く -->
-        <details class="sec sec-fold">
-          <summary>
-            <span class="sec-ico">🔀</span>
-            <strong>関係マップ（詳細）</strong>
-            <span class="muted">表単位の全関係グラフ・表クリックで要約 — クリックで展開</span>
-          </summary>
-          <div class="fold-toolbar">
-            <p class="sec-sub">
-              箱＝表（シート）、矢印＝データの流れ。手コピー疑いは<span style="color:#c62828">赤い破線</span>。
-              <strong>表をクリック</strong>すると、その表のキー・内部構造・AI解読が下に表示されます。
-            </p>
-            <button class="sec-action" @click="showColumns = !showColumns">
-              {{ showColumns ? '列を隠す' : '各表の列も表示' }}
-            </button>
-          </div>
-          <div class="legend">
-            <span v-for="t in usedTypes" :key="t" class="legend-item">
-              <span class="swatch" :style="{ background: relMeta(t).color, borderStyle: relMeta(t).dashed ? 'dashed' : 'solid' }"></span>
-              <strong>{{ relMeta(t).label }}</strong>：{{ relMeta(t).desc }}
-            </span>
-          </div>
-          <div class="graph-wrap">
-          <svg :width="layout.width" :height="layout.height" :viewBox="`0 0 ${layout.width} ${layout.height}`">
-            <defs>
-              <marker v-for="t in usedTypes" :key="t" :id="`arrow-${t}`" markerWidth="9" markerHeight="9"
-                refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-                <path d="M0,0 L8,3 L0,6 Z" :fill="relMeta(t).color" />
-              </marker>
-            </defs>
-            <g v-for="(e, i) in layout.edges" :key="i" :opacity="edgeDim(e.from, e.to) ? 0.1 : 1">
-              <path
-                :d="`M${e.x1},${e.y1} C${e.x1 + 50},${e.y1} ${e.x2 - 50},${e.y2} ${e.x2},${e.y2}`"
-                fill="none" :stroke="e.color" stroke-width="2"
-                :stroke-dasharray="e.dashed ? '6 4' : undefined"
-                :marker-end="`url(#arrow-${e.copy ? 'copy' : (mainTypes.find(t => e.types.has(t)) ?? 'derived')})`"
-              />
-            </g>
-            <g v-for="n in layout.nodes" :key="n.region.id"
-              style="cursor:pointer" :opacity="isDim(n.region.id) ? 0.15 : 1"
-              @click="selectRegion(n.region.id)">
-              <rect :x="n.x" :y="n.y" :width="n.w" :height="n.h" rx="7" fill="#fff"
-                :stroke="n.region.id === selected ? '#e65100' : '#1b6ec2'" :stroke-width="n.region.id === selected ? 3 : 1.5" />
-              <rect :x="n.x" :y="n.y" :width="n.w" :height="headerH" rx="7" :fill="n.region.id === selected ? '#e65100' : '#1b6ec2'" />
-              <!-- 見出し1段目: シート名（箱幅に収まるよう省略、全名はホバーで表示） -->
-              <text :x="n.x + 11" :y="n.y + 17" fill="#fff" font-size="13.5" font-weight="700">
-                {{ fitText(nodeTitle(n.region).main, n.w - 22, 13.5) }}
-              </text>
-              <!-- 見出し2段目: 小さなメタ情報（ファイル名 · AI · 列数） -->
-              <text :x="n.x + 11" :y="n.y + 32" fill="#cfe3f7" font-size="10">
-                {{ fitText(metaLine(n.region), n.w - 22, 10) }}
-              </text>
-              <!-- 列は折りたたみ可能（列名も箱幅に収める） -->
-              <template v-if="showColumns">
-                <text v-for="(col, ci) in n.region.columns" :key="col.c"
-                  :x="n.x + 12" :y="n.y + headerH + 18 + ci * COL_ROW_H" font-size="12.5" fill="#333">
-                  <tspan v-if="isKeyCol(n.region.id, col.name)">🔑</tspan>
-                  {{ fitText(col.name, n.w - 30, 12.5) }}
-                  <tspan v-if="col.hasFormula" fill="#e65100"> ƒ</tspan>
-                  <tspan v-if="col.mixedFormula" fill="#c62828"> ⚠</tspan>
-                </text>
-              </template>
-            </g>
-          </svg>
-        </div>
-        <p class="muted caption">
-          見出しの 🔑＝その表の主キー（無ければ軸列）。列を開くと 🔑＝キー列、<span class="ff">ƒ</span>＝数式列、<span class="warn-mark">⚠</span>＝一部手入力の疑い。
-          {{ multiFile ? 'ファイル・シート単位で、' : '' }}1シートに複数の表があれば自動分割されます。
-        </p>
-
-        <!-- 選択シートの要約（マップの続きとして同じセクション内に表示） -->
-        <div v-if="selectedSummary" class="sheet-summary">
-          <div class="ss-head">
-            <strong>{{ selectedSummary.sheet }}</strong>
-            <button class="ss-close" @click="selected = null">閉じる</button>
-          </div>
-          <p class="muted ss-desc">{{ selectedSummary.description }}</p>
-          <table class="ss-table">
-            <tbody>
-              <tr><th>表領域</th><td>{{ selectedSummary.range }}（{{ selectedSummary.colCount }}列）</td></tr>
-              <tr>
-                <th>キー・軸（推定）</th>
-                <td>
-                  <template v-if="selectedSummary.keys">
-                    <div v-for="(k, i) in selectedSummary.keys.keys" :key="i" class="key-item">
-                      <span class="key-chip" :class="k.role === 'primary' ? 'key-primary' : 'key-axis'">
-                        {{ k.role === 'primary' ? '🔑 主キー' : '軸' }}
-                      </span>
-                      <strong>{{ k.column }}</strong>
-                      <ul class="key-evidence">
-                        <!-- 軸列の根拠（組合せの説明）は下の 📐 行と重複するので個別表示から除く -->
-                        <li v-for="(ev, j) in k.evidence.filter(ev => ev !== selectedSummary!.keys!.axisNote)" :key="j">{{ ev }}</li>
-                      </ul>
-                    </div>
-                    <p v-if="selectedSummary.keys.axisNote" class="key-note">📐 {{ selectedSummary.keys.axisNote }}</p>
-                    <p v-if="selectedSummary.keys.colAxis" class="key-note">📅 {{ selectedSummary.keys.colAxis }}</p>
-                  </template>
-                  <span v-else class="muted">検出できませんでした（一意な列・軸らしい列の組が見つからない表です）</span>
-                </td>
-              </tr>
-              <tr><th>総セル数</th><td>{{ selectedSummary.totalCells != null ? selectedSummary.totalCells.toLocaleString() + 'セル' : '—' }}</td></tr>
-              <tr><th>行数</th><td>{{ selectedSummary.rowCount != null ? selectedSummary.rowCount.toLocaleString() + '行' : '—' }}</td></tr>
-              <tr>
-                <th>数式</th>
-                <td>
-                  <span v-if="selectedSummary.formulaCells != null">数式セル {{ selectedSummary.formulaCells.toLocaleString() }}個・</span>数式列 {{ selectedSummary.formulaCols }}列
-                  <span v-if="selectedSummary.mixedCols > 0" class="warn-mark">（うち手入力混入の疑い {{ selectedSummary.mixedCols }}列）</span>
-                  <span v-if="selectedSummary.formulaCols === 0 && !selectedSummary.formulaCells" class="muted">数式なし（値のみ）</span>
-                </td>
-              </tr>
-              <tr>
-                <th>参照元（取得元）</th>
-                <td>
-                  <template v-if="selectedSummary.refUp.length">
-                    <span v-for="(s, i) in selectedSummary.refUp" :key="i" class="ss-chip">{{ s }}</span>
-                  </template>
-                  <span v-else class="muted">なし</span>
-                </td>
-              </tr>
-              <tr>
-                <th>参照先（提供先）</th>
-                <td>
-                  <template v-if="selectedSummary.refDown.length">
-                    <span v-for="(s, i) in selectedSummary.refDown" :key="i" class="ss-chip">{{ s }}</span>
-                  </template>
-                  <span v-else class="muted">なし</span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-
-          <!-- このシートの内部構造（階層フロー: 入力→計算→出力） -->
-          <div v-if="structLayout" class="ss-struct">
-            <div class="ss-struct-head">このシートの内部構造（データの流れ）</div>
-            <div class="struct-wrap">
-              <svg :width="structLayout.width" :height="structLayout.height" :viewBox="`0 0 ${structLayout.width} ${structLayout.height}`">
-                <defs>
-                  <marker v-for="t in usedTypes" :key="t" :id="`sarrow-${t}`" markerWidth="8" markerHeight="8"
-                    refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
-                    <path d="M0,0 L7,3 L0,6 Z" :fill="relMeta(t).color" />
-                  </marker>
-                </defs>
-                <path v-for="(e, i) in structLayout.edges" :key="i"
-                  :d="`M${e.x1},${e.y1} C${e.x1 + 40},${e.y1} ${e.x2 - 40},${e.y2} ${e.x2},${e.y2}`"
-                  fill="none" :stroke="e.color" stroke-width="1.8"
-                  :stroke-dasharray="e.dashed ? '5 4' : undefined" :marker-end="`url(#sarrow-${e.type})`" />
-                <g v-for="n in structLayout.nodes" :key="n.n.id" style="cursor:pointer"
-                  @click="selectedStructNode = (selectedStructNode === n.n.id ? null : n.n.id)">
-                  <rect :x="n.x" :y="n.y" :width="n.w" :height="n.h" rx="7" fill="#fff"
-                    :stroke="selectedStructNode === n.n.id ? '#e65100' : '#2563eb'"
-                    :stroke-width="selectedStructNode === n.n.id ? 2.5 : 1.3" />
-                  <text :x="n.x + 10" :y="n.y + (n.n.colCount > 1 ? 16 : 23)" font-size="12" font-weight="600" fill="#1b212b">{{ fitText(n.n.label, n.w - 20, 12) }}</text>
-                  <text v-if="n.n.colCount > 1" :x="n.x + 10" :y="n.y + 30" font-size="10" fill="#9aa1ad">{{ n.n.colCount }}列</text>
-                </g>
-              </svg>
-            </div>
-            <p class="muted struct-cap">
-              左＝入力、右へ行くほど計算・出力です。<strong>各ボックスをクリック</strong>すると、取得元・提供先と代表数式が下に表示されます。反復する列はまとめています{{ selectedStructure?.truncated ? '（多いため主要なグループのみ表示）' : '' }}。
-            </p>
-
-            <!-- ノードクリック時の詳細ボックス -->
-            <div v-if="structNodeDetail" class="struct-detail">
-              <div class="sd-head">
-                <strong>{{ structNodeDetail.node.label }}</strong>
-                <span v-if="structNodeDetail.node.colCount > 1" class="badge info">{{ structNodeDetail.node.colCount }}列</span>
-                <button class="sd-close" @click="selectedStructNode = null">閉じる</button>
-              </div>
-              <div class="sd-grid">
-                <div v-if="structNodeDetail.incoming.length" class="sd-block">
-                  <div class="sd-label">取得元（この計算の入力）</div>
-                  <div class="sd-chips">
-                    <span v-for="(s, i) in structNodeDetail.incoming" :key="'i' + i" class="badge info">{{ s.label }}</span>
-                  </div>
-                </div>
-                <div v-if="structNodeDetail.outgoing.length" class="sd-block">
-                  <div class="sd-label">提供先（この結果を使う）</div>
-                  <div class="sd-chips">
-                    <span v-for="(s, i) in structNodeDetail.outgoing" :key="'o' + i" class="badge">{{ s.label }}</span>
-                  </div>
-                </div>
-              </div>
-              <div v-if="structNodeDetail.node.samples.length" class="sd-block">
-                <div class="sd-label">代表的な数式（実際のセル式）</div>
-                <table class="sd-formulas">
-                  <tbody>
-                    <tr v-for="(s, i) in structNodeDetail.node.samples" :key="i">
-                      <td class="mono sd-col">{{ s.col }}</td>
-                      <td class="mono">= {{ s.formula }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-              <p v-else class="muted" style="margin:6px 0 0">この要素は入力（数式なし）です。</p>
-              <p v-if="structNodeDetail.node.colCount > structNodeDetail.node.cols.length" class="muted" style="margin:6px 0 0">
-                （列 {{ structNodeDetail.node.colCount }} 件中 {{ structNodeDetail.node.cols.length }} 件を表示）
-              </p>
-            </div>
-          </div>
-
-          <!-- AI解読（decode の融合結果） -->
-          <div class="ss-ai">
-            <div class="ss-ai-head">AI解読</div>
-            <ul v-if="selectedSummary.ai.length" class="ss-ai-list">
-              <li v-for="(f, i) in selectedSummary.ai" :key="i">
-                <div class="ss-ai-meta">
-                  <span class="mono muted">{{ f.source_ref }}</span>
-                  <span class="badge">{{ logicLabel(f.logic_type) }}</span>
-                  <span class="badge" :class="f.kpiee_target === 'needs_customer_confirmation' ? 'warn' : 'info'">→ {{ targetLabel(f.kpiee_target) }}</span>
-                  <span class="badge" :class="f.confidence === 'high' ? 'ok' : f.confidence === 'low' ? 'ng' : 'warn'">確信度 {{ f.confidence }}</span>
-                </div>
-                <div class="ss-ai-exp">{{ f.explanation }}</div>
-              </li>
-            </ul>
-            <p v-else class="muted" style="margin:4px 0">
-              このシートの AI解読はまだありません。「② AI解読」を実行すると、各シートの意味がここに反映されます。
-            </p>
-          </div>
-        </div>
-
-        </details>
-
         <!-- 関係の一覧: 件数が多いので折りたたみ（根拠を確認したい時だけ開く） -->
         <details class="sec sec-fold">
           <summary>
@@ -1128,8 +909,6 @@ function colLetterRef(c: number): string {
 <style scoped>
 h3 { font-size:14px; margin:20px 0 8px; }
 .summary { display:flex; align-items:center; gap:8px; margin:8px 0; }
-.caption { line-height:1.6; margin:8px 0 0; }
-.ff { color:#e65100; font-weight:600 }
 .warn-mark { color:#b91c1c }
 
 /* セクションカード: パネル内の大きな区切りを統一の見た目にする（マップ / キー / 一覧） */
@@ -1139,7 +918,6 @@ h3 { font-size:14px; margin:20px 0 8px; }
 .sec-titles { min-width:0 }
 .sec-head h3 { margin:0; font-size:14.5px; color:#10325c }
 .sec-sub { margin:3px 0 0; font-size:12.5px; color:#6b7280; line-height:1.6 }
-.sec-action { margin-left:auto; white-space:nowrap; flex-shrink:0; padding:5px 12px; font-size:12.5px }
 
 /* 折りたたみセクション（関係マップ・関係の一覧など、普段は閉じておく詳細データ） */
 details.sec-fold > summary { cursor:pointer; display:flex; align-items:center; gap:8px; font-size:14px; list-style:none }
@@ -1147,8 +925,6 @@ details.sec-fold > summary::-webkit-details-marker { display:none }
 details.sec-fold > summary::after { content:'▸'; margin-left:auto; color:#9aa1ad; transition:transform .15s }
 details.sec-fold[open] > summary::after { transform:rotate(90deg) }
 details.sec-fold > summary .muted { font-size:12px }
-.fold-toolbar { display:flex; align-items:flex-start; gap:12px; margin:12px 0 10px }
-.fold-toolbar .sec-sub { margin:0; flex:1 }
 
 /* 図中ラベルの白フチ（線の上でも読めるように） */
 .halo { paint-order:stroke; stroke:#fff; stroke-width:3px; font-weight:600 }
@@ -1161,9 +937,6 @@ details.sec-fold > summary .muted { font-size:12px }
 .kd-table-title { margin:14px 0 6px; font-weight:700; font-size:13px; color:#5b21b6; padding-left:8px; border-left:3px solid #7c3aed }
 
 /* 凡例 */
-.legend { display:flex; flex-wrap:wrap; gap:8px 18px; margin:0 0 10px; padding:10px 14px; background:#f7f8fa; border:1px solid #eceff3; border-radius:8px; font-size:12.5px; color:#4b5563 }
-.legend-item { display:inline-flex; align-items:center; gap:7px }
-.legend-item strong { color:#1f2430 }
 .swatch { display:inline-block; width:13px; height:13px; border-radius:3px; border:2px solid transparent }
 
 /* グラフ */
