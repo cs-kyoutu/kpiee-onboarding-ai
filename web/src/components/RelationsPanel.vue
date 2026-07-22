@@ -363,6 +363,151 @@ const isKeyCol = (rid: string, col: string) => keyColsByRegion.value.get(rid)?.h
 const keyLinks = computed(() => [...(graph.value?.keyLinks ?? [])].sort((a, b) => b.count - a.count))
 const KEYLINK_SHOW = 50
 
+// 共通の層割り（入次数0を左端に、最長路で層を決める。循環は打ち切り）
+function layerize(ids: string[], edges: { from: string; to: string }[]): Map<string, number> {
+  const incoming = new Map<string, string[]>(ids.map(id => [id, []]))
+  for (const e of edges) incoming.get(e.to)?.push(e.from)
+  const layerOf = new Map<string, number>()
+  const calc = (id: string, seen: Set<string>): number => {
+    if (layerOf.has(id)) return layerOf.get(id)!
+    if (seen.has(id)) return 0
+    seen.add(id)
+    const ins = incoming.get(id) ?? []
+    const l = ins.length === 0 ? 0 : Math.min(6, Math.max(...ins.map(p => calc(p, seen) + 1)))
+    layerOf.set(id, l)
+    return l
+  }
+  ids.forEach(id => calc(id, new Set()))
+  return layerOf
+}
+
+// ---- ① データフロー図（ファイル=箱、矢印=ファイルをまたぐデータの流れ） ----
+// 数式はファイルを跨げないため、ファイル間の流れは実質「手コピー（値一致）」の集約。
+const FF = { W: 200, H: 48, GX: 150, GY: 28, PAD: 16 }
+const fileFlow = computed(() => {
+  const g = graph.value
+  if (!g || (g.fileCount ?? 0) <= 1) return null
+  const files = [...new Set(g.regions.map(r => r.file))]
+  if (files.length <= 1) return null
+  // ファイル間辺の集約（filter-key は補助線なので除外）
+  const agg = new Map<string, { from: string; to: string; count: number }>()
+  for (const e of g.edges) {
+    if (e.type === 'filter-key') continue
+    const ff = regionById.value.get(regionIdOf(e.from))?.file
+    const tf = regionById.value.get(regionIdOf(e.to))?.file
+    if (!ff || !tf || ff === tf) continue
+    const k = `${ff}->${tf}`
+    const cur = agg.get(k)
+    if (cur) cur.count++
+    else agg.set(k, { from: ff, to: tf, count: 1 })
+  }
+  const flowEdges = [...agg.values()]
+  const layerOf = layerize(files, flowEdges)
+  const byLayer = new Map<number, string[]>()
+  for (const f of files) {
+    const l = layerOf.get(f) ?? 0
+    if (!byLayer.has(l)) byLayer.set(l, [])
+    byLayer.get(l)!.push(f)
+  }
+  // ファイルごとのシート数（箱の副題）
+  const sheetsOf = new Map<string, Set<string>>()
+  for (const r of g.regions) {
+    if (!sheetsOf.has(r.file)) sheetsOf.set(r.file, new Set())
+    sheetsOf.get(r.file)!.add(r.sheet)
+  }
+  const pos = new Map<string, { x: number; y: number }>()
+  let maxY = 0
+  for (const [l, fs] of [...byLayer.entries()].sort((a, b) => a[0] - b[0])) {
+    let y = FF.PAD
+    for (const f of fs) { pos.set(f, { x: FF.PAD + l * (FF.W + FF.GX), y }); y += FF.H + FF.GY; if (y > maxY) maxY = y }
+  }
+  const nodes = files.map(f => ({
+    id: f, ...pos.get(f)!, w: FF.W, h: FF.H,
+    label: f, sub: `${sheetsOf.get(f)?.size ?? 0}シート`,
+  }))
+  const edges = flowEdges.map(e => {
+    const a = pos.get(e.from)!, b = pos.get(e.to)!
+    const x1 = a.x + FF.W, y1 = a.y + FF.H / 2, x2 = b.x, y2 = b.y + FF.H / 2
+    return { ...e, x1, y1, x2, y2, mx: (x1 + x2) / 2, my: (y1 + y2) / 2 - 6 }
+  })
+  const width = FF.PAD * 2 + (Math.max(0, ...files.map(f => layerOf.get(f) ?? 0)) + 1) * (FF.W + FF.GX) - FF.GX
+  return { nodes, edges, width, height: Math.max(maxY, 80) }
+})
+
+// ---- ② キー関係図（ER風: 各表のキー列だけの箱 ＋ キーどうしの紐づき線） ----
+const KD = { W: 230, HEAD: 34, ROW: 22, GX: 170, GY: 26, PAD: 16, CAP: 24 }
+const keyDiagram = computed(() => {
+  const g = graph.value
+  if (!g) return null
+  const links = keyLinks.value
+  const withKeys = g.regions.filter(r => (r.keys?.keys?.length ?? 0) > 0)
+  if (withKeys.length === 0) return null
+  const linkedIds = new Set(links.flatMap(l => [regionIdOf(l.a), regionIdOf(l.b)]))
+  // 紐づきに参加する表を優先し、残りは主キー持ちを優先。多すぎる場合は打ち切り
+  const show = [...withKeys].sort((a, b) => {
+    const la = linkedIds.has(a.id) ? 1 : 0, lb = linkedIds.has(b.id) ? 1 : 0
+    if (la !== lb) return lb - la
+    const pa = a.keys!.keys.some(k => k.role === 'primary') ? 1 : 0
+    const pb = b.keys!.keys.some(k => k.role === 'primary') ? 1 : 0
+    return pb - pa
+  }).slice(0, KD.CAP)
+  const showIds = new Set(show.map(r => r.id))
+  const shownLinks = links.filter(l => showIds.has(regionIdOf(l.a)) && showIds.has(regionIdOf(l.b)))
+  // データは b（参照される側=マスタ）→ a（数式側）に流れるので b を左の層へ
+  const layerOf = layerize(show.map(r => r.id),
+    shownLinks.map(l => ({ from: regionIdOf(l.b), to: regionIdOf(l.a) })))
+  const byLayer = new Map<number, typeof show>()
+  for (const r of show) {
+    const l = layerOf.get(r.id) ?? 0
+    if (!byLayer.has(l)) byLayer.set(l, [])
+    byLayer.get(l)!.push(r)
+  }
+  interface KdRow { y: number; mark: string; label: string; primary: boolean }
+  const nodes: { id: string; x: number; y: number; w: number; h: number; title: string; sub: string | null; rows: KdRow[] }[] = []
+  const rowYOf = new Map<string, number>() // `${regionId}:${col}` → 行中心の y
+  let maxY = 0
+  for (const [l, regs] of [...byLayer.entries()].sort((a, b) => a[0] - b[0])) {
+    let y = KD.PAD
+    for (const r of regs) {
+      const ks = r.keys!.keys
+      const h = KD.HEAD + ks.length * KD.ROW + 6
+      const rows: KdRow[] = ks.map((k, i) => {
+        const cy = y + KD.HEAD + i * KD.ROW + KD.ROW / 2
+        rowYOf.set(`${r.id}:${k.column}`, cy)
+        return { y: cy, mark: k.role === 'primary' ? '🔑' : '◇', label: k.column, primary: k.role === 'primary' }
+      })
+      nodes.push({ id: r.id, x: KD.PAD + l * (KD.W + KD.GX), y, w: KD.W, h, title: r.sheet, sub: multiFile.value && r.file !== r.sheet ? r.file : null, rows })
+      y += h + KD.GY
+      if (y > maxY) maxY = y
+    }
+  }
+  const nodeById = new Map(nodes.map(n => [n.id, n]))
+  // 同じキー列ペアは関数違いでも1本にまとめる（対応表側で個別に見せる）
+  const pairMap = new Map<string, { a: string; b: string; fns: Set<string>; count: number }>()
+  for (const l of shownLinks) {
+    const k = `${l.a}|${l.b}`
+    const cur = pairMap.get(k)
+    if (cur) { cur.fns.add(l.fn); cur.count += l.count }
+    else pairMap.set(k, { a: l.a, b: l.b, fns: new Set([l.fn]), count: l.count })
+  }
+  const edges = [...pairMap.values()].map(p => {
+    const na = nodeById.get(regionIdOf(p.a))!, nb = nodeById.get(regionIdOf(p.b))!
+    const ya = rowYOf.get(p.a) ?? na.y + KD.HEAD / 2
+    const yb = rowYOf.get(p.b) ?? nb.y + KD.HEAD / 2
+    // マスタ(b) → 数式側(a)。b が左にあれば右辺から、そうでなければ左辺から出す
+    const bLeft = nb.x + nb.w <= na.x
+    const x1 = bLeft ? nb.x + nb.w : nb.x
+    const x2 = bLeft ? na.x : na.x + na.w
+    return {
+      x1, y1: yb, x2, y2: ya,
+      label: [...p.fns].join('・'),
+      mx: (x1 + x2) / 2, my: (yb + ya) / 2 - 5,
+      title: `${short(p.b)} ⇔ ${short(p.a)}（${[...p.fns].join('・')}）`,
+    }
+  })
+  return { nodes, edges, width: KD.PAD * 2 + (Math.max(0, ...nodes.map(n => (n.x - KD.PAD) / (KD.W + KD.GX))) + 1) * (KD.W + KD.GX) - KD.GX, height: Math.max(maxY, 90), omitted: withKeys.length - show.length, headH: KD.HEAD }
+})
+
 // ノード見出し2段目の小さなメタ情報行（複数ファイル時のファイル名 / AI解読の有無 / キー / 列数）
 const metaLine = (r: RelRegion): string =>
   [
@@ -429,11 +574,111 @@ function colLetterRef(c: number): string {
           あわせて、下記の<strong>全体構造の解説</strong>（シート構成とテーブル定義書）も生成されます。
         </p>
 
+        <!-- ① データフロー図: ファイルどうしのデータの流れ（複数ファイル時のみ） -->
+        <section v-if="fileFlow" class="sec">
+          <div class="sec-head">
+            <span class="sec-ico">🗂️</span>
+            <div class="sec-titles">
+              <h3>データフロー図 — ファイルどうしのデータの流れ</h3>
+              <p class="sec-sub">
+                矢印＝あるファイルの値が別のファイルで使われている向き（数値は関係の件数<template v-if="graph.edgeCollapsed">・大規模のため代表値</template>）。
+                数式はファイルを跨げないため、ファイル間の流れは値の一致から推定した<strong>手コピー</strong>が中心です。
+              </p>
+            </div>
+          </div>
+          <div class="graph-wrap">
+            <svg :width="fileFlow.width" :height="fileFlow.height" :viewBox="`0 0 ${fileFlow.width} ${fileFlow.height}`">
+              <defs>
+                <marker id="ff-arrow" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+                  <path d="M0,0 L8,3 L0,6 Z" fill="#c62828" />
+                </marker>
+              </defs>
+              <g v-for="(e, i) in fileFlow.edges" :key="i">
+                <path :d="`M${e.x1},${e.y1} C${e.x1 + 60},${e.y1} ${e.x2 - 60},${e.y2} ${e.x2},${e.y2}`"
+                  fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ff-arrow)" />
+                <text :x="e.mx" :y="e.my" text-anchor="middle" font-size="11" fill="#c62828" class="halo">{{ e.count }}件</text>
+              </g>
+              <g v-for="n in fileFlow.nodes" :key="n.id">
+                <rect :x="n.x" :y="n.y" :width="n.w" :height="n.h" rx="9" fill="#fff7f2" stroke="#e0876a" stroke-width="1.5" />
+                <text :x="n.x + 12" :y="n.y + 20" font-size="13" font-weight="700" fill="#7c3a1d">📄 {{ fitText(n.label, n.w - 24, 13) }}</text>
+                <text :x="n.x + 12" :y="n.y + 36" font-size="10.5" fill="#a1663f">{{ n.sub }}</text>
+              </g>
+            </svg>
+          </div>
+        </section>
+
+        <!-- ② キー関係図: 各表の主キー・軸だけの箱と、キーどうしの紐づき線（ER図風） -->
+        <section v-if="keyDiagram" class="sec">
+          <div class="sec-head">
+            <span class="sec-ico">🔑</span>
+            <div class="sec-titles">
+              <h3>キー関係図 — 各表の主キーと、その紐づき</h3>
+              <p class="sec-sub">
+                箱の中は各表の<strong>キー列だけ</strong>（🔑＝主キー、◇＝軸・結合キー）。
+                線はキーどうしの紐づき（VLOOKUP・SUMIFS 等の照合）で、左のマスタ側から右の利用側へ引いています。根拠は下の対応表で確認できます。
+              </p>
+            </div>
+          </div>
+          <div class="graph-wrap">
+            <svg :width="keyDiagram.width" :height="keyDiagram.height" :viewBox="`0 0 ${keyDiagram.width} ${keyDiagram.height}`">
+              <g v-for="(e, i) in keyDiagram.edges" :key="i">
+                <title>{{ e.title }}</title>
+                <path :d="`M${e.x1},${e.y1} C${e.x1 + 55},${e.y1} ${e.x2 - 55},${e.y2} ${e.x2},${e.y2}`"
+                  fill="none" stroke="#7c3aed" stroke-width="2" />
+                <circle :cx="e.x1" :cy="e.y1" r="3.2" fill="#7c3aed" />
+                <circle :cx="e.x2" :cy="e.y2" r="3.2" fill="#7c3aed" />
+                <text :x="e.mx" :y="e.my" text-anchor="middle" font-size="10.5" fill="#7c3aed" class="halo">{{ e.label }}</text>
+              </g>
+              <g v-for="n in keyDiagram.nodes" :key="n.id">
+                <rect :x="n.x" :y="n.y" :width="n.w" :height="n.h" rx="8" fill="#fff" stroke="#7c3aed" stroke-width="1.5" />
+                <rect :x="n.x" :y="n.y" :width="n.w" :height="keyDiagram.headH" rx="8" fill="#7c3aed" />
+                <text :x="n.x + 11" :y="n.y + (n.sub ? 15 : 21)" fill="#fff" font-size="13" font-weight="700">{{ fitText(n.title, n.w - 22, 13) }}</text>
+                <text v-if="n.sub" :x="n.x + 11" :y="n.y + 28" fill="#e4d7fb" font-size="10">{{ fitText(n.sub, n.w - 22, 10) }}</text>
+                <text v-for="(row, ri) in n.rows" :key="ri" :x="n.x + 11" :y="row.y + 4" font-size="12"
+                  :fill="row.primary ? '#1b212b' : '#4b5563'" :font-weight="row.primary ? 700 : 400">
+                  {{ row.mark }} {{ fitText(row.label, n.w - 40, 12) }}
+                </text>
+              </g>
+            </svg>
+          </div>
+          <p v-if="keyDiagram.edges.length === 0" class="muted" style="margin:8px 0 0">
+            キーどうしの紐づき（数式による照合）はまだ検出されていません。各表のキーのみ表示しています。
+          </p>
+          <p v-if="keyDiagram.omitted > 0" class="muted" style="margin:8px 0 0">
+            紐づきの無い {{ keyDiagram.omitted }} 表は省略しています（各表のキーは表をクリックすると関係マップの要約で確認できます）。
+          </p>
+
+          <!-- キーの対応表（根拠つき） -->
+          <template v-if="keyLinks.length">
+            <div class="kd-table-title">キーの対応表（根拠つき）</div>
+            <table class="keylink-table">
+              <thead>
+                <tr><th>マスタ側（参照される）</th><th></th><th>利用側（数式を書いた）</th><th>結合方法</th><th>根拠（実際の数式の例）</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="(l, i) in keyLinks.slice(0, KEYLINK_SHOW)" :key="i">
+                  <td>{{ short(l.b) }}</td>
+                  <td class="kl-arrow">⇔</td>
+                  <td>{{ short(l.a) }}</td>
+                  <td class="kl-fn"><span class="badge info">{{ l.fn }}</span><span v-if="l.count > 1" class="muted"> ×{{ l.count }}</span></td>
+                  <td class="evidence"><code>{{ l.evidence }}</code></td>
+                </tr>
+              </tbody>
+            </table>
+            <p v-if="keyLinks.length > KEYLINK_SHOW" class="muted" style="margin:6px 0 0">
+              利用回数の多い上位 {{ KEYLINK_SHOW }} 件を表示しています（全 {{ keyLinks.length.toLocaleString() }} 件）。
+            </p>
+          </template>
+        </section>
+
         <!-- 全体構造の解説（①シート構成 → ②テーブル定義書。旧形式の保存結果はフロー表示に自動フォールバック） -->
         <div v-if="overview" class="overview">
-          <div class="ov-head">
-            <span class="ov-ico">🗺️</span>
-            <h3>全体構造の解説 — シート構成とテーブル定義書</h3>
+          <div class="sec-head">
+            <span class="sec-ico">🗺️</span>
+            <div class="sec-titles">
+              <h3>全体構造の解説 — シート構成とテーブル定義書</h3>
+              <p class="sec-sub">AI解読（②）の結果から自動生成。資料を追加・変更して再解読すると更新されます。</p>
+            </div>
           </div>
           <p class="ov-summary">{{ overview.summary }}</p>
 
@@ -463,11 +708,16 @@ function colLetterRef(c: number): string {
             </div>
           </template>
 
-          <!-- ② テーブル定義書（同一レイアウトのシート群は1つの定義書にまとまる） -->
-          <template v-for="(def, di) in (overview.table_definitions ?? [])" :key="`def-${di}`">
-            <div class="ov-sec-title">
-              テーブル定義書{{ (overview.table_definitions?.length ?? 0) > 1 ? ` ${di + 1}` : '' }}: {{ def.title }}
-            </div>
+          <!-- ② テーブル定義書（同一レイアウトのシート群は1つの定義書にまとまる）。
+               定義書ごとに折りたたみカードにし、少数（2つまで）は最初から開いておく -->
+          <div v-if="overview.table_definitions?.length" class="ov-sec-title">テーブル定義書</div>
+          <details v-for="(def, di) in (overview.table_definitions ?? [])" :key="`def-${di}`"
+            class="ov-def" :open="(overview.table_definitions?.length ?? 0) <= 2">
+            <summary>
+              <span class="ov-def-badge">定義書{{ (overview.table_definitions?.length ?? 0) > 1 ? ` ${di + 1}` : '' }}</span>
+              <strong>{{ def.title }}</strong>
+              <span class="muted">{{ def.columns.length }}項目・適用 {{ def.applies_to.length }}シート</span>
+            </summary>
             <div class="ov-applies">
               <span class="muted">適用シート:</span>
               <span v-for="(s, j) in def.applies_to" :key="j" class="ov-chip">{{ s }}</span>
@@ -475,25 +725,32 @@ function colLetterRef(c: number): string {
             <div class="ov-table-wrap">
               <table class="ov-table">
                 <thead>
-                  <tr><th>位置</th><th>項目</th><th>型</th><th>定義・出所</th></tr>
+                  <tr><th class="ov-w-pos">位置</th><th class="ov-w-item">項目</th><th class="ov-w-type">型</th><th>定義・出所</th></tr>
                 </thead>
                 <tbody>
                   <tr v-for="(col, j) in def.columns" :key="j">
                     <td class="ov-pos">{{ col.position }}</td>
                     <td class="ov-strong">{{ col.item }}</td>
-                    <td>{{ col.type }}</td>
+                    <td class="ov-type">{{ col.type }}</td>
                     <td>{{ col.definition }}</td>
                   </tr>
                 </tbody>
               </table>
             </div>
-            <div v-if="def.calc_rows.length" class="ov-calcrows">
-              <div class="ov-calcrows-title">計算行（行方向の集計・計算）</div>
-              <ul>
-                <li v-for="(cr, j) in def.calc_rows" :key="j"><strong>{{ cr.label }}</strong>：{{ cr.definition }}</li>
-              </ul>
+            <div v-if="def.calc_rows.length" class="ov-table-wrap" style="margin-top:8px">
+              <table class="ov-table">
+                <thead>
+                  <tr><th class="ov-w-item">計算行</th><th>定義（行方向の集計・計算）</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(cr, j) in def.calc_rows" :key="j">
+                    <td class="ov-strong">{{ cr.label }}</td>
+                    <td>{{ cr.definition }}</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
-          </template>
+          </details>
 
           <!-- 旧形式（入力→加工→出力フロー）: 過去の解読結果の表示互換。再解読すると新形式に置き換わる -->
           <div v-if="isLegacyOverview" class="ov-flow">
@@ -538,20 +795,20 @@ function colLetterRef(c: number): string {
               <li v-for="(c, i) in overview.caveats" :key="i">{{ c }}</li>
             </ul>
           </div>
-          <p class="muted ov-foot">この解説は AI解読（②）の結果から自動生成されています。資料を追加・変更して再解読すると更新されます。</p>
         </div>
 
-        <!-- 関係マップ: 凡例・グラフ・クリック時の表要約をひとつのセクションに -->
-        <section class="sec">
-          <div class="sec-head">
+        <!-- 関係マップ（詳細）: 情報量が多いので普段は折りたたみ。列レベルまで追いたい時に開く -->
+        <details class="sec sec-fold">
+          <summary>
             <span class="sec-ico">🔀</span>
-            <div class="sec-titles">
-              <h3>関係マップ — どの表からどの表へデータが流れるか</h3>
-              <p class="sec-sub">
-                箱＝表（シート）、矢印＝データの流れ。手コピー疑いは<span style="color:#c62828">赤い破線</span>。
-                <strong>表をクリック</strong>すると、その表のキー・内部構造・AI解読が下に表示されます。
-              </p>
-            </div>
+            <strong>関係マップ（詳細）</strong>
+            <span class="muted">表単位の全関係グラフ・表クリックで要約 — クリックで展開</span>
+          </summary>
+          <div class="fold-toolbar">
+            <p class="sec-sub">
+              箱＝表（シート）、矢印＝データの流れ。手コピー疑いは<span style="color:#c62828">赤い破線</span>。
+              <strong>表をクリック</strong>すると、その表のキー・内部構造・AI解読が下に表示されます。
+            </p>
             <button class="sec-action" @click="showColumns = !showColumns">
               {{ showColumns ? '列を隠す' : '各表の列も表示' }}
             </button>
@@ -759,38 +1016,7 @@ function colLetterRef(c: number): string {
           </div>
         </div>
 
-        </section>
-
-        <!-- キーのつながり: 表と表を結ぶキー列の対応（VLOOKUP/SUMIFS 等の引数位置から抽出） -->
-        <section v-if="keyLinks.length" class="sec">
-          <div class="sec-head">
-            <span class="sec-ico">🔑</span>
-            <div class="sec-titles">
-              <h3>キーのつながり — 表と表を結ぶキー列</h3>
-              <p class="sec-sub">
-                数式の引数位置から「どの列とどの列が突き合わされているか」を抽出。
-                ⇔ の左が数式を書いた側、右が参照されている側です。
-              </p>
-            </div>
-          </div>
-          <table class="keylink-table">
-            <thead>
-              <tr><th>この表のキー</th><th></th><th>相手の表のキー</th><th>結合方法</th><th>根拠（実際の数式の例）</th></tr>
-            </thead>
-            <tbody>
-              <tr v-for="(l, i) in keyLinks.slice(0, KEYLINK_SHOW)" :key="i">
-                <td>{{ short(l.a) }}</td>
-                <td class="kl-arrow">⇔</td>
-                <td>{{ short(l.b) }}</td>
-                <td class="kl-fn"><span class="badge info">{{ l.fn }}</span><span v-if="l.count > 1" class="muted"> ×{{ l.count }}</span></td>
-                <td class="evidence"><code>{{ l.evidence }}</code></td>
-              </tr>
-            </tbody>
-          </table>
-          <p v-if="keyLinks.length > KEYLINK_SHOW" class="muted" style="margin:6px 0 0">
-            利用回数の多い上位 {{ KEYLINK_SHOW }} 件を表示しています（全 {{ keyLinks.length.toLocaleString() }} 件）。
-          </p>
-        </section>
+        </details>
 
         <!-- 関係の一覧: 件数が多いので折りたたみ（根拠を確認したい時だけ開く） -->
         <details class="sec sec-fold">
@@ -862,12 +1088,20 @@ h3 { font-size:14px; margin:20px 0 8px; }
 .sec-sub { margin:3px 0 0; font-size:12.5px; color:#6b7280; line-height:1.6 }
 .sec-action { margin-left:auto; white-space:nowrap; flex-shrink:0; padding:5px 12px; font-size:12.5px }
 
-/* 折りたたみセクション（関係の一覧など、普段は閉じておく詳細データ） */
+/* 折りたたみセクション（関係マップ・関係の一覧など、普段は閉じておく詳細データ） */
 details.sec-fold > summary { cursor:pointer; display:flex; align-items:center; gap:8px; font-size:14px; list-style:none }
 details.sec-fold > summary::-webkit-details-marker { display:none }
 details.sec-fold > summary::after { content:'▸'; margin-left:auto; color:#9aa1ad; transition:transform .15s }
 details.sec-fold[open] > summary::after { transform:rotate(90deg) }
 details.sec-fold > summary .muted { font-size:12px }
+.fold-toolbar { display:flex; align-items:flex-start; gap:12px; margin:12px 0 10px }
+.fold-toolbar .sec-sub { margin:0; flex:1 }
+
+/* 図中ラベルの白フチ（線の上でも読めるように） */
+.halo { paint-order:stroke; stroke:#fff; stroke-width:3px; font-weight:600 }
+
+/* キーの対応表の小見出し */
+.kd-table-title { margin:14px 0 6px; font-weight:700; font-size:13px; color:#5b21b6; padding-left:8px; border-left:3px solid #7c3aed }
 
 /* 凡例 */
 .legend { display:flex; flex-wrap:wrap; gap:8px 18px; margin:0 0 10px; padding:10px 14px; background:#f7f8fa; border:1px solid #eceff3; border-radius:8px; font-size:12.5px; color:#4b5563 }
@@ -942,11 +1176,8 @@ details.sec-fold > summary .muted { font-size:12px }
 .ss-ai-exp { color:#374151 }
 
 /* 全体構造の解説（シート構成＋テーブル定義書。ov-flow は旧形式互換表示） */
-.overview { margin:14px 0; padding:16px 18px; border:1px solid #d6e4f5; border-radius:12px; background:linear-gradient(180deg,#f6faff 0%,#fcfdff 100%); }
-.ov-head { display:flex; align-items:center; gap:8px; margin-bottom:6px }
-.ov-head h3 { margin:0; font-size:15px; color:#10325c }
-.ov-ico { font-size:18px }
-.ov-summary { margin:4px 0 14px; font-size:14px; line-height:1.7; color:#26303c }
+.overview { margin:16px 0; padding:14px 16px; border:1px solid #d6e4f5; border-radius:12px; background:linear-gradient(180deg,#f6faff 0%,#fcfdff 100%); box-shadow:0 1px 3px rgba(0,0,0,0.04) }
+.ov-summary { margin:0 0 14px; font-size:14px; line-height:1.7; color:#26303c }
 .ov-flow { display:flex; align-items:stretch; gap:8px; flex-wrap:wrap }
 .ov-col { flex:1; min-width:200px; background:#fff; border:1px solid #e3e7ec; border-radius:10px; padding:12px 14px }
 .ov-col.ov-in { border-top:3px solid #00ac47 }
@@ -962,7 +1193,6 @@ details.sec-fold > summary .muted { font-size:12px }
 .ov-caveats { margin-top:14px; padding:10px 14px; background:#fffaf2; border:1px solid #f4e3c8; border-radius:8px }
 .ov-caveats-title { font-weight:700; font-size:13px; color:#92510a; margin-bottom:6px }
 .ov-caveats ul { margin:0; padding-left:18px; font-size:13px; line-height:1.7; color:#5b4a2e }
-.ov-foot { margin:12px 0 0; font-size:11.5px }
 /* 入力→加工→出力は横並びが基本。狭い画面では縦積みにし矢印を回転 */
 @media (max-width: 760px) {
   .ov-flow { flex-direction:column }
@@ -976,6 +1206,19 @@ details.sec-fold > summary .muted { font-size:12px }
 .ov-table th { text-align:left; padding:8px 12px; background:#f2f6fb; color:#3b4657; font-size:12px; white-space:nowrap; border-bottom:1px solid #e3e7ec }
 .ov-table td { padding:8px 12px; border-bottom:1px solid #eef1f5; line-height:1.55; vertical-align:top }
 .ov-table tr:last-child td { border-bottom:none }
+.ov-table tbody tr:nth-child(even) td { background:#fafcfe }
+.ov-w-pos { width:64px } .ov-w-item { width:160px } .ov-w-type { width:90px }
+.ov-type { white-space:nowrap; color:#4b5563 }
+
+/* テーブル定義書の折りたたみカード */
+.ov-def { margin:8px 0; background:#fff; border:1px solid #e3e7ec; border-radius:10px; padding:10px 14px }
+.ov-def > summary { cursor:pointer; display:flex; align-items:center; gap:8px; font-size:13.5px; list-style:none }
+.ov-def > summary::-webkit-details-marker { display:none }
+.ov-def > summary::after { content:'▸'; margin-left:auto; color:#9aa1ad; transition:transform .15s }
+.ov-def[open] > summary::after { transform:rotate(90deg) }
+.ov-def > summary .muted { font-size:12px }
+.ov-def[open] > summary { margin-bottom:8px }
+.ov-def-badge { display:inline-block; padding:1px 9px; border-radius:999px; background:#e8f0fb; color:#0d4ea6; font-size:11.5px; font-weight:700; white-space:nowrap }
 .ov-strong { font-weight:600; color:#1b212b; white-space:nowrap }
 .ov-pos { font-family:ui-monospace, Consolas, monospace; white-space:nowrap; color:#374151 }
 .ov-role { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11.5px; font-weight:600; white-space:nowrap }
@@ -985,9 +1228,6 @@ details.sec-fold > summary .muted { font-size:12px }
 .ov-role.role-etc { background:#eef0f3; color:#4b5563 }
 .ov-chip { display:inline-block; margin:1px 4px 1px 0; padding:1px 8px; background:#eef3fa; border:1px solid #d9e4f2; border-radius:999px; font-size:12px; color:#274766; white-space:nowrap }
 .ov-applies { margin:0 0 6px; font-size:12.5px; line-height:1.9 }
-.ov-calcrows { margin:8px 0 0; padding:8px 14px; background:#f8fafc; border:1px dashed #d7dee8; border-radius:8px }
-.ov-calcrows-title { font-weight:700; font-size:12.5px; color:#3b4657; margin-bottom:4px }
-.ov-calcrows ul { margin:0; padding-left:18px; font-size:13px; line-height:1.8; color:#26303c }
 
 /* 案内・注意 */
 .ai-banner { margin:8px 0; padding:10px 14px; background:#f7f8fa; border:1px solid #eceff3; border-left:3px solid var(--primary); border-radius:8px; font-size:13px; line-height:1.6 }
