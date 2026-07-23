@@ -477,6 +477,8 @@ function colLetterRef(c: number): string {
           <span v-if="graph.edgeCollapsed" class="badge warn">大規模のため代表 {{ graph.edges.length.toLocaleString() }} 件に集約表示</span>
           <span v-if="multiFile && crossFileCopies > 0" class="badge ng">ファイル間コピー {{ crossFileCopies }} 件</span>
           <span v-if="graph.hasFindings" class="badge info">AI解読 融合済み</span>
+          <!-- 顧客との読み合わせ用レポート（自己完結HTML）。画面表示はそのまま、ファイル出力だけを追加 -->
+          <a class="report-link" :href="`/api/projects/${projectId}/relations/report`" download>📄 顧客共有用レポート（HTML）</a>
         </div>
         <p v-if="!graph.hasFindings" class="ai-banner">
           まだ「② AI解読」が未実行です。実行すると各シートの<strong>意味づけ</strong>が関係図に融合され、表をクリックすると AI の解読内容が表示されます。
@@ -930,8 +932,13 @@ function colLetterRef(c: number): string {
 
 <style scoped>
 h3 { font-size:14px; margin:20px 0 8px; }
-.summary { display:flex; align-items:center; gap:8px; margin:8px 0; }
+.summary { display:flex; align-items:center; gap:8px; margin:8px 0; flex-wrap:wrap; }
 .warn-mark { color:#b91c1c }
+
+/* 顧客共有用レポートのダウンロードリンク（右端に寄せる） */
+.report-link { margin-left:auto; white-space:nowrap; flex-shrink:0; padding:4px 12px; font-size:12.5px;
+  border:1px solid #c9def4; border-radius:8px; background:#edf4fc; color:#1f5fae; text-decoration:none; font-weight:600 }
+.report-link:hover { background:#e0edfa }
 
 /* セクションカード: パネル内の大きな区切りを統一の見た目にする（マップ / キー / 一覧） */
 .sec { margin:16px 0; padding:14px 16px; border:1px solid #e3e7ec; border-radius:12px; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,0.04) }

@@ -20,6 +20,7 @@ import { artifactSetSignature, getCachedRelationGraph, setCachedRelationGraph, i
 import { runDecode, runGenerate, runMatch, tableNameOf } from './pipeline/orchestrator.js';
 import { buildKpieePreview, buildImplReport } from './match/kpieePreview.js';
 import { gatherSummary, buildSummaryDocx, buildSummaryMarkdown } from './summaryDoc.js';
+import { buildRelationsReportHtml } from './relationsReport.js';
 import { startAsk as qaStartAsk, isAskPending as qaIsPending, getHistory as qaHistory } from './qa/agent.js';
 import { invalidateBooks } from './qa/tools.js';
 import { aiAvailable, MODEL, estimateCostUsd } from './ai/client.js';
@@ -526,6 +527,34 @@ app.get('/api/projects/:id/attention', async (req, res) => {
         .map(({ seen: _seen, ...g }) => g)
         .sort((a, b) => b.count - a.count),
     });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// 顧客共有用「データ構造 分析レポート」(自己完結 HTML) のダウンロード。
+// 画面の関係表示はそのまま、読み合わせ用のファイル出力だけを追加する位置づけ。
+// 生成は保存済み関係グラフから決定的（AI 呼び出しなし）。原本の数値は含まれない。
+app.get('/api/projects/:id/relations/report', async (req, res) => {
+  const projectId = Number(req.params.id);
+  try {
+    const loaded = await loadProjectRelationGraph(projectId);
+    if (!loaded) return res.status(404).json({ error: '関係分析できるファイル（.xlsx/.csv）がまだありません' });
+    const project = await db.prepare(`SELECT customer_name FROM projects WHERE id = ?`)
+      .get(projectId) as { customer_name: string } | undefined;
+    const customerName = project?.customer_name ?? '';
+    const html = buildRelationsReportHtml({
+      customerName,
+      generatedAt: new Date(),
+      fileCount: loaded.fileCount,
+      graph: loaded.graph,
+    });
+    const date = new Date().toISOString().slice(0, 10);
+    // ファイル名に使えない文字を除去。ASCII フォールバック + RFC5987 の両方を付ける
+    const safeName = `データ構造分析レポート_${customerName || `project${projectId}`}_${date}.html`.replace(/[\\/:*?"<>|]/g, '_');
+    res.setHeader('Content-Disposition',
+      `attachment; filename="relations-report-${projectId}-${date}.html"; filename*=UTF-8''${encodeURIComponent(safeName)}`);
+    res.type('html').send(html);
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
