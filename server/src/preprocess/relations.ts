@@ -7,6 +7,7 @@
 // 出力は「ノード=表領域の列 / 辺=関係(集計・参照・コピー等)」のグラフ。
 // 数式由来の辺は確定的・高確信、値由来(手コピー推定)の辺は確率的でノイズ抑制ゲートを掛ける。
 import ExcelJS from 'exceljs';
+import * as XLSX from 'xlsx';
 import { parseCsv } from './parse.js';
 
 // ============================================================
@@ -33,9 +34,58 @@ function normalizeValue(v: ExcelJS.CellValue): string | number | null {
   return String(v);
 }
 
+/** SheetJS のセル値を RawCell.value 相当へ正規化する */
+function sheetjsRawValue(cell: XLSX.CellObject): string | number | null {
+  if (cell.v === null || cell.v === undefined) return null;
+  switch (cell.t) {
+    case 'n': return typeof cell.v === 'number' ? cell.v : Number(cell.v);
+    case 'b': return cell.v ? 1 : 0;
+    case 'd': { const d = cell.v as Date; return d instanceof Date && !isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : null; }
+    case 'e': return String(cell.w ?? cell.v);
+    default: return String(cell.v);
+  }
+}
+
+/**
+ * exceljs が読めない非標準 xlsx（名前空間接頭辞 x:・セルの r 属性欠落など、一部の業務システム出力）を
+ * SheetJS で RawGrid[] に変換するフォールバック。r/c は 1 始まり（exceljs 経路に合わせる）。
+ */
+function buildGridsWithSheetJS(buffer: Buffer, file: string): RawGrid[] {
+  const wb = XLSX.read(buffer, { cellFormula: true, cellDates: true, cellNF: false, cellHTML: false, cellStyles: false });
+  const grids: RawGrid[] = [];
+  for (const name of wb.SheetNames) {
+    const ws = wb.Sheets[name];
+    if (!ws || !ws['!ref']) { grids.push({ file, name, cells: [], maxR: 0, maxC: 0 }); continue; }
+    const range = XLSX.utils.decode_range(ws['!ref']);
+    const cells: RawCell[] = [];
+    let maxR = 0, maxC = 0;
+    for (let R = range.s.r; R <= range.e.r; R++) {
+      for (let C = range.s.c; C <= range.e.c; C++) {
+        const cell = ws[XLSX.utils.encode_cell({ r: R, c: C })] as XLSX.CellObject | undefined;
+        if (!cell) continue;
+        const value = sheetjsRawValue(cell);
+        const formula = cell.f ? String(cell.f) : undefined;
+        if (value === null && !formula) continue;
+        const r = R + 1, c = C + 1;
+        cells.push({ r, c, value, formula });
+        if (r > maxR) maxR = r;
+        if (c > maxC) maxC = c;
+      }
+    }
+    grids.push({ file, name, cells, maxR, maxC });
+  }
+  return grids;
+}
+
 export async function buildGridsFromBuffer(buffer: Buffer, file = ''): Promise<RawGrid[]> {
   const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(buffer as unknown as ArrayBuffer);
+  try {
+    await wb.xlsx.load(buffer as unknown as ArrayBuffer);
+  } catch {
+    // exceljs が読めない非標準 xlsx は SheetJS で解析する（parse.ts の parseXlsx と同方針）。
+    // これが無いとシート関係タブで「Cannot read properties of undefined (reading 'sheets')」で落ちる。
+    return buildGridsWithSheetJS(buffer, file);
+  }
   const grids: RawGrid[] = [];
   wb.eachSheet(ws => {
     const cells: RawCell[] = [];
