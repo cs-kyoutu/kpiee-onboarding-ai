@@ -9,6 +9,7 @@
 import { getObject, getJson } from './storage.js';
 import { fetchDriveFile } from './google/drive.js';
 import { parseArtifact, type ParsedArtifact } from './preprocess/parse.js';
+import { parseArtifactsInWorker } from './preprocess/parseInWorker.js';
 
 const DRIVE_PREFIX = 'drive:';
 
@@ -40,4 +41,31 @@ export async function materializeParsed(row: { storage_key: string; parsed_key: 
   if (row.parsed_key) return getJson<ParsedArtifact>(row.parsed_key);
   const buffer = await materializeBuffer(row.storage_key);
   return parseArtifact(row.original_filename, buffer);
+}
+
+/**
+ * 複数アーティファクトのパース結果をまとめて取得する（decode/generate/match の入り口）。
+ * 原本バイトの取得（Drive/ディスク I/O）はメイン側で行い、CPU 重量級の exceljs パースだけを
+ * ワーカースレッドへ隔離する。単一プロセスでフロント配信・API・/healthz を兼ねる本構成で、
+ * パースがイベントループを止めると ALB ヘルスチェックが落ち→単一タスク構成では 503 になるため
+ * （2026-07-24 の「重い処理中の 503」対策。関係解析の analyzeArtifactsInWorker と同じ方針）。
+ * 戻り値は入力 rows と同じ並び（loadArtifacts の ORDER BY id を維持）。
+ */
+export async function materializeParsedMany(
+  rows: { storage_key: string; parsed_key: string | null; original_filename: string }[],
+): Promise<ParsedArtifact[]> {
+  const result: ParsedArtifact[] = new Array(rows.length);
+  const toParse: { index: number; filename: string; buffer: Buffer }[] = [];
+  // parsed_key があるもの（ローカル保存モード）はメインで JSON を読むだけでパース不要。
+  // 無保存モード（デプロイ運用）は parsed_key を持たないので原本を取得してパース対象に積む。
+  await Promise.all(rows.map(async (row, i) => {
+    if (row.parsed_key) { result[i] = await getJson<ParsedArtifact>(row.parsed_key); return; }
+    const buffer = await materializeBuffer(row.storage_key);
+    toParse.push({ index: i, filename: row.original_filename, buffer });
+  }));
+  if (toParse.length > 0) {
+    const parsed = await parseArtifactsInWorker(toParse.map(t => ({ filename: t.filename, buffer: t.buffer })));
+    toParse.forEach((t, k) => { result[t.index] = parsed[k]; });
+  }
+  return result;
 }

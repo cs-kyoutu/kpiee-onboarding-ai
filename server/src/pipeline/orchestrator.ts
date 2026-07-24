@@ -2,7 +2,7 @@
 // ローカル動作のため Sidekiq の代わりにインプロセスの逐次ジョブ実行を採用。
 // 各段階は analysis_runs に記録され、失敗しても該当段階から再実行できる（冪等）。
 import { db, setProjectStatus } from '../db.js';
-import { materializeParsed } from '../artifacts.js';
+import { materializeParsedMany } from '../artifacts.js';
 import type { ParsedArtifact } from '../preprocess/parse.js';
 import { shapeArtifactsToBudget } from '../preprocess/shape.js';
 import { aiAvailable, callStructured, MODEL } from '../ai/client.js';
@@ -59,14 +59,11 @@ async function loadArtifacts(projectId: number): Promise<{ row: ArtifactRow; par
     // ORDER BY id: decode/generate/match が同じ順序で入力（=同じテーブル名割り当て）を見るように固定する
     `SELECT id, kind, original_filename, storage_key, parsed_key, parse_status, sheet_roles FROM artifacts WHERE project_id = ? ORDER BY id`,
   ).all(projectId) as ArtifactRow[];
-  // 無保存モードでは parsed_key が無いので materializeParsed が原本を Drive から取り直してパースする。
-  // 逐次処理でメモリのピークを抑える（全ファイルのパース結果を同時展開しない）。
-  const out: { row: ArtifactRow; parsed: ParsedArtifact }[] = [];
-  for (const r of rows) {
-    if (r.parse_status !== 'done') continue;
-    out.push({ row: r, parsed: await materializeParsed(r) });
-  }
-  return out;
+  const done = rows.filter(r => r.parse_status === 'done');
+  // 無保存モードでは parsed_key が無いので原本を Drive から取り直してパースする。CPU 重量級の
+  // exceljs パースはワーカースレッドへ隔離し、メインのイベントループ（/healthz・一覧配信）を止めない。
+  const parsed = await materializeParsedMany(done);
+  return done.map((row, i) => ({ row, parsed: parsed[i] }));
 }
 
 /** アーティファクトのシート役割マップを得る。sheet_roles 未設定時は kind を全シートに適用（従来動作） */
