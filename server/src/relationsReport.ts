@@ -313,7 +313,7 @@ const NODE_W = 192, NODE_H = 62, COL_GAP = 128, ROW_GAP = 24, PAD = 28;
 const MAX_NODES = 28, MAX_EDGES = 60;
 
 // インタラクティブ・グラフ（Obsidian 風 force graph）へ渡すデータ。静的SVGと同じ kept 集合から作る。
-interface GNode { id: string; label: string; sub: string; role: string; deg: number; x: number; y: number }
+interface GNode { id: string; label: string; sub: string; role: string; deg: number; x: number; y: number; cols: string[]; colN: number }
 interface GLink { s: string; t: string; color: string; dashed: boolean; label: string; qid?: string; count: number }
 interface GraphData { nodes: GNode[]; links: GLink[]; w: number; h: number }
 interface MapResult { svg: string; omittedNodes: number; omittedEdges: number; data: GraphData }
@@ -443,6 +443,7 @@ function buildMap(
   const gnodes: GNode[] = kept.map(r => {
     const p = pos.get(r.id)!;
     const key = keySummaryShort(r);
+    const colNames = r.columns.map(c => c.name).filter(Boolean);
     return {
       id: r.id,
       label: labels.get(r.id) ?? r.sheet,
@@ -450,6 +451,8 @@ function buildMap(
       role: roles.get(r.id) ?? '',
       deg: degree.get(r.id) ?? 1,
       x: p.x + NODE_W / 2, y: p.y + NODE_H / 2,
+      cols: colNames.slice(0, 14),
+      colN: colNames.length,
     };
   });
   const glinks: GLink[] = drawPairs.map(p => {
@@ -672,7 +675,11 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
       const fileCell = r.file === prevFile ? '' : esc(r.file || '─');
       const sheetCell = r.file === prevFile && r.sheet === prevSheet ? '' : esc(r.sheet);
       prevFile = r.file; prevSheet = r.sheet;
-      invRows.push(`<tr><td>${fileCell}</td><td>${sheetCell}</td><td class="mono">${esc(rangeOf(r))}</td>` +
+      // 位置(A1:M103)だけだと分かりにくいので、主な列名を前面に出し、座標は補足として小さく添える
+      const colNames = r.columns.map(c => c.name).filter(Boolean);
+      const colPreview = colNames.slice(0, 4).join('・') + (colNames.length > 4 ? ` …他${colNames.length - 4}列` : '');
+      invRows.push(`<tr><td>${fileCell}</td><td>${sheetCell}</td>` +
+        `<td>${esc(colPreview || '—')}<div class="loc-sub mono">${esc(rangeOf(r))}</div></td>` +
         `<td class="r">${r.dataRowCount.toLocaleString()}</td><td>${esc(keySummary(r))}</td><td>${esc(roles.get(r.id) ?? '')}</td></tr>`);
     }
   }
@@ -879,7 +886,7 @@ ${REPORT_CSS}
     </div>
     <div style="overflow-x:auto">
       <table class="ot">
-        <tr><th>ファイル</th><th>シート</th><th>表（位置）</th><th>行数</th><th>主キー／軸（推定）</th><th>役割（推定）</th></tr>
+        <tr><th>ファイル</th><th>シート</th><th>主な列 ／ 位置</th><th>行数</th><th>主キー／軸（推定）</th><th>役割（推定）</th></tr>
         ${invRows.join('\n        ')}
       </table>
       ${invNote}
@@ -1125,6 +1132,8 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
 .rolechip.rc-iso{color:var(--sub);background:#F2F5F8;border-color:#9AA7B4}
 .p-meta{font-size:11.5px;color:var(--sub);margin:10px 0 3px}
 .p-keys{font-family:var(--mono);font-size:11.5px;color:var(--text);background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+.p-cols{font-size:12px;color:var(--text);background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:7px 10px;line-height:1.75}
+.loc-sub{font-size:10.5px;color:var(--sub);margin-top:2px}
 .p-route{display:flex;align-items:center;flex-wrap:wrap;gap:4px;background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:12px}
 .p-route .r{cursor:pointer;color:var(--blue);background:none;border:0;font:inherit;padding:1px 3px;border-radius:5px}
 .p-route .r:hover{background:var(--blue-bg)}
@@ -1220,7 +1229,7 @@ const REPORT_GRAPH_JS = `
       var r=document.createElementNS(NS,'rect'); r.setAttribute('class','box'); r.setAttribute('width',NW); r.setAttribute('height',NH); r.setAttribute('rx',10); g.appendChild(r);
       var t1=document.createElementNS(NS,'text'); t1.setAttribute('class','lbl'); t1.setAttribute('x',NW/2); t1.setAttribute('y',20); t1.setAttribute('text-anchor','middle'); t1.textContent=(roleClass(n.role)==='out'?'★ ':'')+fit(n.label,15); g.appendChild(t1);
       var t2=document.createElementNS(NS,'text'); t2.setAttribute('class','rolesub'); t2.setAttribute('x',NW/2); t2.setAttribute('y',35); t2.setAttribute('text-anchor','middle'); t2.textContent=n.role.replace(/（.*$/,''); g.appendChild(t2);
-      var tt=document.createElementNS(NS,'title'); tt.textContent=n.label+' ／ '+n.role+' ／ '+(n.sub||''); g.appendChild(tt);
+      var tt=document.createElementNS(NS,'title'); tt.textContent=n.label+' ／ '+n.role+' ／ '+(n.sub||'')+(n.cols&&n.cols.length?(' ／ 列: '+n.cols.slice(0,6).join('・')):''); g.appendChild(tt);
       g.addEventListener('click',function(ev){ ev.stopPropagation(); jumpTo(n.id,true); });
       gN.appendChild(g); nodeEls[n.id]=g; });
 
@@ -1242,6 +1251,7 @@ const REPORT_GRAPH_JS = `
     function renderCrumbs(){ if(!selId){ crumbsEl.innerHTML='<span class="cur">表を選択</span>'; return; } var h=''; trail.forEach(function(id,i){ if(i>0) h+='<span class="sep">›</span>'; if(i===trail.length-1) h+='<span class="cur">'+esc(byId[id].label)+'</span>'; else h+='<button class="c" data-i="'+i+'">'+esc(byId[id].label)+'</button>'; }); crumbsEl.innerHTML=h; Array.prototype.forEach.call(crumbsEl.querySelectorAll('.c'),function(b){ b.addEventListener('click',function(){ crumbJump(+b.getAttribute('data-i')); }); }); }
     function chip(l,dir){ var other=dir==='in'?l.s:l.t; var b=document.createElement('button'); b.className='p-chip'; b.innerHTML='<span class="dot" style="background:'+l.color+'"></span><span>'+esc(byId[other].label)+'</span><span class="via">'+esc(l.label||'')+(l.qid?(' '+l.qid):'')+'</span>'; b.addEventListener('click',function(){ jumpTo(other,true); }); return b; }
     function renderPanel(){ if(!selId){ pbody.innerHTML='<div class="empty">左のグラフで<b>表</b>をクリックすると、関係している表（上流／下流）と<b>最終アウトプットまでの経路</b>がここに出て、そのまま掘り下げられます。</div>'; return; } var n=byId[selId]; pbody.innerHTML=''; var nm=document.createElement('div'); nm.className='pname'; nm.textContent=n.label; pbody.appendChild(nm); var rc=document.createElement('span'); rc.className='rolechip rc-'+roleClass(n.role); rc.textContent=n.role; pbody.appendChild(rc); if(n.sub){ var mt=document.createElement('div'); mt.className='p-meta'; mt.textContent='規模 / キー'; pbody.appendChild(mt); var kb=document.createElement('div'); kb.className='p-keys'; kb.textContent=n.sub; pbody.appendChild(kb); }
+      if(n.cols && n.cols.length){ var cm=document.createElement('div'); cm.className='p-meta'; cm.textContent='主な列'; pbody.appendChild(cm); var cb=document.createElement('div'); cb.className='p-cols'; cb.textContent=n.cols.join('・')+((n.colN||n.cols.length)>n.cols.length?(' …他'+(n.colN-n.cols.length)+'列'):''); pbody.appendChild(cb); }
       var rt=document.createElement('div'); rt.className='p-grp'; rt.innerHTML='<h4>最終アウトプットまでの経路</h4>'; var route=document.createElement('div'); route.className='p-route'; if(roleClass(n.role)==='out'){ route.innerHTML='<span>この表が最終アウトプットです。</span>'; } else { var p=pathToOutput(selId); if(p.ns.length<=1){ route.innerHTML='<span>最終アウトプットへの経路は見つかりませんでした。</span>'; } else { p.ns.forEach(function(id,i){ if(i>0){ var a=document.createElement('span'); a.className='arw'; a.textContent='▸'; route.appendChild(a); } var b=document.createElement('button'); b.className='r'+(id===output?' out':''); b.textContent=byId[id].label; b.addEventListener('click',function(){ jumpTo(id,true); }); route.appendChild(b); }); } } rt.appendChild(route); pbody.appendChild(rt);
       var g1=document.createElement('div'); g1.className='p-grp'; g1.innerHTML='<h4>← この表に入ってくる（上流）</h4>'; var c1=document.createElement('div'); c1.className='p-chips'; if(inAdj[selId].length) inAdj[selId].forEach(function(l){ c1.appendChild(chip(l,'in')); }); else { var e=document.createElement('div'); e.className='p-chip none'; e.textContent='上流なし（起点データ）'; c1.appendChild(e); } g1.appendChild(c1); pbody.appendChild(g1);
       var g2=document.createElement('div'); g2.className='p-grp'; g2.innerHTML='<h4>→ この表から出ていく（下流）</h4>'; var c2=document.createElement('div'); c2.className='p-chips'; if(outAdj[selId].length) outAdj[selId].forEach(function(l){ c2.appendChild(chip(l,'out')); }); else { var e2=document.createElement('div'); e2.className='p-chip none'; e2.textContent='下流なし（最終アウトプット）'; c2.appendChild(e2); } g2.appendChild(c2); pbody.appendChild(g2);
