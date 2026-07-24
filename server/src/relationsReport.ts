@@ -165,6 +165,7 @@ function buildLabels(regions: Region[]): Map<string, string> {
 }
 
 function keySummary(r: Region): string {
+  if (r.keys?.grain) return r.keys.grain; // 横持ち: 行キー × 列軸 の2次元グレイン
   const ks = r.keys?.keys ?? [];
   if (ks.length === 0) return '（不明）';
   const primary = ks.filter(k => k.role === 'primary');
@@ -542,7 +543,9 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
       return `<span class="${cls}">${esc(c.name)}${mark}</span>`;
     }).join('');
     const more = r.columns.length > 24 ? `<span class="colchip">…他${r.columns.length - 24}列</span>` : '';
-    const keyNote = r.keys?.axisNote
+    const keyNote = r.keys?.grain
+      ? `<p class="key-note">🔑 セルは <b>${esc(r.keys.grain)}</b> の組合せで決まります（横持ち表。縦持ちに展開すると「行キー・軸・値」の形になります）。</p>`
+      : r.keys?.axisNote
       ? `<p class="key-note">🔑 ${esc(r.keys.axisNote)}</p>`
       : keyCols.size > 0
         ? `<p class="key-note">🔑 <b>${esc(keySummary(r))}</b> が1行を決めるキーと推定しています。</p>`

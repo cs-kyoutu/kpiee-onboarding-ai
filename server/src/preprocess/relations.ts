@@ -112,10 +112,18 @@ export interface RegionColumn { c: number; name: string; hasFormula: boolean; mi
 // ---- キー・軸（この表は何を軸に1行が決まるか） ----
 // role: primary=単独で行を一意に定める列 / axis=複合軸の構成列（例: 部署 × 月）
 export interface RegionKey { column: string; c: number; role: 'primary' | 'axis'; confidence: number; evidence: string[] }
+// 列方向の軸（横持ち＝系列を列に展開した表）。行キー×この列軸でセルの粒度が決まる。
+// 縦持ち（long）へ unpivot する際の melt 対象列がそのまま columns になる。
+export interface RegionColAxis {
+  columns: string[];  // 系列ヘッダー列名（例: 1月, 2月, …）
+  kind: string;       // 軸の種類（月次 / 四半期 / 年次 / 日次 / 時系列）
+}
 export interface RegionKeys {
   keys: RegionKey[];
-  axisNote?: string;  // 「部署 × 月 の組合せで1行が決まる」等の要約
-  colAxis?: string;   // 列方向の軸（月次系列ヘッダー等）の要約
+  axisNote?: string;      // 「部署 × 月 の組合せで1行が決まる」等の要約
+  colAxis?: string;       // 列方向の軸（月次系列ヘッダー等）の要約（表示用の文）
+  colAxisDim?: RegionColAxis; // 上記を構造化したもの（横持ち。unpivot 軸の特定に使う）
+  grain?: string;         // 行キー × 列軸 を合成したセル粒度の要約（例: 「店舗 × 月次（横持ち）」）
 }
 
 export interface Region {
@@ -289,6 +297,25 @@ export function detectRegions(g: RawGrid): Region[] {
 // 「4月」「2024/4」「2024年4月」「Q1」「第1四半期」等、時系列ヘッダーらしい列名
 const SERIES_HEADER = /(^|[^0-9])\d{1,2}月|^\d{4}[年\/.\-]\s*\d{1,2}|^\d{1,2}\/\d{1,2}$|^(Q[1-4]|第[1-4]四半期)/;
 
+/** 行キー（主キー＝列挙、複合軸＝× 連結）の短い要約。grain 合成に使う */
+function rowKeyLabel(keys: RegionKey[]): string {
+  const primary = keys.filter(k => k.role === 'primary');
+  if (primary.length > 0) return primary.map(k => k.column).join('、');
+  const axis = keys.filter(k => k.role === 'axis');
+  if (axis.length > 0) return axis.map(k => k.column).join(' × ');
+  return '';
+}
+
+/** 系列ヘッダー列名から列方向軸の種類を推定する（横持ち→縦持ち unpivot 時の軸ラベル） */
+function colAxisKind(names: string[]): string {
+  const s = names.join(' ');
+  if (/(^|[^0-9])\d{1,2}月/.test(s)) return '月次';
+  if (/Q[1-4]|第[1-4]四半期/.test(s)) return '四半期';
+  if (/^\d{1,2}\/\d{1,2}$|\d{1,2}\/\d{1,2}/.test(s)) return '日次';
+  if (/\d{4}[年\/.\-]/.test(s)) return '年次';
+  return '時系列';
+}
+
 /**
  * 値だけから分かる構造的なキー・軸を検出する。
  *  (a) 単独一意列 = 主キー候補。ただし右側の数値列（金額等）は「たまたま全行違う」ことが多いので、
@@ -365,14 +392,21 @@ function detectStructuralKeys(
     }
   }
 
-  // (c) 列方向の軸（自動命名 "AB列" は除外し、実ヘッダー名だけを見る）
+  // (c) 列方向の軸（自動命名 "AB列" は除外し、実ヘッダー名だけを見る）。
+  // 系列が4列以上あれば横持ち（月次系列等を列に展開した表）とみなし、構造化して返す。
+  // columns（melt 対象）を保持することで、後段の縦持ち化（unpivot）で軸を特定できる。
   const seriesCols = columns.filter(c => !/^[A-Z]+列$/.test(c.name) && SERIES_HEADER.test(c.name));
-  const colAxis = seriesCols.length >= 4
-    ? `列方向は時系列（${seriesCols.slice(0, 3).map(c => c.name).join('・')} … 全${seriesCols.length}列）を軸に展開`
-    : undefined;
+  let colAxis: string | undefined;
+  let colAxisDim: RegionColAxis | undefined;
+  if (seriesCols.length >= 4) {
+    const names = seriesCols.map(c => c.name);
+    const kind = colAxisKind(names);
+    colAxis = `列方向は${kind}（${names.slice(0, 3).join('・')} … 全${names.length}列）を軸に展開`;
+    colAxisDim = { columns: names, kind };
+  }
 
   if (keys.length === 0 && !colAxis) return undefined;
-  return { keys, axisNote, colAxis };
+  return { keys, axisNote, colAxis, colAxisDim };
 }
 
 // ============================================================
@@ -972,6 +1006,11 @@ function enrichKeysWithUsage(regions: Region[], edges: Edge[], keyLinks: KeyLink
     }
     // 列順で安定表示（主キー→軸、左の列から）
     reg.keys!.keys.sort((a, b) => (a.role === b.role ? a.c - b.c : a.role === 'primary' ? -1 : 1));
+    // 行キー × 列軸 の2次元グレイン要約（横持ち表のときだけ付与）。セルは「行キー×列軸」で一意に決まる。
+    if (reg.keys!.colAxisDim) {
+      const rowPart = rowKeyLabel(reg.keys!.keys) || '（行キー不明）';
+      reg.keys!.grain = `${rowPart} × ${reg.keys!.colAxisDim.kind}（横持ち）`;
+    }
   }
 }
 

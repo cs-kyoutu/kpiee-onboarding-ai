@@ -12,7 +12,7 @@ import type { RelationGraph } from './preprocess/relations.js';
 export interface CacheableArtifact { id: number; storage_key: string; original_filename: string }
 
 /** 解析ロジックの版。relations.ts の判定（警告・辺・領域）を変えたら +1 して旧キャッシュを自然失効させる */
-const ANALYZER_VERSION = 5; // v5: キー・軸検出（region.keys）と表間キー対応（keyLinks）を追加
+const ANALYZER_VERSION = 6; // v6: 列方向軸の構造化（colAxisDim）と行キー×列軸の2次元グレイン（grain）を追加
 
 /**
  * アーティファクト集合の署名。追加・削除・再取込（storage_key 変化）に加え、
