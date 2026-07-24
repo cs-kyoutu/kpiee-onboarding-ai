@@ -91,9 +91,36 @@ export function formulaSignature(cells: ParsedCell[]): string {
  * xlsx をシートごとに構造化 JSON へ変換する。
  * トークン削減のため、同一数式パターンが連続する行は代表行＋行範囲に圧縮する（設計書 §6.1）。
  */
+/**
+ * バッファ先頭のマジックナンバーで「そもそも .xlsx として読めるか」を判定する。
+ * exceljs の生エラー（例: Cannot read properties of undefined (reading 'sheets')）は原因が伝わらないため、
+ * ここで利用者向けの具体的な案内文へ置き換える。読めそうなら null を返して exceljs に委ねる。
+ */
+function xlsxLoadHint(buffer: Buffer): string | null {
+  // 正常な .xlsx/.xlsm は ZIP（PK\x03\x04）。PK\x05\x06 は空アーカイブ。
+  if (buffer.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b) {
+    if (buffer[2] === 0x05 && buffer[3] === 0x06) return '空の Excel ファイル（中身が無い）のようです。データの入ったファイルをアップロードしてください。';
+    return null; // ZIP とみなして exceljs に委ねる
+  }
+  // 旧 .xls（BIFF）や、パスワード保護／暗号化された .xlsx は CFB/OLE 複合ファイル（D0 CF 11 E0 A1 B1 1A E1）。
+  if (buffer.length >= 4 && buffer[0] === 0xd0 && buffer[1] === 0xcf && buffer[2] === 0x11 && buffer[3] === 0xe0) {
+    return '旧形式の Excel（.xls）か、パスワード保護／暗号化された Excel の可能性があります。Excel で開き「Excel ブック（.xlsx）」として保存し直すか、保護を解除してからアップロードしてください。';
+  }
+  return 'このファイルは有効な .xlsx（Excel ブック）として読み取れませんでした。拡張子だけ .xlsx にした別形式・破損・ダウンロード不完全などが考えられます。Excel で開き「.xlsx」として保存し直すか、CSV で書き出してからアップロードしてください。';
+}
+
 export async function parseXlsx(buffer: Buffer): Promise<ParsedArtifact> {
+  const hint = xlsxLoadHint(buffer);
+  if (hint) throw new Error(hint);
   const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(buffer as unknown as ArrayBuffer);
+  try {
+    await wb.xlsx.load(buffer as unknown as ArrayBuffer);
+  } catch (e) {
+    // シグニチャは ZIP だが中身が壊れている／未対応構造（暗号化 xlsx 等）で exceljs が落ちるケース。
+    // 生エラーの詳細は末尾に残しつつ、対処法を先頭に置く。
+    const detail = e instanceof Error ? e.message : String(e);
+    throw new Error(`Excel ファイルの解析に失敗しました。ファイルの破損、または未対応の形式・暗号化の可能性があります。Excel で開き「.xlsx」として保存し直すか、CSV で書き出してからアップロードしてください。（詳細: ${detail}）`);
+  }
 
   const sheets: ParsedSheet[] = [];
   wb.eachSheet(ws => {
