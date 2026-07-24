@@ -770,7 +770,7 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
     ${er.omitted > 0 ? `<p class="tbl-note">※ キーでつながる表を優先して表示しています（ほか ${er.omitted} 表は省略）。全体はお打ち合わせで画面をご覧いただけます。</p>` : ''}
     ` : ''}
     <h3 class="sub-h">データの流れ（関係マップ）</h3>
-    <p class="graph-guide">各ノード＝<b>1つの表</b>（大きさ＝つながりの多さ）。<b>左（元データ）→ 右（最終帳票）</b>へ矢印の向きにデータが流れます。線の色＝関係の種類、<b>破線＝手作業コピー（要確認）</b>。表の1行を決めるキー・軸は「02 内訳」「04 各表の詳細」でご確認いただけます。<span class="only-screen">ノードにカーソルを合わせると関係先だけを強調します（ドラッグで移動 / ホイールで拡大 / 背景ドラッグで移動）。</span><span class="only-print">※ 本紙は静止画です。操作版はブラウザでご覧ください。</span></p>
+    <p class="graph-guide">各ノード＝<b>1つの表</b>（大きさ＝つながりの多さ）。<b>関係の多い表ほど上、少ない表ほど下</b>に並び、上から下へ全体像を追えます。矢印＝関係の向き、線の色＝関係の種類、<b>破線＝手作業コピー（要確認）</b>。表の1行を決めるキー・軸は「02 内訳」「04 各表の詳細」でご確認いただけます。<span class="only-screen">右上の <b>＋ / － / ⤢全画面 / ⟳</b> ボタンで拡大・全画面表示できます（Escで戻る）。ノードにカーソルを合わせると関係先を強調、ドラッグで移動もできます。</span><span class="only-print">※ 本紙は静止画です。操作版はブラウザでご覧ください。</span></p>
     <div class="map-static map-scroll">${map.svg}</div>
     <figure class="map-interactive" id="relgraph" aria-label="表どうしの関係グラフ（操作可能）"></figure>
     <script type="application/json" id="relgraph-data">${JSON.stringify(map.data).replace(/</g, '\\u003c')}</script>
@@ -1068,7 +1068,13 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
 .er-scroll svg{min-width:640px;width:100%;height:auto;display:block;font-family:var(--body)}
 .graph-guide{font-size:12.5px;color:var(--text);line-height:1.7;margin-bottom:12px}
 .only-print{display:none}
-.map-interactive{display:none;background:#FCFDFE;border:1px solid var(--line);border-radius:16px;padding:8px;margin:0;min-height:440px;touch-action:none;overflow:hidden}
+.map-interactive{display:none;position:relative;background:#FCFDFE;border:1px solid var(--line);border-radius:16px;padding:8px;margin:0;min-height:440px;touch-action:none;overflow:hidden}
+.relgraph-ctrl{position:absolute;top:12px;right:12px;display:flex;gap:6px;z-index:3}
+.relgraph-ctrl button{width:32px;height:32px;padding:0;border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:8px;font-size:15px;line-height:1;cursor:pointer;box-shadow:0 1px 3px rgba(14,42,71,.1)}
+.relgraph-ctrl button:hover{background:var(--blue-bg);border-color:var(--blue);color:var(--blue)}
+.map-interactive.expanded{position:fixed;inset:0;z-index:9999;margin:0;border-radius:0;min-height:0;padding:16px}
+.map-interactive.expanded .relgraph-svg{height:100%;max-height:100%}
+body.relgraph-noscroll{overflow:hidden}
 .relgraph-svg{width:100%;height:auto;display:block;font-family:var(--body)}
 .relgraph-svg .nd{cursor:grab;transition:opacity .15s}
 .relgraph-svg .rl{transition:opacity .15s}
@@ -1129,10 +1135,17 @@ const REPORT_GRAPH_JS = `
 
     var nodes=data.nodes, links=data.links, byId={};
     nodes.forEach(function(n){ byId[n.id]=n; });
-    var minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
-    nodes.forEach(function(n){ minx=Math.min(minx,n.x); miny=Math.min(miny,n.y); maxx=Math.max(maxx,n.x); maxy=Math.max(maxy,n.y); });
-    var sx=(W-140)/Math.max(1,maxx-minx), sy=(H-110)/Math.max(1,maxy-miny);
-    nodes.forEach(function(n){ n.x=70+(n.x-minx)*sx; n.y=55+(n.y-miny)*sy; n.lx=n.x; n.vx=0; n.vy=0; n.r=9+Math.min(15,Math.sqrt(n.deg)*3); n.fx=null; n.fy=null; });
+    // 縦フロー: 関係の多い表ほど上（小さい y）、少ない表ほど下。degree で目標 y（ly）を決め、
+    // x は初期は疑似分散し、あとは斥力で横に広げる。
+    var mnd=1e9, mxd=-1e9;
+    nodes.forEach(function(n){ mnd=Math.min(mnd,n.deg); mxd=Math.max(mxd,n.deg); });
+    nodes.forEach(function(n, i){
+      var t = mxd>mnd ? (n.deg-mnd)/(mxd-mnd) : 0.5;
+      n.ly = 50 + (1-t)*(H-100);                 // 関係多い→上
+      n.y = n.ly;
+      n.x = 60 + ((i*137) % Math.max(1, W-120)); // 決定的な疑似分散（Math.random は使わない）
+      n.vx=0; n.vy=0; n.r=9+Math.min(15,Math.sqrt(n.deg)*3); n.fx=null; n.fy=null;
+    });
 
     function roleStyle(role){
       if(/最終/.test(role)) return {s:'#C24141',f:'#FBEFEF'};
@@ -1183,7 +1196,7 @@ const REPORT_GRAPH_JS = `
       var i,j,a,b,dx,dy,d,d2,f,ux,uy;
       for(i=0;i<nodes.length;i++){ for(j=i+1;j<nodes.length;j++){ a=nodes[i]; b=nodes[j]; dx=a.x-b.x; dy=a.y-b.y; d2=dx*dx+dy*dy+0.01; d=Math.sqrt(d2); f=2800/d2; ux=dx/d; uy=dy/d; a.vx+=ux*f; a.vy+=uy*f; b.vx-=ux*f; b.vy-=uy*f; } }
       links.forEach(function(l){ var a=byId[l.s],b=byId[l.t]; var dx=b.x-a.x,dy=b.y-a.y; var d=Math.sqrt(dx*dx+dy*dy)+0.01; var f=(d-150)*0.02; var ux=dx/d,uy=dy/d; a.vx+=ux*f; a.vy+=uy*f; b.vx-=ux*f; b.vy-=uy*f; });
-      nodes.forEach(function(n){ n.vx+=(n.lx-n.x)*0.02; n.vy+=(H/2-n.y)*0.004; });
+      nodes.forEach(function(n){ n.vy+=(n.ly-n.y)*0.03; n.vx+=(W/2-n.x)*0.006; });
       nodes.forEach(function(n){ if(n.fx!=null){ n.x=n.fx; n.y=n.fy; n.vx=0; n.vy=0; return; } n.vx*=0.85; n.vy*=0.85; n.x+=n.vx*alpha; n.y+=n.vy*alpha; n.x=Math.max(40,Math.min(W-40,n.x)); n.y=Math.max(34,Math.min(H-28,n.y)); });
       draw(); alpha*=0.98; if(alpha>0.02){ raf=requestAnimationFrame(tick); } else { raf=null; }
     }
@@ -1197,6 +1210,19 @@ const REPORT_GRAPH_JS = `
     svg.addEventListener('pointermove',function(ev){ if(drag){ var p=toG(ev); drag.fx=p.x; drag.fy=p.y; reheat(); return; } if(pan){ var r=svg.getBoundingClientRect(); ox=pan.ox+(ev.clientX-pan.x)*(W/r.width); oy=pan.oy+(ev.clientY-pan.y)*(H/r.height); apply(); } });
     window.addEventListener('pointerup',function(){ if(drag){ drag.fx=null; drag.fy=null; drag=null; } pan=null; });
     svg.addEventListener('wheel',function(ev){ ev.preventDefault(); var r=svg.getBoundingClientRect(); var mx=(ev.clientX-r.left)*(W/r.width), my=(ev.clientY-r.top)*(H/r.height); var ns=Math.max(0.4,Math.min(3,scale*(ev.deltaY<0?1.12:0.9))); ox=mx-(mx-ox)*(ns/scale); oy=my-(my-oy)*(ns/scale); scale=ns; apply(); },{passive:false});
+
+    // 拡大・全画面ボタン（右上）
+    function zoomAt(cx,cy,f){ var ns=Math.max(0.4,Math.min(4,scale*f)); ox=cx-(cx-ox)*(ns/scale); oy=cy-(cy-oy)*(ns/scale); scale=ns; apply(); }
+    var expanded=false;
+    function toggleExpand(){ expanded=!expanded; host.classList.toggle('expanded',expanded); document.body.classList.toggle('relgraph-noscroll',expanded); }
+    document.addEventListener('keydown',function(e){ if(e.key==='Escape'&&expanded) toggleExpand(); });
+    var bar=document.createElement('div'); bar.className='relgraph-ctrl';
+    function ctl(txt,title,fn){ var b=document.createElement('button'); b.type='button'; b.textContent=txt; b.title=title; b.setAttribute('aria-label',title); b.addEventListener('click',function(ev){ ev.stopPropagation(); fn(); }); bar.appendChild(b); }
+    ctl('＋','拡大',function(){ zoomAt(W/2,H/2,1.25); });
+    ctl('－','縮小',function(){ zoomAt(W/2,H/2,0.8); });
+    ctl('⤢','全画面で見る（Escで戻る）',function(){ toggleExpand(); });
+    ctl('⟳','表示をリセット',function(){ scale=1; ox=0; oy=0; apply(); });
+    host.appendChild(bar);
 
     draw(); apply(); reheat();
   }catch(e){
