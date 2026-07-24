@@ -5,7 +5,7 @@
 //   - 「ご確認いただきたい点」を Q-01.. の番号付きカードとして決定的に自動抽出する（AI 呼び出しなし）
 //   - セルの生値は載せない（列名・数式・行数などの構造情報のみ）— 社外共有しても原本数値が漏れない
 // summaryDoc.ts（Word/md のパッケージ資料）と同じ「保存済み派生結果から決定的に組み立てる」等級。
-import type { RelationGraph, Region, Edge, RelationWarning } from './preprocess/relations.js';
+import type { RelationGraph, Region, Edge, RelationWarning, KeyLink } from './preprocess/relations.js';
 import { colLetter } from './preprocess/relations.js';
 
 export interface RelationsReportInput {
@@ -470,6 +470,157 @@ function buildMap(
 }
 
 // ============================================================
+// キー関係図（ER 図）— キー列でつながる表どうしを、主キー/軸と 1:N で示す
+// ============================================================
+const ER = { W: 226, HEAD: 30, ROW: 22, GX: 148, GY: 26, PAD: 16, CAP: 20 };
+
+interface ErResult { svg: string; omitted: number }
+
+/** 表示幅に収まるよう全角=1・半角=0.6 で概算して省略する（SVGは自動折返ししないため） */
+function fitText(s: string, maxPx: number, fontPx: number): string {
+  let acc = 0, out = '';
+  for (const ch of s) {
+    const cw = /[\x00-\xff｡-ﾟ]/.test(ch) ? fontPx * 0.6 : fontPx;
+    if (acc + cw > maxPx) return out + '…';
+    acc += cw; out += ch;
+  }
+  return out;
+}
+
+function buildErDiagram(regions: Region[], keyLinks: KeyLink[], labels: Map<string, string>): ErResult | null {
+  const links = [...keyLinks].sort((a, b) => b.count - a.count);
+  if (links.length === 0) return null; // 表間のキー対応が無ければ ER は描かない（内訳/詳細でキーは確認可能）
+  const byId = new Map(regions.map(r => [r.id, r]));
+  const withKeys = regions.filter(r => (r.keys?.keys?.length ?? 0) > 0);
+  const linkedIds = new Set(links.flatMap(l => [regionIdOf(l.a), regionIdOf(l.b)]));
+  const pool = withKeys.filter(r => linkedIds.has(r.id));
+  if (pool.length === 0) return null;
+  const show = [...pool].sort((a, b) => {
+    const pa = a.keys!.keys.some(k => k.role === 'primary') ? 1 : 0;
+    const pb = b.keys!.keys.some(k => k.role === 'primary') ? 1 : 0;
+    return pb - pa;
+  }).slice(0, ER.CAP);
+  const showIds = new Set(show.map(r => r.id));
+  const shownLinks = links.filter(l => showIds.has(regionIdOf(l.a)) && showIds.has(regionIdOf(l.b)));
+  if (shownLinks.length === 0) return null;
+
+  // データは b（参照される側=マスタ）→ a（数式側）へ流れる。b を左の層へ置く（最長経路レイヤ）。
+  const layer = new Map<string, number>(show.map(r => [r.id, 0]));
+  const lp = shownLinks.map(l => ({ from: regionIdOf(l.b), to: regionIdOf(l.a) }));
+  const cap = Math.min(show.length + 2, 12);
+  for (let pass = 0; pass < cap; pass++) {
+    let changed = false;
+    for (const e of lp) {
+      const lf = layer.get(e.from), lt = layer.get(e.to);
+      if (lf === undefined || lt === undefined) continue;
+      if (lt < lf + 1 && lf + 1 < cap) { layer.set(e.to, lf + 1); changed = true; }
+    }
+    if (!changed) break;
+  }
+  const byLayer = new Map<number, Region[]>();
+  for (const r of show) {
+    const l = layer.get(r.id) ?? 0;
+    if (!byLayer.has(l)) byLayer.set(l, []);
+    byLayer.get(l)!.push(r);
+  }
+  const layersSorted = [...byLayer.entries()].sort((a, b) => a[0] - b[0]);
+
+  // 交差を減らす簡易バリセンタ: 前の層の接続相手の平均位置で並べ替える
+  const partners = new Map<string, string[]>();
+  for (const l of shownLinks) {
+    const a = regionIdOf(l.a), b = regionIdOf(l.b);
+    (partners.get(a) ?? partners.set(a, []).get(a)!).push(b);
+    (partners.get(b) ?? partners.set(b, []).get(b)!).push(a);
+  }
+  const orderIndex = new Map<string, number>();
+  for (const [l, regs] of layersSorted) {
+    if (l > 0) {
+      const score = (id: string) => {
+        const ps = (partners.get(id) ?? []).filter(p => (layer.get(p) ?? 0) < l && orderIndex.has(p));
+        return ps.length === 0 ? 1e9 : ps.reduce((s, p) => s + orderIndex.get(p)!, 0) / ps.length;
+      };
+      regs.sort((x, y) => score(x.id) - score(y.id));
+    }
+    regs.forEach((r, i) => orderIndex.set(r.id, i));
+  }
+
+  const connectedKeys = new Set(shownLinks.flatMap(l => [l.a, l.b]));
+  const keysOf = (r: Region) => {
+    const conn = r.keys!.keys.filter(k => connectedKeys.has(`${r.id}:${k.column}`));
+    return conn.length > 0 ? conn : r.keys!.keys;
+  };
+  // カーディナリティ: 列の値が全行一意なら 1（マスタ側）、繰り返しがあれば N（明細側）
+  const cardOf = (key: string): string => {
+    const st = byId.get(regionIdOf(key))?.columns.find(c => c.name === colNameOf(key))?.stats;
+    return st ? (st.uniq === st.filled ? '1' : 'N') : '';
+  };
+
+  const heightOf = (r: Region) => ER.HEAD + keysOf(r).length * ER.ROW + 6;
+  const layerHeights = layersSorted.map(([, regs]) => regs.reduce((s, r) => s + heightOf(r), 0) + (regs.length - 1) * ER.GY);
+  const maxLayerH = Math.max(...layerHeights, 90);
+
+  interface Node { id: string; x: number; y: number; w: number; h: number; title: string; rows: { cy: number; mark: string; label: string; primary: boolean; connected: boolean }[] }
+  const nodes: Node[] = [];
+  const rowY = new Map<string, number>();
+  layersSorted.forEach(([l, regs], li) => {
+    let y = ER.PAD + (maxLayerH - layerHeights[li]) / 2;
+    for (const r of regs) {
+      const ks = keysOf(r);
+      const rows = ks.map((k, i) => {
+        const cy = y + ER.HEAD + i * ER.ROW + ER.ROW / 2;
+        const key = `${r.id}:${k.column}`;
+        rowY.set(key, cy);
+        return { cy, mark: k.role === 'primary' ? '🔑' : '◇', label: k.column, primary: k.role === 'primary', connected: connectedKeys.has(key) };
+      });
+      nodes.push({ id: r.id, x: ER.PAD + l * (ER.W + ER.GX), y, w: ER.W, h: heightOf(r), title: labels.get(r.id) ?? r.sheet, rows });
+      y += heightOf(r) + ER.GY;
+    }
+  });
+  const nodeById = new Map(nodes.map(n => [n.id, n]));
+
+  // 同じキー列ペアは関数違いでも1本にまとめる
+  const pairMap = new Map<string, { a: string; b: string }>();
+  for (const l of shownLinks) pairMap.set(`${l.a}|${l.b}`, { a: l.a, b: l.b });
+
+  const maxLayer = Math.max(0, ...layersSorted.map(([l]) => l));
+  const width = ER.PAD * 2 + (maxLayer + 1) * (ER.W + ER.GX) - ER.GX;
+  const height = ER.PAD * 2 + maxLayerH;
+
+  const parts: string[] = [];
+  parts.push(`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="キー関係図（ER）">`);
+  // コネクタ（エルボ）＋端点のカーディナリティ
+  for (const p of pairMap.values()) {
+    const na = nodeById.get(regionIdOf(p.a))!, nb = nodeById.get(regionIdOf(p.b))!;
+    const ya = rowY.get(p.a) ?? na.y + ER.HEAD / 2;
+    const yb = rowY.get(p.b) ?? nb.y + ER.HEAD / 2;
+    const bLeft = nb.x + nb.w <= na.x;
+    const x1 = bLeft ? nb.x + nb.w : nb.x;
+    const x2 = bLeft ? na.x : na.x + na.w;
+    const midX = (x1 + x2) / 2;
+    parts.push(`<path d="M${x1},${yb} L${midX},${yb} L${midX},${ya} L${x2},${ya}" fill="none" stroke="#7A8794" stroke-width="1.6"/>`);
+    const bc = cardOf(p.b), ac = cardOf(p.a);
+    if (bc) parts.push(`<text x="${x1 + (bLeft ? 6 : -6)}" y="${yb - 5}" font-size="11" font-weight="700" fill="#1F5FAE" text-anchor="${bLeft ? 'start' : 'end'}">${bc}</text>`);
+    if (ac) parts.push(`<text x="${x2 + (bLeft ? -6 : 6)}" y="${ya - 5}" font-size="11" font-weight="700" fill="#B96A00" text-anchor="${bLeft ? 'end' : 'start'}">${ac}</text>`);
+  }
+  // エンティティ（表）ボックス
+  for (const n of nodes) {
+    parts.push(`<g>`);
+    parts.push(`<rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="9" fill="#fff" stroke="#C9D4E0" stroke-width="1.2"/>`);
+    parts.push(`<rect x="${n.x}" y="${n.y}" width="${n.w}" height="${ER.HEAD}" rx="9" fill="#0E2A47"/>`);
+    parts.push(`<rect x="${n.x}" y="${n.y + ER.HEAD - 9}" width="${n.w}" height="9" fill="#0E2A47"/>`);
+    parts.push(`<text x="${n.x + 12}" y="${n.y + 20}" font-size="12.5" font-weight="700" fill="#fff">${esc(fitText(n.title, n.w - 24, 12.5))}</text>`);
+    n.rows.forEach((row) => {
+      const ty = row.cy + 4;
+      if (row.connected) parts.push(`<rect x="${n.x + 3}" y="${row.cy - ER.ROW / 2}" width="${n.w - 6}" height="${ER.ROW}" fill="#EDF4FC"/>`);
+      parts.push(`<text x="${n.x + 12}" y="${ty}" font-size="11.5" fill="${row.primary ? '#0E2A47' : '#4b5563'}" font-weight="${row.primary ? 700 : 400}">${row.mark} ${esc(fitText(row.label, n.w - 34, 11.5))}</text>`);
+    });
+    parts.push(`</g>`);
+  }
+  parts.push('</svg>');
+  return { svg: parts.join('\n'), omitted: withKeys.length - show.length };
+}
+
+// ============================================================
 // 本体
 // ============================================================
 export function buildRelationsReportHtml(input: RelationsReportInput): string {
@@ -485,6 +636,7 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   const copyQuestionByPair = new Map<string, string>();
   for (const q of questions) if (q.refPair) copyQuestionByPair.set(q.refPair, q.id);
   const map = buildMap(regions, pairs, labels, copyQuestionByPair, roles);
+  const er = buildErDiagram(regions, graph.keyLinks ?? [], labels);
 
   const edgeTotal = graph.edgeTotal ?? edges.length;
   const dateStr = input.generatedAt.toISOString().slice(0, 10);
@@ -607,10 +759,17 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
 <section class="alt">
   <div class="wrap">
     <div class="sec-head">
-      <div class="eyebrow">03 ── DATA FLOW</div>
-      <h2>データの流れ（関係マップ）</h2>
-      <p class="sec-lede">数式の参照関係と、値の一致パターンから推定した表どうしのつながりです。<b>実線＝数式から確認できた確実な関係</b>、<b>破線＝値の一致から推定した関係（要確認）</b>です。</p>
+      <div class="eyebrow">03 ── RELATIONSHIPS</div>
+      <h2>表どうしの関係</h2>
+      <p class="sec-lede">受領データの表が「どのキーでつながり」「どの向きに流れているか」を2つの図で示します。まず<b>キー関係図（ER）</b>で対応関係を、次に<b>データの流れ</b>で全体像をご確認ください。</p>
     </div>
+    ${er ? `
+    <h3 class="sub-h">キー関係図（ER）</h3>
+    <p class="graph-guide">各ボックス＝表。<b>🔑＝主キー</b>（1行を一意に決める列）／◇＝軸。表を結ぶ線は同じキー列での対応で、<b>端の 1 / N が対応関係（1対多）</b>を表します（1＝一意＝マスタ側、N＝繰り返し＝明細側）。</p>
+    <div class="map-scroll er-scroll">${er.svg}</div>
+    ${er.omitted > 0 ? `<p class="tbl-note">※ キーでつながる表を優先して表示しています（ほか ${er.omitted} 表は省略）。全体はお打ち合わせで画面をご覧いただけます。</p>` : ''}
+    ` : ''}
+    <h3 class="sub-h">データの流れ（関係マップ）</h3>
     <p class="graph-guide">各ノード＝<b>1つの表</b>（大きさ＝つながりの多さ）。<b>左（元データ）→ 右（最終帳票）</b>へ矢印の向きにデータが流れます。線の色＝関係の種類、<b>破線＝手作業コピー（要確認）</b>。表の1行を決めるキー・軸は「02 内訳」「04 各表の詳細」でご確認いただけます。<span class="only-screen">ノードにカーソルを合わせると関係先だけを強調します（ドラッグで移動 / ホイールで拡大 / 背景ドラッグで移動）。</span><span class="only-print">※ 本紙は静止画です。操作版はブラウザでご覧ください。</span></p>
     <div class="map-static map-scroll">${map.svg}</div>
     <figure class="map-interactive" id="relgraph" aria-label="表どうしの関係グラフ（操作可能）"></figure>
@@ -904,7 +1063,9 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
   .qgrid{grid-template-columns:1fr}
   .qgrid dt{padding-top:6px}
 }
-/* ---- インタラクティブ関係グラフ（Obsidian 風。JS 有効時のみ表示、印刷は静的SVGへ） ---- */
+/* ---- キー関係図（ER）＋インタラクティブ関係グラフ ---- */
+.sub-h{font-family:var(--disp);font-weight:700;font-size:18px;color:var(--ink);margin:30px 0 6px}
+.er-scroll svg{min-width:640px;width:100%;height:auto;display:block;font-family:var(--body)}
 .graph-guide{font-size:12.5px;color:var(--text);line-height:1.7;margin-bottom:12px}
 .only-print{display:none}
 .map-interactive{display:none;background:#FCFDFE;border:1px solid var(--line);border-radius:16px;padding:8px;margin:0;min-height:440px;touch-action:none;overflow:hidden}
