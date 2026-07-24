@@ -2,6 +2,7 @@
 // xlsx / CSV を AI が解読可能な構造化 JSON に変換する。
 // 必須要件: セル値だけでなく数式の原文（=VLOOKUP(...) など）を保持すること。
 import ExcelJS from 'exceljs';
+import * as XLSX from 'xlsx';
 
 /** 解析済みセル。数式セルは value と formula の両方を保持する */
 export interface ParsedCell {
@@ -109,6 +110,87 @@ function xlsxLoadHint(buffer: Buffer): string | null {
   return 'このファイルは有効な .xlsx（Excel ブック）として読み取れませんでした。拡張子だけ .xlsx にした別形式・破損・ダウンロード不完全などが考えられます。Excel で開き「.xlsx」として保存し直すか、CSV で書き出してからアップロードしてください。';
 }
 
+/** 同一数式パターンの連続行を圧縮する（数式を持つ行のみ対象、3行以上で代表行＋範囲メタに畳む）。
+ *  exceljs 経路・SheetJS 経路の両方で同じ結果になるよう共通化する。 */
+function compressFormulaRows(rows: ParsedRow[]): ParsedRow[] {
+  const compressed: ParsedRow[] = [];
+  let i = 0;
+  while (i < rows.length) {
+    const cur = rows[i];
+    const hasFormula = cur.cells.some(c => c.formula);
+    if (!hasFormula) { compressed.push(cur); i++; continue; }
+    const sig = formulaSignature(cur.cells);
+    let j = i + 1;
+    while (j < rows.length && rows[j].rowNumber === rows[j - 1].rowNumber + 1 && formulaSignature(rows[j].cells) === sig) j++;
+    const count = j - i;
+    if (count >= 3) compressed.push({ ...cur, compressedRange: { from: cur.rowNumber, to: rows[j - 1].rowNumber, count } });
+    else for (let k = i; k < j; k++) compressed.push(rows[k]);
+    i = j;
+  }
+  return compressed;
+}
+
+/** SheetJS のセル値を ParsedCell.value 相当（JSON 化可能なプリミティブ）へ正規化する */
+function sheetjsValue(cell: XLSX.CellObject): string | number | null {
+  if (cell.v === null || cell.v === undefined) return null;
+  switch (cell.t) {
+    case 'n': return typeof cell.v === 'number' ? cell.v : Number(cell.v);
+    case 'b': return cell.v ? 1 : 0;
+    case 'd': { const d = cell.v as Date; return d instanceof Date && !isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : null; }
+    case 'e': return String(cell.w ?? cell.v);
+    default: return String(cell.v);
+  }
+}
+
+/**
+ * exceljs が読めない非標準 xlsx を SheetJS で読み、exceljs 経路と同じ ParsedArtifact に変換するフォールバック。
+ * 実ファイルで確認した非対応パターン: 主名前空間が接頭辞付き（<x:worksheet>…）、セルに r 属性（A1）が無く
+ * 出現順依存、sharedStrings 無しの inlineStr のみ、[trash]/ エントリ入り —— 一部の業務システム/ライブラリ出力。
+ * 値・数式・GAS アンラップ・結合・数式行圧縮は exceljs 経路と同じ扱いに揃える。
+ */
+function parseXlsxWithSheetJS(buffer: Buffer): ParsedArtifact {
+  const wb = XLSX.read(buffer, { cellFormula: true, cellDates: true, cellNF: false, cellHTML: false, cellStyles: false });
+  const sheets: ParsedSheet[] = [];
+  for (const name of wb.SheetNames) {
+    const ws = wb.Sheets[name];
+    if (!ws || !ws['!ref']) { sheets.push({ name, rowCount: 0, columnCount: 0, formulaCellCount: 0, merges: [], rows: [] }); continue; }
+    const range = XLSX.utils.decode_range(ws['!ref']);
+    const rows: ParsedRow[] = [];
+    let formulaCellCount = 0;
+    for (let R = range.s.r; R <= range.e.r; R++) {
+      const cells: ParsedCell[] = [];
+      for (let C = range.s.c; C <= range.e.c; C++) {
+        const ref = XLSX.utils.encode_cell({ r: R, c: C });
+        const cell = ws[ref] as XLSX.CellObject | undefined;
+        if (!cell) continue;
+        const c: ParsedCell = { ref, value: sheetjsValue(cell) };
+        if (cell.f) {
+          const gas = unwrapGasFormula(String(cell.f));
+          if (gas?.isPlaceholder) {
+            // Google 配列数式のスピル先。実ロジックは無いのでデータ値セル扱い
+          } else if (gas) {
+            c.formula = gas.formula; c.gas = true; formulaCellCount++;
+          } else {
+            c.formula = String(cell.f); formulaCellCount++;
+          }
+        }
+        cells.push(c);
+      }
+      if (cells.length > 0) rows.push({ rowNumber: R + 1, cells });
+    }
+    const merges = (ws['!merges'] ?? []).map(m => XLSX.utils.encode_range(m));
+    sheets.push({
+      name,
+      rowCount: range.e.r + 1,
+      columnCount: range.e.c + 1,
+      formulaCellCount,
+      merges,
+      rows: compressFormulaRows(rows),
+    });
+  }
+  return { fileType: 'xlsx', sheets };
+}
+
 export async function parseXlsx(buffer: Buffer): Promise<ParsedArtifact> {
   const hint = xlsxLoadHint(buffer);
   if (hint) throw new Error(hint);
@@ -116,8 +198,12 @@ export async function parseXlsx(buffer: Buffer): Promise<ParsedArtifact> {
   try {
     await wb.xlsx.load(buffer as unknown as ArrayBuffer);
   } catch (e) {
-    // シグニチャは ZIP だが中身が壊れている／未対応構造（暗号化 xlsx 等）で exceljs が落ちるケース。
-    // 生エラーの詳細は末尾に残しつつ、対処法を先頭に置く。
+    // exceljs が読めない非標準 xlsx（名前空間接頭辞・セルの r 属性欠落など）は SheetJS で再挑戦する。
+    try {
+      const viaSheetJs = parseXlsxWithSheetJS(buffer);
+      if (viaSheetJs.sheets.some(s => s.rows.length > 0)) return viaSheetJs;
+    } catch { /* SheetJS でも読めない → 下の案内を返す */ }
+    // ZIP だが中身が壊れている／未対応構造で両パーサとも落ちるケース。詳細は末尾に残す。
     const detail = e instanceof Error ? e.message : String(e);
     throw new Error(`Excel ファイルの解析に失敗しました。ファイルの破損、または未対応の形式・暗号化の可能性があります。Excel で開き「.xlsx」として保存し直すか、CSV で書き出してからアップロードしてください。（詳細: ${detail}）`);
   }
@@ -152,32 +238,7 @@ export async function parseXlsx(buffer: Buffer): Promise<ParsedArtifact> {
     });
 
     // 同一数式パターンの連続行を圧縮（数式を持つ行のみ対象）
-    const compressed: ParsedRow[] = [];
-    let i = 0;
-    while (i < rows.length) {
-      const cur = rows[i];
-      const hasFormula = cur.cells.some(c => c.formula);
-      if (!hasFormula) {
-        compressed.push(cur);
-        i++;
-        continue;
-      }
-      const sig = formulaSignature(cur.cells);
-      let j = i + 1;
-      while (
-        j < rows.length &&
-        rows[j].rowNumber === rows[j - 1].rowNumber + 1 &&
-        formulaSignature(rows[j].cells) === sig
-      ) j++;
-      const count = j - i;
-      if (count >= 3) {
-        // 代表行1行 + 範囲メタ情報に置換
-        compressed.push({ ...cur, compressedRange: { from: cur.rowNumber, to: rows[j - 1].rowNumber, count } });
-      } else {
-        for (let k = i; k < j; k++) compressed.push(rows[k]);
-      }
-      i = j;
-    }
+    const compressed = compressFormulaRows(rows);
 
     const merges = (ws.model as { merges?: string[] }).merges ?? [];
     sheets.push({
