@@ -769,10 +769,16 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
     <div class="map-scroll er-scroll">${er.svg}</div>
     ${er.omitted > 0 ? `<p class="tbl-note">※ キーでつながる表を優先して表示しています（ほか ${er.omitted} 表は省略）。全体はお打ち合わせで画面をご覧いただけます。</p>` : ''}
     ` : ''}
-    <h3 class="sub-h">データの流れ（関係マップ）</h3>
-    <p class="graph-guide">各ノード＝<b>1つの表</b>（大きさ＝つながりの多さ）。<b>関係の多い表ほど上、少ない表ほど下</b>に並び、上から下へ全体像を追えます。矢印＝関係の向き、線の色＝関係の種類、<b>破線＝手作業コピー（要確認）</b>。表の1行を決めるキー・軸は「02 内訳」「04 各表の詳細」でご確認いただけます。<span class="only-screen">右上の <b>＋ / － / ⤢全画面 / ⟳</b> ボタンで拡大・全画面表示できます（Escで戻る）。ノードにカーソルを合わせると関係先を強調、ドラッグで移動もできます。</span><span class="only-print">※ 本紙は静止画です。操作版はブラウザでご覧ください。</span></p>
+    <h3 class="sub-h">最終アウトプットへの流れ</h3>
+    <p class="graph-guide">各ノード＝<b>1つの表</b>。<b>上＝元データ → 下＝最終アウトプット</b>で、矢印の向きにデータが流れます。<span class="only-screen">表を<b>クリック</b>すると、その表の関係先と<b>最終アウトプットまでの経路</b>を保ったまま右のパネルで掘り下げられます（パンくずで戻れます）。右上の <b>＋ / － / ⤢全画面 / ⟳</b> ボタンで拡大・全画面（Escで戻る）、背景ドラッグで移動。</span><span class="only-print">※ 本紙は静止画です。操作版はブラウザでご覧ください。</span> 線の色＝関係の種類、<b>破線＝手作業コピー（要確認）</b>。表のキー・軸は「02 内訳」「04 各表の詳細」でも確認できます。</p>
     <div class="map-static map-scroll">${map.svg}</div>
-    <figure class="map-interactive" id="relgraph" aria-label="表どうしの関係グラフ（操作可能）"></figure>
+    <div class="map-interactive relgraph-wrap" id="relgraph-wrap">
+      <figure class="relgraph-stage" id="relgraph" aria-label="表どうしの関係グラフ（操作可能）"></figure>
+      <aside class="relgraph-panel">
+        <div class="relgraph-crumbs" id="relgraph-crumbs"><span class="cur">表を選択</span></div>
+        <div class="relgraph-pbody" id="relgraph-pbody"><div class="empty">左のグラフで<b>表</b>をクリックすると、関係している表（上流／下流）と<b>最終アウトプットまでの経路</b>がここに出て、そのまま掘り下げられます。</div></div>
+      </aside>
+    </div>
     <script type="application/json" id="relgraph-data">${JSON.stringify(map.data).replace(/</g, '\\u003c')}</script>
     <div class="legend">
       <span class="lg-h">関係の種類</span>
@@ -1063,21 +1069,11 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
   .qgrid{grid-template-columns:1fr}
   .qgrid dt{padding-top:6px}
 }
-/* ---- キー関係図（ER）＋インタラクティブ関係グラフ ---- */
+/* ---- キー関係図（ER）＋最終アウトプット中心の関係グラフ ---- */
 .sub-h{font-family:var(--disp);font-weight:700;font-size:18px;color:var(--ink);margin:30px 0 6px}
 .er-scroll svg{min-width:640px;width:100%;height:auto;display:block;font-family:var(--body)}
 .graph-guide{font-size:12.5px;color:var(--text);line-height:1.7;margin-bottom:12px}
 .only-print{display:none}
-.map-interactive{display:none;position:relative;background:#FCFDFE;border:1px solid var(--line);border-radius:16px;padding:8px;margin:0;min-height:440px;touch-action:none;overflow:hidden}
-.relgraph-ctrl{position:absolute;top:12px;right:12px;display:flex;gap:6px;z-index:3}
-.relgraph-ctrl button{width:32px;height:32px;padding:0;border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:8px;font-size:15px;line-height:1;cursor:pointer;box-shadow:0 1px 3px rgba(14,42,71,.1)}
-.relgraph-ctrl button:hover{background:var(--blue-bg);border-color:var(--blue);color:var(--blue)}
-.map-interactive.expanded{position:fixed;inset:0;z-index:9999;margin:0;border-radius:0;min-height:0;padding:16px}
-.map-interactive.expanded .relgraph-svg{height:100%;max-height:100%}
-body.relgraph-noscroll{overflow:hidden}
-.relgraph-svg{width:100%;height:auto;display:block;font-family:var(--body)}
-.relgraph-svg .nd{cursor:grab;transition:opacity .15s}
-.relgraph-svg .rl{transition:opacity .15s}
 .legend .lg-h{font-weight:700;color:var(--ink);font-size:12px;margin-right:2px}
 .nrole{width:13px;height:13px;border-radius:50%;display:inline-block;border:2px solid;vertical-align:-2px}
 .nrole.src{background:var(--green-bg);border-color:var(--green)}
@@ -1085,6 +1081,68 @@ body.relgraph-noscroll{overflow:hidden}
 .nrole.mid{background:var(--violet-bg);border-color:var(--violet)}
 .nrole.out{background:var(--red-bg);border-color:var(--red)}
 .nrole.iso{background:#F2F5F8;border-color:#9AA7B4}
+
+/* 関係グラフ本体（JS 有効時のみ表示。印刷・JS無効は静的SVG .map-static へ） */
+.map-interactive{display:none}
+.relgraph-wrap{grid-template-columns:1fr 300px;gap:14px;align-items:stretch}
+.relgraph-stage{position:relative;background:#FCFDFE;background-image:radial-gradient(circle at 1px 1px,#E4EBF3 1px,transparent 0);background-size:22px 22px;border:1px solid var(--line);border-radius:14px;overflow:hidden;min-height:480px;touch-action:none}
+.relgraph-stage svg{width:100%;height:100%;display:block;font-family:var(--body)}
+.relgraph-ctrl{position:absolute;top:10px;right:10px;display:flex;gap:6px;z-index:3}
+.relgraph-ctrl button{width:32px;height:32px;padding:0;border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:8px;font-size:15px;line-height:1;cursor:pointer;box-shadow:0 1px 3px rgba(14,42,71,.1)}
+.relgraph-ctrl button:hover{background:var(--blue-bg);border-color:var(--blue);color:var(--blue)}
+.node{cursor:pointer;transition:opacity .16s}
+.node .box{fill:#fff;stroke-width:1.6}
+.node.role-src .box{fill:var(--green-bg);stroke:var(--green)}
+.node.role-mst .box{fill:var(--blue-bg);stroke:var(--blue)}
+.node.role-mid .box{fill:var(--violet-bg);stroke:var(--violet)}
+.node.role-out .box{fill:var(--red-bg);stroke:var(--red);stroke-width:2.4}
+.node.role-iso .box{fill:#F2F5F8;stroke:#9AA7B4}
+.node .lbl{fill:var(--ink);font-weight:700;font-size:12px}
+.node .rolesub{fill:var(--sub);font-size:9.5px}
+.node .ring{fill:none;stroke:none}
+.node.sel .ring{stroke:var(--blue);stroke-width:2.5}
+.edge{fill:none;stroke-width:1.7;transition:.16s}
+.relgraph-stage svg.focused .node:not(.hl):not(.path){opacity:.16}
+.relgraph-stage svg.focused .edge:not(.epath):not(.ehl){opacity:.07}
+.edge.epath{stroke-width:3}
+.edge.ehl{stroke-width:2.6}
+/* インスペクタ */
+.relgraph-panel{background:#fff;border:1px solid var(--line);border-radius:14px;overflow:hidden;display:flex;flex-direction:column;min-height:480px}
+.relgraph-crumbs{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:10px 13px;border-bottom:1px solid var(--line);font-size:11.5px;min-height:42px}
+.relgraph-crumbs .c{color:var(--blue);cursor:pointer;background:none;border:0;padding:2px 4px;font:inherit;border-radius:6px}
+.relgraph-crumbs .c:hover{background:var(--blue-bg)}
+.relgraph-crumbs .sep{color:var(--sub)}
+.relgraph-crumbs .cur{color:var(--ink);font-weight:700}
+.relgraph-pbody{padding:15px 15px 20px;overflow:auto;font-size:13px}
+.relgraph-pbody .empty{color:var(--sub);font-size:12.5px;line-height:1.9}
+.relgraph-pbody .empty b{color:var(--ink)}
+.pname{font-size:15px;font-weight:800;color:var(--ink);line-height:1.35;margin:0 0 8px}
+.rolechip{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;border-radius:999px;padding:3px 11px;border:1px solid}
+.rolechip.rc-src{color:var(--green);background:var(--green-bg);border-color:var(--green)}
+.rolechip.rc-mst{color:var(--blue);background:var(--blue-bg);border-color:var(--blue)}
+.rolechip.rc-mid{color:var(--violet);background:var(--violet-bg);border-color:var(--violet)}
+.rolechip.rc-out{color:var(--red);background:var(--red-bg);border-color:var(--red)}
+.rolechip.rc-iso{color:var(--sub);background:#F2F5F8;border-color:#9AA7B4}
+.p-meta{font-size:11.5px;color:var(--sub);margin:10px 0 3px}
+.p-keys{font-family:var(--mono);font-size:11.5px;color:var(--text);background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+.p-route{display:flex;align-items:center;flex-wrap:wrap;gap:4px;background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:12px}
+.p-route .r{cursor:pointer;color:var(--blue);background:none;border:0;font:inherit;padding:1px 3px;border-radius:5px}
+.p-route .r:hover{background:var(--blue-bg)}
+.p-route .r.out{color:var(--red);font-weight:700}
+.p-route .arw{color:var(--sub)}
+.p-grp{margin-top:15px}
+.p-grp h4{margin:0 0 7px;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--sub);font-weight:700}
+.p-chips{display:flex;flex-direction:column;gap:6px}
+.p-chip{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:#fff;border:1px solid var(--line);border-radius:10px;padding:7px 10px;cursor:pointer;font:inherit;font-size:12px;color:var(--ink);transition:.12s}
+.p-chip:hover{border-color:var(--blue);background:var(--blue-bg)}
+.p-chip .dot{width:9px;height:9px;border-radius:50%;flex:none}
+.p-chip .via{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--sub);white-space:nowrap}
+.p-chip.none{cursor:default;color:var(--sub);border-style:dashed}
+.p-chip.none:hover{border-color:var(--line);background:#fff}
+.relgraph-wrap.expanded{position:fixed;inset:0;z-index:9999;margin:0;padding:16px;background:var(--paper);grid-template-columns:1fr 320px}
+.relgraph-wrap.expanded .relgraph-stage,.relgraph-wrap.expanded .relgraph-panel{min-height:0;height:100%}
+body.relgraph-noscroll{overflow:hidden}
+@media (max-width:760px){ .relgraph-wrap{grid-template-columns:1fr} .relgraph-panel{min-height:0} }
 @media print{
   header::after{display:none}
   section{padding:28px 0}
@@ -1098,135 +1156,121 @@ body.relgraph-noscroll{overflow:hidden}
 }
 `;
 
-// インタラクティブ関係グラフ（Obsidian 風の力学配置）。外部ライブラリ無しの素の SVG + JS。
-// #relgraph-data（JSON）を読み、力学シミュレーションで配置。ノード=表（役割で色分け＋ラベル）、
-// 辺=関係（種類で色、破線=手コピー）。ホバーで関係先を強調、ドラッグ移動、ホイール拡大、背景パン。
+// 最終アウトプット中心の関係グラフ（外部ライブラリ無しの素の SVG + JS）。#relgraph-data(JSON) を読み、
+// 最終アウトプットを最下段に、各表を「出力までの距離」で階層配置（上=元データ→下=最終）。表クリックで
+// 関係先＋最終アウトプットまでの経路を強調し、右パネル（パンくず＋上流/下流チップ）で掘り下げる。
 // 初期化に失敗したら静的SVG（.map-static）へ戻す。※テンプレートリテラルに埋めるためバッククォート/${ は使わない。
 const REPORT_GRAPH_JS = `
 (function(){
   try{
+    var wrap=document.getElementById('relgraph-wrap');
     var host=document.getElementById('relgraph');
     var dataEl=document.getElementById('relgraph-data');
-    if(!host||!dataEl) return;
+    var pbody=document.getElementById('relgraph-pbody');
+    var crumbsEl=document.getElementById('relgraph-crumbs');
+    if(!wrap||!host||!dataEl) return;
     var data=JSON.parse(dataEl.textContent);
     if(!data||!data.nodes||!data.nodes.length) return;
-    var staticEl=document.querySelector('.map-static');
-    if(staticEl) staticEl.style.display='none';
-    host.style.display='block';
+    var staticEl=document.querySelector('.map-static'); if(staticEl) staticEl.style.display='none';
+    wrap.style.display='grid';
 
     var NS='http://www.w3.org/2000/svg';
-    var W=host.clientWidth||820, H=Math.max(440,Math.min(680,(data.h||520)));
-    var svg=document.createElementNS(NS,'svg');
-    svg.setAttribute('viewBox','0 0 '+W+' '+H);
-    svg.setAttribute('class','relgraph-svg');
-    host.appendChild(svg);
-
-    var defs=document.createElementNS(NS,'defs'); svg.appendChild(defs);
-    var mk={};
-    data.links.forEach(function(l){ if(mk[l.color]!=null) return; var id='ar'+Object.keys(mk).length;
-      var m=document.createElementNS(NS,'marker'); m.setAttribute('id',id); m.setAttribute('viewBox','0 0 10 10');
-      m.setAttribute('refX','9'); m.setAttribute('refY','5'); m.setAttribute('markerWidth','7'); m.setAttribute('markerHeight','7'); m.setAttribute('orient','auto');
-      var pa=document.createElementNS(NS,'path'); pa.setAttribute('d','M0,0 L10,5 L0,10 z'); pa.setAttribute('fill',l.color); m.appendChild(pa);
-      defs.appendChild(m); mk[l.color]=id; });
-
-    var gZoom=document.createElementNS(NS,'g'); svg.appendChild(gZoom);
-    var gL=document.createElementNS(NS,'g'); gZoom.appendChild(gL);
-    var gN=document.createElementNS(NS,'g'); gZoom.appendChild(gN);
-
     var nodes=data.nodes, links=data.links, byId={};
     nodes.forEach(function(n){ byId[n.id]=n; });
-    // 縦フロー: 関係の多い表ほど上（小さい y）、少ない表ほど下。degree で目標 y（ly）を決め、
-    // x は初期は疑似分散し、あとは斥力で横に広げる。
-    var mnd=1e9, mxd=-1e9;
-    nodes.forEach(function(n){ mnd=Math.min(mnd,n.deg); mxd=Math.max(mxd,n.deg); });
-    nodes.forEach(function(n, i){
-      var t = mxd>mnd ? (n.deg-mnd)/(mxd-mnd) : 0.5;
-      n.ly = 50 + (1-t)*(H-100);                 // 関係多い→上
-      n.y = n.ly;
-      n.x = 60 + ((i*137) % Math.max(1, W-120)); // 決定的な疑似分散（Math.random は使わない）
-      n.vx=0; n.vy=0; n.r=9+Math.min(15,Math.sqrt(n.deg)*3); n.fx=null; n.fy=null;
-    });
+    var outAdj={}, inAdj={}; nodes.forEach(function(n){ outAdj[n.id]=[]; inAdj[n.id]=[]; });
+    links.forEach(function(l){ if(byId[l.s]&&byId[l.t]){ outAdj[l.s].push(l); inAdj[l.t].push(l); } });
 
-    function roleStyle(role){
-      if(/最終/.test(role)) return {s:'#C24141',f:'#FBEFEF'};
-      if(/マスタ/.test(role)) return {s:'#1F5FAE',f:'#EDF4FC'};
-      if(/中間/.test(role)) return {s:'#7B5EA7',f:'#F1EDF8'};
-      if(/元データ/.test(role)) return {s:'#1E9E6A',f:'#E9F7F0'};
-      return {s:'#9AA7B4',f:'#F2F5F8'};
+    // 最終アウトプットノード（役割=最終 優先 / 無ければ下流なしで上流最多 / それも無ければ最多次数）
+    var output=null, bestDeg=-1;
+    nodes.forEach(function(n){ if(/最終/.test(n.role)){ var d=inAdj[n.id].length; if(d>bestDeg){bestDeg=d;output=n.id;} } });
+    if(!output){ bestDeg=-1; nodes.forEach(function(n){ if(outAdj[n.id].length===0){ var d=inAdj[n.id].length; if(d>bestDeg){bestDeg=d;output=n.id;} } }); }
+    if(!output){ bestDeg=-1; nodes.forEach(function(n){ if((n.deg||0)>bestDeg){bestDeg=n.deg||0;output=n.id;} }); }
+
+    // layer = 出力までの最長ホップ（出力=0=最下段、上流ほど大）
+    var layer={};
+    function dist(id, seen){ if(id===output) return 0; if(layer[id]!=null) return layer[id]; if(seen[id]) return 0; seen[id]=1; var best=0, any=false; outAdj[id].forEach(function(l){ any=true; var d=1+dist(l.t,seen); if(d>best) best=d; }); layer[id]= any?best:1; return layer[id]; }
+    nodes.forEach(function(n){ dist(n.id,{}); }); layer[output]=0;
+
+    var NW=150,NH=46,GY=90,GX=40,PAD=34;
+    var byLayer={}; nodes.forEach(function(n){ (byLayer[layer[n.id]]=byLayer[layer[n.id]]||[]).push(n); });
+    var maxL=0, maxRow=1; Object.keys(byLayer).forEach(function(k){ maxL=Math.max(maxL,+k); maxRow=Math.max(maxRow,byLayer[k].length); });
+    var W=PAD*2+maxRow*NW+(maxRow-1)*GX, H=PAD*2+(maxL+1)*NH+maxL*GY;
+    Object.keys(byLayer).forEach(function(k){ var L=+k, row=byLayer[k]; var rw=row.length*NW+(row.length-1)*GX; var x0=(W-rw)/2; var y=PAD+(maxL-L)*(NH+GY); row.forEach(function(n,i){ n.x=x0+i*(NW+GX); n.y=y; }); });
+
+    var svg=document.createElementNS(NS,'svg'); svg.setAttribute('viewBox','0 0 '+W+' '+H); host.appendChild(svg);
+    var defs=document.createElementNS(NS,'defs'); svg.appendChild(defs);
+    var mk={}; links.forEach(function(l){ if(mk[l.color]!=null) return; var id='ar'+Object.keys(mk).length; var m=document.createElementNS(NS,'marker'); m.setAttribute('id',id); m.setAttribute('viewBox','0 0 10 10'); m.setAttribute('refX','9'); m.setAttribute('refY','5'); m.setAttribute('markerWidth','7'); m.setAttribute('markerHeight','7'); m.setAttribute('orient','auto'); var pa=document.createElementNS(NS,'path'); pa.setAttribute('d','M0,0 L10,5 L0,10 z'); pa.setAttribute('fill',l.color); m.appendChild(pa); defs.appendChild(m); mk[l.color]=id; });
+    var gZoom=document.createElementNS(NS,'g'); svg.appendChild(gZoom);
+    var gE=document.createElementNS(NS,'g'); gZoom.appendChild(gE);
+    var gN=document.createElementNS(NS,'g'); gZoom.appendChild(gN);
+
+    function roleClass(role){ if(/最終/.test(role)) return 'out'; if(/マスタ/.test(role)) return 'mst'; if(/中間/.test(role)) return 'mid'; if(/元/.test(role)) return 'src'; return 'iso'; }
+    function ekey(l){ return l.s+'>'+l.t; }
+    function fit(s,n){ return s.length<=n? s : s.slice(0,n)+'…'; }
+    function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+    var edgeEls={};
+    links.forEach(function(l){ var a=byId[l.s], b=byId[l.t];
+      var x1=a.x+NW/2, x2=b.x+NW/2; var y1=a.y<b.y?a.y+NH:a.y; var y2=a.y<b.y?b.y:b.y+NH; var my=(y1+y2)/2;
+      var p=document.createElementNS(NS,'path'); p.setAttribute('class','edge'); p.setAttribute('d','M'+x1+','+y1+' C'+x1+','+my+' '+x2+','+my+' '+x2+','+y2); p.setAttribute('stroke',l.color); p.setAttribute('stroke-width','1.7'); if(l.dashed) p.setAttribute('stroke-dasharray','7 5'); p.setAttribute('marker-end','url(#'+mk[l.color]+')'); gE.appendChild(p); edgeEls[ekey(l)]=p; });
+
+    var nodeEls={};
+    nodes.forEach(function(n){ var g=document.createElementNS(NS,'g'); g.setAttribute('class','node role-'+roleClass(n.role)); g.setAttribute('transform','translate('+n.x+','+n.y+')');
+      var ring=document.createElementNS(NS,'rect'); ring.setAttribute('class','ring'); ring.setAttribute('x',-4); ring.setAttribute('y',-4); ring.setAttribute('width',NW+8); ring.setAttribute('height',NH+8); ring.setAttribute('rx',13); g.appendChild(ring);
+      var r=document.createElementNS(NS,'rect'); r.setAttribute('class','box'); r.setAttribute('width',NW); r.setAttribute('height',NH); r.setAttribute('rx',10); g.appendChild(r);
+      var t1=document.createElementNS(NS,'text'); t1.setAttribute('class','lbl'); t1.setAttribute('x',NW/2); t1.setAttribute('y',20); t1.setAttribute('text-anchor','middle'); t1.textContent=(roleClass(n.role)==='out'?'★ ':'')+fit(n.label,15); g.appendChild(t1);
+      var t2=document.createElementNS(NS,'text'); t2.setAttribute('class','rolesub'); t2.setAttribute('x',NW/2); t2.setAttribute('y',35); t2.setAttribute('text-anchor','middle'); t2.textContent=n.role.replace(/（.*$/,''); g.appendChild(t2);
+      var tt=document.createElementNS(NS,'title'); tt.textContent=n.label+' ／ '+n.role+' ／ '+(n.sub||''); g.appendChild(tt);
+      g.addEventListener('click',function(ev){ ev.stopPropagation(); jumpTo(n.id,true); });
+      gN.appendChild(g); nodeEls[n.id]=g; });
+
+    function pathToOutput(id){ var ns=[id], es=[], cur=id, guard=0; while(cur!==output && guard++<60){ var outs=outAdj[cur]; if(!outs.length) break; var best=outs[0]; for(var i=1;i<outs.length;i++){ if(layer[outs[i].t]<layer[best.t]) best=outs[i]; } es.push(ekey(best)); ns.push(best.t); cur=best.t; } return {ns:ns,es:es}; }
+
+    var trail=[], selId=null;
+    function jumpTo(id,push){ if(push){ var ix=trail.indexOf(id); if(ix>=0) trail=trail.slice(0,ix+1); else trail.push(id); } selId=id; render(); }
+    function crumbJump(i){ trail=trail.slice(0,i+1); selId=trail[i]; render(); }
+    function clearFocus(){ trail=[]; selId=null; render(); }
+
+    function render(){
+      svg.classList.toggle('focused',!!selId);
+      var hl={}, pN={}, pE={}, eH={};
+      if(selId){ hl[selId]=1; inAdj[selId].forEach(function(l){ hl[l.s]=1; eH[ekey(l)]=1; }); outAdj[selId].forEach(function(l){ hl[l.t]=1; eH[ekey(l)]=1; }); var p=pathToOutput(selId); p.ns.forEach(function(x){ pN[x]=1; }); p.es.forEach(function(x){ pE[x]=1; }); }
+      nodes.forEach(function(n){ var c='node role-'+roleClass(n.role); if(n.id===selId) c+=' sel'; if(hl[n.id]) c+=' hl'; if(pN[n.id]) c+=' path'; nodeEls[n.id].setAttribute('class',c); });
+      links.forEach(function(l){ var k=ekey(l); var c='edge'; if(pE[k]) c+=' epath'; else if(eH[k]) c+=' ehl'; edgeEls[k].setAttribute('class',c); });
+      renderPanel(); renderCrumbs();
     }
-    function trunc(s,n){ return s.length<=n? s : s.slice(0,n)+'…'; }
-
-    var adj={}; nodes.forEach(function(n){ adj[n.id]={}; });
-    var LE=links.map(function(l){
-      adj[l.s][l.t]=1; adj[l.t][l.s]=1;
-      var p=document.createElementNS(NS,'path'); p.setAttribute('class','rl'); p.setAttribute('fill','none');
-      p.setAttribute('stroke',l.color); p.setAttribute('stroke-width','2'); p.setAttribute('marker-end','url(#'+mk[l.color]+')');
-      if(l.dashed) p.setAttribute('stroke-dasharray','7 5'); gL.appendChild(p);
-      var t=document.createElementNS(NS,'text'); t.setAttribute('font-size','10.5'); t.setAttribute('fill',l.color);
-      t.setAttribute('text-anchor','middle'); t.setAttribute('style','paint-order:stroke;stroke:#fff;stroke-width:3px;opacity:0;pointer-events:none');
-      t.textContent=l.label+(l.qid?(' → '+l.qid):'')+(l.count>1?(' ×'+l.count):''); gL.appendChild(t);
-      return {l:l,p:p,t:t};
-    });
-    var NE=nodes.map(function(n){
-      var st=roleStyle(n.role);
-      var g=document.createElementNS(NS,'g'); g.setAttribute('class','nd');
-      var c=document.createElementNS(NS,'circle'); c.setAttribute('r',n.r); c.setAttribute('fill',st.f); c.setAttribute('stroke',st.s); c.setAttribute('stroke-width','2.5'); g.appendChild(c);
-      var nm=document.createElementNS(NS,'text'); nm.setAttribute('text-anchor','middle'); nm.setAttribute('font-size','12'); nm.setAttribute('font-weight','700'); nm.setAttribute('fill','#0E2A47'); nm.setAttribute('style','paint-order:stroke;stroke:#F7F9FC;stroke-width:4px;pointer-events:none'); nm.textContent=trunc(n.label,16); g.appendChild(nm);
-      var rl=document.createElementNS(NS,'text'); rl.setAttribute('text-anchor','middle'); rl.setAttribute('font-size','9.5'); rl.setAttribute('fill',st.s); rl.setAttribute('style','paint-order:stroke;stroke:#F7F9FC;stroke-width:3px;pointer-events:none'); rl.textContent=n.role.replace(/（.*$/,''); g.appendChild(rl);
-      var tt=document.createElementNS(NS,'title'); tt.textContent=n.label+' ／ '+n.role+' ／ '+n.sub; g.appendChild(tt);
-      g.addEventListener('mouseenter',function(){ hl(n.id); });
-      g.addEventListener('mouseleave',function(){ hl(null); });
-      g.addEventListener('pointerdown',function(ev){ drag=n; n.fx=n.x; n.fy=n.y; ev.stopPropagation(); if(svg.setPointerCapture){ try{ svg.setPointerCapture(ev.pointerId); }catch(e){} } });
-      gN.appendChild(g);
-      return {n:n,g:g,nm:nm,rl:rl};
-    });
-
-    function draw(){
-      LE.forEach(function(o){ var a=byId[o.l.s],b=byId[o.l.t]; var mx=(a.x+b.x)/2, my=(a.y+b.y)/2-14;
-        o.p.setAttribute('d','M'+a.x+','+a.y+' Q'+mx+','+my+' '+b.x+','+b.y); o.t.setAttribute('x',mx); o.t.setAttribute('y',my); });
-      NE.forEach(function(o){ o.g.setAttribute('transform','translate('+o.n.x+','+o.n.y+')'); o.nm.setAttribute('y',o.n.r+13); o.rl.setAttribute('y',o.n.r+25); });
-    }
-    function hl(id){
-      NE.forEach(function(o){ o.g.style.opacity=(id==null||o.n.id===id||adj[id][o.n.id])?1:0.18; });
-      LE.forEach(function(o){ var on=(id!=null&&(o.l.s===id||o.l.t===id)); o.p.style.opacity=(id==null||on)?1:0.07; o.t.setAttribute('style','paint-order:stroke;stroke:#fff;stroke-width:3px;pointer-events:none;opacity:'+(on?1:0)); });
+    function renderCrumbs(){ if(!selId){ crumbsEl.innerHTML='<span class="cur">表を選択</span>'; return; } var h=''; trail.forEach(function(id,i){ if(i>0) h+='<span class="sep">›</span>'; if(i===trail.length-1) h+='<span class="cur">'+esc(byId[id].label)+'</span>'; else h+='<button class="c" data-i="'+i+'">'+esc(byId[id].label)+'</button>'; }); crumbsEl.innerHTML=h; Array.prototype.forEach.call(crumbsEl.querySelectorAll('.c'),function(b){ b.addEventListener('click',function(){ crumbJump(+b.getAttribute('data-i')); }); }); }
+    function chip(l,dir){ var other=dir==='in'?l.s:l.t; var b=document.createElement('button'); b.className='p-chip'; b.innerHTML='<span class="dot" style="background:'+l.color+'"></span><span>'+esc(byId[other].label)+'</span><span class="via">'+esc(l.label||'')+(l.qid?(' '+l.qid):'')+'</span>'; b.addEventListener('click',function(){ jumpTo(other,true); }); return b; }
+    function renderPanel(){ if(!selId){ pbody.innerHTML='<div class="empty">左のグラフで<b>表</b>をクリックすると、関係している表（上流／下流）と<b>最終アウトプットまでの経路</b>がここに出て、そのまま掘り下げられます。</div>'; return; } var n=byId[selId]; pbody.innerHTML=''; var nm=document.createElement('div'); nm.className='pname'; nm.textContent=n.label; pbody.appendChild(nm); var rc=document.createElement('span'); rc.className='rolechip rc-'+roleClass(n.role); rc.textContent=n.role; pbody.appendChild(rc); if(n.sub){ var mt=document.createElement('div'); mt.className='p-meta'; mt.textContent='規模 / キー'; pbody.appendChild(mt); var kb=document.createElement('div'); kb.className='p-keys'; kb.textContent=n.sub; pbody.appendChild(kb); }
+      var rt=document.createElement('div'); rt.className='p-grp'; rt.innerHTML='<h4>最終アウトプットまでの経路</h4>'; var route=document.createElement('div'); route.className='p-route'; if(roleClass(n.role)==='out'){ route.innerHTML='<span>この表が最終アウトプットです。</span>'; } else { var p=pathToOutput(selId); if(p.ns.length<=1){ route.innerHTML='<span>最終アウトプットへの経路は見つかりませんでした。</span>'; } else { p.ns.forEach(function(id,i){ if(i>0){ var a=document.createElement('span'); a.className='arw'; a.textContent='▸'; route.appendChild(a); } var b=document.createElement('button'); b.className='r'+(id===output?' out':''); b.textContent=byId[id].label; b.addEventListener('click',function(){ jumpTo(id,true); }); route.appendChild(b); }); } } rt.appendChild(route); pbody.appendChild(rt);
+      var g1=document.createElement('div'); g1.className='p-grp'; g1.innerHTML='<h4>← この表に入ってくる（上流）</h4>'; var c1=document.createElement('div'); c1.className='p-chips'; if(inAdj[selId].length) inAdj[selId].forEach(function(l){ c1.appendChild(chip(l,'in')); }); else { var e=document.createElement('div'); e.className='p-chip none'; e.textContent='上流なし（起点データ）'; c1.appendChild(e); } g1.appendChild(c1); pbody.appendChild(g1);
+      var g2=document.createElement('div'); g2.className='p-grp'; g2.innerHTML='<h4>→ この表から出ていく（下流）</h4>'; var c2=document.createElement('div'); c2.className='p-chips'; if(outAdj[selId].length) outAdj[selId].forEach(function(l){ c2.appendChild(chip(l,'out')); }); else { var e2=document.createElement('div'); e2.className='p-chip none'; e2.textContent='下流なし（最終アウトプット）'; c2.appendChild(e2); } g2.appendChild(c2); pbody.appendChild(g2);
     }
 
-    var alpha=1, raf=null, drag=null;
-    function tick(){
-      var i,j,a,b,dx,dy,d,d2,f,ux,uy;
-      for(i=0;i<nodes.length;i++){ for(j=i+1;j<nodes.length;j++){ a=nodes[i]; b=nodes[j]; dx=a.x-b.x; dy=a.y-b.y; d2=dx*dx+dy*dy+0.01; d=Math.sqrt(d2); f=2800/d2; ux=dx/d; uy=dy/d; a.vx+=ux*f; a.vy+=uy*f; b.vx-=ux*f; b.vy-=uy*f; } }
-      links.forEach(function(l){ var a=byId[l.s],b=byId[l.t]; var dx=b.x-a.x,dy=b.y-a.y; var d=Math.sqrt(dx*dx+dy*dy)+0.01; var f=(d-150)*0.02; var ux=dx/d,uy=dy/d; a.vx+=ux*f; a.vy+=uy*f; b.vx-=ux*f; b.vy-=uy*f; });
-      nodes.forEach(function(n){ n.vy+=(n.ly-n.y)*0.03; n.vx+=(W/2-n.x)*0.006; });
-      nodes.forEach(function(n){ if(n.fx!=null){ n.x=n.fx; n.y=n.fy; n.vx=0; n.vy=0; return; } n.vx*=0.85; n.vy*=0.85; n.x+=n.vx*alpha; n.y+=n.vy*alpha; n.x=Math.max(40,Math.min(W-40,n.x)); n.y=Math.max(34,Math.min(H-28,n.y)); });
-      draw(); alpha*=0.98; if(alpha>0.02){ raf=requestAnimationFrame(tick); } else { raf=null; }
-    }
-    function reheat(){ alpha=Math.max(alpha,0.5); if(!raf) raf=requestAnimationFrame(tick); }
-
-    var scale=1,ox=0,oy=0;
+    // zoom / pan / expand
+    var scale=1,ox=0,oy=0,pan=null,moved=false;
     function apply(){ gZoom.setAttribute('transform','translate('+ox+','+oy+') scale('+scale+')'); }
-    function toG(ev){ var r=svg.getBoundingClientRect(); var x=(ev.clientX-r.left)*(W/r.width), y=(ev.clientY-r.top)*(H/r.height); return {x:(x-ox)/scale,y:(y-oy)/scale}; }
-    var pan=null;
-    svg.addEventListener('pointerdown',function(ev){ if(ev.target===svg||ev.target===gZoom){ pan={x:ev.clientX,y:ev.clientY,ox:ox,oy:oy}; } });
-    svg.addEventListener('pointermove',function(ev){ if(drag){ var p=toG(ev); drag.fx=p.x; drag.fy=p.y; reheat(); return; } if(pan){ var r=svg.getBoundingClientRect(); ox=pan.ox+(ev.clientX-pan.x)*(W/r.width); oy=pan.oy+(ev.clientY-pan.y)*(H/r.height); apply(); } });
-    window.addEventListener('pointerup',function(){ if(drag){ drag.fx=null; drag.fy=null; drag=null; } pan=null; });
-    svg.addEventListener('wheel',function(ev){ ev.preventDefault(); var r=svg.getBoundingClientRect(); var mx=(ev.clientX-r.left)*(W/r.width), my=(ev.clientY-r.top)*(H/r.height); var ns=Math.max(0.4,Math.min(3,scale*(ev.deltaY<0?1.12:0.9))); ox=mx-(mx-ox)*(ns/scale); oy=my-(my-oy)*(ns/scale); scale=ns; apply(); },{passive:false});
-
-    // 拡大・全画面ボタン（右上）
     function zoomAt(cx,cy,f){ var ns=Math.max(0.4,Math.min(4,scale*f)); ox=cx-(cx-ox)*(ns/scale); oy=cy-(cy-oy)*(ns/scale); scale=ns; apply(); }
-    var expanded=false;
-    function toggleExpand(){ expanded=!expanded; host.classList.toggle('expanded',expanded); document.body.classList.toggle('relgraph-noscroll',expanded); }
-    document.addEventListener('keydown',function(e){ if(e.key==='Escape'&&expanded) toggleExpand(); });
+    function toG(ev){ var r=svg.getBoundingClientRect(); return {x:(ev.clientX-r.left)*(W/r.width), y:(ev.clientY-r.top)*(H/r.height)}; }
+    svg.addEventListener('pointerdown',function(ev){ if(ev.target.closest && ev.target.closest('.node')) return; pan={x:ev.clientX,y:ev.clientY,ox:ox,oy:oy}; moved=false; });
+    window.addEventListener('pointermove',function(ev){ if(!pan) return; moved=true; var r=svg.getBoundingClientRect(); ox=pan.ox+(ev.clientX-pan.x)*(W/r.width); oy=pan.oy+(ev.clientY-pan.y)*(H/r.height); apply(); });
+    window.addEventListener('pointerup',function(){ pan=null; });
+    svg.addEventListener('click',function(ev){ if(!(ev.target.closest && ev.target.closest('.node')) && !moved) clearFocus(); });
+    svg.addEventListener('wheel',function(ev){ ev.preventDefault(); var p=toG(ev); zoomAt(p.x,p.y, ev.deltaY<0?1.12:0.9); },{passive:false});
+
     var bar=document.createElement('div'); bar.className='relgraph-ctrl';
     function ctl(txt,title,fn){ var b=document.createElement('button'); b.type='button'; b.textContent=txt; b.title=title; b.setAttribute('aria-label',title); b.addEventListener('click',function(ev){ ev.stopPropagation(); fn(); }); bar.appendChild(b); }
     ctl('＋','拡大',function(){ zoomAt(W/2,H/2,1.25); });
     ctl('－','縮小',function(){ zoomAt(W/2,H/2,0.8); });
+    var expanded=false; function toggleExpand(){ expanded=!expanded; wrap.classList.toggle('expanded',expanded); document.body.classList.toggle('relgraph-noscroll',expanded); }
     ctl('⤢','全画面で見る（Escで戻る）',function(){ toggleExpand(); });
     ctl('⟳','表示をリセット',function(){ scale=1; ox=0; oy=0; apply(); });
     host.appendChild(bar);
+    document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ if(expanded) toggleExpand(); else clearFocus(); } });
 
-    draw(); apply(); reheat();
+    apply(); render();
   }catch(e){
-    var h=document.getElementById('relgraph'); if(h) h.style.display='none';
+    var w=document.getElementById('relgraph-wrap'); if(w) w.style.display='none';
     var s=document.querySelector('.map-static'); if(s) s.style.display='';
   }
 })();
