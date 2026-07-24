@@ -312,11 +312,15 @@ function buildQuestions(
 const NODE_W = 192, NODE_H = 62, COL_GAP = 128, ROW_GAP = 24, PAD = 28;
 const MAX_NODES = 28, MAX_EDGES = 60;
 
-interface MapResult { svg: string; omittedNodes: number; omittedEdges: number }
+// インタラクティブ・グラフ（Obsidian 風 force graph）へ渡すデータ。静的SVGと同じ kept 集合から作る。
+interface GNode { id: string; label: string; sub: string; role: string; deg: number; x: number; y: number }
+interface GLink { s: string; t: string; color: string; dashed: boolean; label: string; qid?: string; count: number }
+interface GraphData { nodes: GNode[]; links: GLink[]; w: number; h: number }
+interface MapResult { svg: string; omittedNodes: number; omittedEdges: number; data: GraphData }
 
 function buildMap(
   regions: Region[], pairs: PairAgg[], labels: Map<string, string>,
-  copyQuestionByPair: Map<string, string>,
+  copyQuestionByPair: Map<string, string>, roles: Map<string, Role>,
 ): MapResult | null {
   if (pairs.length === 0) return null;
 
@@ -434,10 +438,34 @@ function buildMap(
   parts.push(...edgeLabels);
   parts.push('</svg>');
 
+  // インタラクティブ・グラフ用データ。初期座標は上の階層レイアウト（pos）を種にして
+  // ブラウザ側の力学シミュレーションが素早く収束するようにする（決定的な初期配置）。
+  const gnodes: GNode[] = kept.map(r => {
+    const p = pos.get(r.id)!;
+    const key = keySummaryShort(r);
+    return {
+      id: r.id,
+      label: labels.get(r.id) ?? r.sheet,
+      sub: key === '' ? `${r.dataRowCount.toLocaleString()}行` : `${r.dataRowCount.toLocaleString()}行 ／ ${key}`,
+      role: roles.get(r.id) ?? '',
+      deg: degree.get(r.id) ?? 1,
+      x: p.x + NODE_W / 2, y: p.y + NODE_H / 2,
+    };
+  });
+  const glinks: GLink[] = drawPairs.map(p => {
+    const g = dominantGroup(p);
+    const qid = g === 'copy' ? copyQuestionByPair.get(`${p.from}\u0000${p.to}`) : undefined;
+    return {
+      s: p.from, t: p.to, color: GROUP_META[g].color, dashed: GROUP_META[g].dashed,
+      label: GROUP_META[g].label.split('（')[0], qid, count: p.total,
+    };
+  });
+
   return {
     svg: parts.join('\n'),
     omittedNodes: connected.length - kept.length,
     omittedEdges: pairs.filter(p => keptIds.has(p.from) && keptIds.has(p.to)).length - drawPairs.length,
+    data: { nodes: gnodes, links: glinks, w: width, h: height },
   };
 }
 
@@ -456,7 +484,7 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   const questions = buildQuestions(regions, pairs, warnings, labels, roles);
   const copyQuestionByPair = new Map<string, string>();
   for (const q of questions) if (q.refPair) copyQuestionByPair.set(q.refPair, q.id);
-  const map = buildMap(regions, pairs, labels, copyQuestionByPair);
+  const map = buildMap(regions, pairs, labels, copyQuestionByPair, roles);
 
   const edgeTotal = graph.edgeTotal ?? edges.length;
   const dateStr = input.generatedAt.toISOString().slice(0, 10);
@@ -583,9 +611,21 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
       <h2>データの流れ（関係マップ）</h2>
       <p class="sec-lede">数式の参照関係と、値の一致パターンから推定した表どうしのつながりです。<b>実線＝数式から確認できた確実な関係</b>、<b>破線＝値の一致から推定した関係（要確認）</b>です。</p>
     </div>
-    <div class="map-scroll">${map.svg}</div>
+    <p class="graph-guide">各ノード＝<b>1つの表</b>（大きさ＝つながりの多さ）。<b>左（元データ）→ 右（最終帳票）</b>へ矢印の向きにデータが流れます。線の色＝関係の種類、<b>破線＝手作業コピー（要確認）</b>。表の1行を決めるキー・軸は「02 内訳」「04 各表の詳細」でご確認いただけます。<span class="only-screen">ノードにカーソルを合わせると関係先だけを強調します（ドラッグで移動 / ホイールで拡大 / 背景ドラッグで移動）。</span><span class="only-print">※ 本紙は静止画です。操作版はブラウザでご覧ください。</span></p>
+    <div class="map-static map-scroll">${map.svg}</div>
+    <figure class="map-interactive" id="relgraph" aria-label="表どうしの関係グラフ（操作可能）"></figure>
+    <script type="application/json" id="relgraph-data">${JSON.stringify(map.data).replace(/</g, '\\u003c')}</script>
     <div class="legend">
+      <span class="lg-h">関係の種類</span>
       ${GROUP_ORDER.map(g => `<span class="li"><span class="sw${GROUP_META[g].dashed ? ' dash' : ''}" style="border-color:${GROUP_META[g].color}"></span>${esc(GROUP_META[g].label)}</span>`).join('\n      ')}
+    </div>
+    <div class="legend">
+      <span class="lg-h">表の役割</span>
+      <span class="li"><span class="nrole src"></span>元データ（明細）</span>
+      <span class="li"><span class="nrole mst"></span>マスタ（参照元）</span>
+      <span class="li"><span class="nrole mid"></span>中間集計</span>
+      <span class="li"><span class="nrole out"></span>最終アウトプット</span>
+      <span class="li"><span class="nrole iso"></span>独立（つながりなし・要確認）</span>
     </div>
     ${map.omittedNodes > 0 || map.omittedEdges > 0 ? `<p class="tbl-note">※ 図はつながりの多い表を優先して表示しています（省略: 表 ${map.omittedNodes}・関係 ${map.omittedEdges}）。全体はお打ち合わせで画面をご覧いただけます。</p>` : ''}
     <div class="callout info">
@@ -745,6 +785,7 @@ ${mapSection}
 <footer>
   <div class="wrap">© dataX Inc.　|　kpiee データ構造分析レポート（${dateStr} 生成）　|　本資料は貴社との確認用資料であり、社外への共有はお控えください。</div>
 </footer>
+${map ? `<script>${REPORT_GRAPH_JS}</script>` : ''}
 </body>
 </html>
 `;
@@ -863,11 +904,143 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
   .qgrid{grid-template-columns:1fr}
   .qgrid dt{padding-top:6px}
 }
+/* ---- インタラクティブ関係グラフ（Obsidian 風。JS 有効時のみ表示、印刷は静的SVGへ） ---- */
+.graph-guide{font-size:12.5px;color:var(--text);line-height:1.7;margin-bottom:12px}
+.only-print{display:none}
+.map-interactive{display:none;background:#FCFDFE;border:1px solid var(--line);border-radius:16px;padding:8px;margin:0;min-height:440px;touch-action:none;overflow:hidden}
+.relgraph-svg{width:100%;height:auto;display:block;font-family:var(--body)}
+.relgraph-svg .nd{cursor:grab;transition:opacity .15s}
+.relgraph-svg .rl{transition:opacity .15s}
+.legend .lg-h{font-weight:700;color:var(--ink);font-size:12px;margin-right:2px}
+.nrole{width:13px;height:13px;border-radius:50%;display:inline-block;border:2px solid;vertical-align:-2px}
+.nrole.src{background:var(--green-bg);border-color:var(--green)}
+.nrole.mst{background:var(--blue-bg);border-color:var(--blue)}
+.nrole.mid{background:var(--violet-bg);border-color:var(--violet)}
+.nrole.out{background:var(--red-bg);border-color:var(--red)}
+.nrole.iso{background:#F2F5F8;border-color:#9AA7B4}
 @media print{
   header::after{display:none}
   section{padding:28px 0}
   details.region{page-break-inside:avoid}
   details.region:not([open]) summary::before{content:'▸'}
   .qcard{page-break-inside:avoid}
+  .map-interactive{display:none!important}
+  .map-static{display:block!important}
+  .only-print{display:inline}
+  .only-screen{display:none}
 }
+`;
+
+// インタラクティブ関係グラフ（Obsidian 風の力学配置）。外部ライブラリ無しの素の SVG + JS。
+// #relgraph-data（JSON）を読み、力学シミュレーションで配置。ノード=表（役割で色分け＋ラベル）、
+// 辺=関係（種類で色、破線=手コピー）。ホバーで関係先を強調、ドラッグ移動、ホイール拡大、背景パン。
+// 初期化に失敗したら静的SVG（.map-static）へ戻す。※テンプレートリテラルに埋めるためバッククォート/${ は使わない。
+const REPORT_GRAPH_JS = `
+(function(){
+  try{
+    var host=document.getElementById('relgraph');
+    var dataEl=document.getElementById('relgraph-data');
+    if(!host||!dataEl) return;
+    var data=JSON.parse(dataEl.textContent);
+    if(!data||!data.nodes||!data.nodes.length) return;
+    var staticEl=document.querySelector('.map-static');
+    if(staticEl) staticEl.style.display='none';
+    host.style.display='block';
+
+    var NS='http://www.w3.org/2000/svg';
+    var W=host.clientWidth||820, H=Math.max(440,Math.min(680,(data.h||520)));
+    var svg=document.createElementNS(NS,'svg');
+    svg.setAttribute('viewBox','0 0 '+W+' '+H);
+    svg.setAttribute('class','relgraph-svg');
+    host.appendChild(svg);
+
+    var defs=document.createElementNS(NS,'defs'); svg.appendChild(defs);
+    var mk={};
+    data.links.forEach(function(l){ if(mk[l.color]!=null) return; var id='ar'+Object.keys(mk).length;
+      var m=document.createElementNS(NS,'marker'); m.setAttribute('id',id); m.setAttribute('viewBox','0 0 10 10');
+      m.setAttribute('refX','9'); m.setAttribute('refY','5'); m.setAttribute('markerWidth','7'); m.setAttribute('markerHeight','7'); m.setAttribute('orient','auto');
+      var pa=document.createElementNS(NS,'path'); pa.setAttribute('d','M0,0 L10,5 L0,10 z'); pa.setAttribute('fill',l.color); m.appendChild(pa);
+      defs.appendChild(m); mk[l.color]=id; });
+
+    var gZoom=document.createElementNS(NS,'g'); svg.appendChild(gZoom);
+    var gL=document.createElementNS(NS,'g'); gZoom.appendChild(gL);
+    var gN=document.createElementNS(NS,'g'); gZoom.appendChild(gN);
+
+    var nodes=data.nodes, links=data.links, byId={};
+    nodes.forEach(function(n){ byId[n.id]=n; });
+    var minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
+    nodes.forEach(function(n){ minx=Math.min(minx,n.x); miny=Math.min(miny,n.y); maxx=Math.max(maxx,n.x); maxy=Math.max(maxy,n.y); });
+    var sx=(W-140)/Math.max(1,maxx-minx), sy=(H-110)/Math.max(1,maxy-miny);
+    nodes.forEach(function(n){ n.x=70+(n.x-minx)*sx; n.y=55+(n.y-miny)*sy; n.lx=n.x; n.vx=0; n.vy=0; n.r=9+Math.min(15,Math.sqrt(n.deg)*3); n.fx=null; n.fy=null; });
+
+    function roleStyle(role){
+      if(/最終/.test(role)) return {s:'#C24141',f:'#FBEFEF'};
+      if(/マスタ/.test(role)) return {s:'#1F5FAE',f:'#EDF4FC'};
+      if(/中間/.test(role)) return {s:'#7B5EA7',f:'#F1EDF8'};
+      if(/元データ/.test(role)) return {s:'#1E9E6A',f:'#E9F7F0'};
+      return {s:'#9AA7B4',f:'#F2F5F8'};
+    }
+    function trunc(s,n){ return s.length<=n? s : s.slice(0,n)+'…'; }
+
+    var adj={}; nodes.forEach(function(n){ adj[n.id]={}; });
+    var LE=links.map(function(l){
+      adj[l.s][l.t]=1; adj[l.t][l.s]=1;
+      var p=document.createElementNS(NS,'path'); p.setAttribute('class','rl'); p.setAttribute('fill','none');
+      p.setAttribute('stroke',l.color); p.setAttribute('stroke-width','2'); p.setAttribute('marker-end','url(#'+mk[l.color]+')');
+      if(l.dashed) p.setAttribute('stroke-dasharray','7 5'); gL.appendChild(p);
+      var t=document.createElementNS(NS,'text'); t.setAttribute('font-size','10.5'); t.setAttribute('fill',l.color);
+      t.setAttribute('text-anchor','middle'); t.setAttribute('style','paint-order:stroke;stroke:#fff;stroke-width:3px;opacity:0;pointer-events:none');
+      t.textContent=l.label+(l.qid?(' → '+l.qid):'')+(l.count>1?(' ×'+l.count):''); gL.appendChild(t);
+      return {l:l,p:p,t:t};
+    });
+    var NE=nodes.map(function(n){
+      var st=roleStyle(n.role);
+      var g=document.createElementNS(NS,'g'); g.setAttribute('class','nd');
+      var c=document.createElementNS(NS,'circle'); c.setAttribute('r',n.r); c.setAttribute('fill',st.f); c.setAttribute('stroke',st.s); c.setAttribute('stroke-width','2.5'); g.appendChild(c);
+      var nm=document.createElementNS(NS,'text'); nm.setAttribute('text-anchor','middle'); nm.setAttribute('font-size','12'); nm.setAttribute('font-weight','700'); nm.setAttribute('fill','#0E2A47'); nm.setAttribute('style','paint-order:stroke;stroke:#F7F9FC;stroke-width:4px;pointer-events:none'); nm.textContent=trunc(n.label,16); g.appendChild(nm);
+      var rl=document.createElementNS(NS,'text'); rl.setAttribute('text-anchor','middle'); rl.setAttribute('font-size','9.5'); rl.setAttribute('fill',st.s); rl.setAttribute('style','paint-order:stroke;stroke:#F7F9FC;stroke-width:3px;pointer-events:none'); rl.textContent=n.role.replace(/（.*$/,''); g.appendChild(rl);
+      var tt=document.createElementNS(NS,'title'); tt.textContent=n.label+' ／ '+n.role+' ／ '+n.sub; g.appendChild(tt);
+      g.addEventListener('mouseenter',function(){ hl(n.id); });
+      g.addEventListener('mouseleave',function(){ hl(null); });
+      g.addEventListener('pointerdown',function(ev){ drag=n; n.fx=n.x; n.fy=n.y; ev.stopPropagation(); if(svg.setPointerCapture){ try{ svg.setPointerCapture(ev.pointerId); }catch(e){} } });
+      gN.appendChild(g);
+      return {n:n,g:g,nm:nm,rl:rl};
+    });
+
+    function draw(){
+      LE.forEach(function(o){ var a=byId[o.l.s],b=byId[o.l.t]; var mx=(a.x+b.x)/2, my=(a.y+b.y)/2-14;
+        o.p.setAttribute('d','M'+a.x+','+a.y+' Q'+mx+','+my+' '+b.x+','+b.y); o.t.setAttribute('x',mx); o.t.setAttribute('y',my); });
+      NE.forEach(function(o){ o.g.setAttribute('transform','translate('+o.n.x+','+o.n.y+')'); o.nm.setAttribute('y',o.n.r+13); o.rl.setAttribute('y',o.n.r+25); });
+    }
+    function hl(id){
+      NE.forEach(function(o){ o.g.style.opacity=(id==null||o.n.id===id||adj[id][o.n.id])?1:0.18; });
+      LE.forEach(function(o){ var on=(id!=null&&(o.l.s===id||o.l.t===id)); o.p.style.opacity=(id==null||on)?1:0.07; o.t.setAttribute('style','paint-order:stroke;stroke:#fff;stroke-width:3px;pointer-events:none;opacity:'+(on?1:0)); });
+    }
+
+    var alpha=1, raf=null, drag=null;
+    function tick(){
+      var i,j,a,b,dx,dy,d,d2,f,ux,uy;
+      for(i=0;i<nodes.length;i++){ for(j=i+1;j<nodes.length;j++){ a=nodes[i]; b=nodes[j]; dx=a.x-b.x; dy=a.y-b.y; d2=dx*dx+dy*dy+0.01; d=Math.sqrt(d2); f=2800/d2; ux=dx/d; uy=dy/d; a.vx+=ux*f; a.vy+=uy*f; b.vx-=ux*f; b.vy-=uy*f; } }
+      links.forEach(function(l){ var a=byId[l.s],b=byId[l.t]; var dx=b.x-a.x,dy=b.y-a.y; var d=Math.sqrt(dx*dx+dy*dy)+0.01; var f=(d-150)*0.02; var ux=dx/d,uy=dy/d; a.vx+=ux*f; a.vy+=uy*f; b.vx-=ux*f; b.vy-=uy*f; });
+      nodes.forEach(function(n){ n.vx+=(n.lx-n.x)*0.02; n.vy+=(H/2-n.y)*0.004; });
+      nodes.forEach(function(n){ if(n.fx!=null){ n.x=n.fx; n.y=n.fy; n.vx=0; n.vy=0; return; } n.vx*=0.85; n.vy*=0.85; n.x+=n.vx*alpha; n.y+=n.vy*alpha; n.x=Math.max(40,Math.min(W-40,n.x)); n.y=Math.max(34,Math.min(H-28,n.y)); });
+      draw(); alpha*=0.98; if(alpha>0.02){ raf=requestAnimationFrame(tick); } else { raf=null; }
+    }
+    function reheat(){ alpha=Math.max(alpha,0.5); if(!raf) raf=requestAnimationFrame(tick); }
+
+    var scale=1,ox=0,oy=0;
+    function apply(){ gZoom.setAttribute('transform','translate('+ox+','+oy+') scale('+scale+')'); }
+    function toG(ev){ var r=svg.getBoundingClientRect(); var x=(ev.clientX-r.left)*(W/r.width), y=(ev.clientY-r.top)*(H/r.height); return {x:(x-ox)/scale,y:(y-oy)/scale}; }
+    var pan=null;
+    svg.addEventListener('pointerdown',function(ev){ if(ev.target===svg||ev.target===gZoom){ pan={x:ev.clientX,y:ev.clientY,ox:ox,oy:oy}; } });
+    svg.addEventListener('pointermove',function(ev){ if(drag){ var p=toG(ev); drag.fx=p.x; drag.fy=p.y; reheat(); return; } if(pan){ var r=svg.getBoundingClientRect(); ox=pan.ox+(ev.clientX-pan.x)*(W/r.width); oy=pan.oy+(ev.clientY-pan.y)*(H/r.height); apply(); } });
+    window.addEventListener('pointerup',function(){ if(drag){ drag.fx=null; drag.fy=null; drag=null; } pan=null; });
+    svg.addEventListener('wheel',function(ev){ ev.preventDefault(); var r=svg.getBoundingClientRect(); var mx=(ev.clientX-r.left)*(W/r.width), my=(ev.clientY-r.top)*(H/r.height); var ns=Math.max(0.4,Math.min(3,scale*(ev.deltaY<0?1.12:0.9))); ox=mx-(mx-ox)*(ns/scale); oy=my-(my-oy)*(ns/scale); scale=ns; apply(); },{passive:false});
+
+    draw(); apply(); reheat();
+  }catch(e){
+    var h=document.getElementById('relgraph'); if(h) h.style.display='none';
+    var s=document.querySelector('.map-static'); if(s) s.style.display='';
+  }
+})();
 `;
