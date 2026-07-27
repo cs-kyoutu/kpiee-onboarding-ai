@@ -313,7 +313,7 @@ const NODE_W = 192, NODE_H = 62, COL_GAP = 128, ROW_GAP = 24, PAD = 28;
 const MAX_NODES = 28, MAX_EDGES = 60;
 
 // インタラクティブ・グラフ（Obsidian 風 force graph）へ渡すデータ。静的SVGと同じ kept 集合から作る。
-interface GNode { id: string; label: string; sub: string; pk: string; role: string; deg: number; x: number; y: number; cols: string[]; colN: number }
+interface GNode { id: string; label: string; sub: string; role: string; deg: number; x: number; y: number }
 interface GLink { s: string; t: string; color: string; dashed: boolean; label: string; qid?: string; count: number }
 interface GraphData { nodes: GNode[]; links: GLink[]; w: number; h: number }
 interface MapResult { svg: string; omittedNodes: number; omittedEdges: number; data: GraphData }
@@ -443,17 +443,13 @@ function buildMap(
   const gnodes: GNode[] = kept.map(r => {
     const p = pos.get(r.id)!;
     const key = keySummaryShort(r);
-    const colNames = r.columns.map(c => c.name).filter(Boolean);
     return {
       id: r.id,
       label: labels.get(r.id) ?? r.sheet,
       sub: key === '' ? `${r.dataRowCount.toLocaleString()}行` : `${r.dataRowCount.toLocaleString()}行 ／ ${key}`,
-      pk: r.keys?.grain || keySummaryShort(r),
       role: roles.get(r.id) ?? '',
       deg: degree.get(r.id) ?? 1,
       x: p.x + NODE_W / 2, y: p.y + NODE_H / 2,
-      cols: colNames.slice(0, 14),
-      colN: colNames.length,
     };
   });
   const glinks: GLink[] = drawPairs.map(p => {
@@ -676,11 +672,8 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
       const fileCell = r.file === prevFile ? '' : esc(r.file || '─');
       const sheetCell = r.file === prevFile && r.sheet === prevSheet ? '' : esc(r.sheet);
       prevFile = r.file; prevSheet = r.sheet;
-      // 位置(A1:M103)だけだと分かりにくいので、主な列名を前面に出し、座標は補足として小さく添える
-      const colNames = r.columns.map(c => c.name).filter(Boolean);
-      const colPreview = colNames.slice(0, 4).join('・') + (colNames.length > 4 ? ` …他${colNames.length - 4}列` : '');
       invRows.push(`<tr><td>${fileCell}</td><td>${sheetCell}</td>` +
-        `<td>${esc(colPreview || '—')}<div class="loc-sub mono">${esc(rangeOf(r))}</div></td>` +
+        `<td class="mono">${esc(rangeOf(r))}</td>` +
         `<td class="r">${r.dataRowCount.toLocaleString()}</td><td>${esc(keySummary(r))}</td><td>${esc(roles.get(r.id) ?? '')}</td></tr>`);
     }
   }
@@ -769,19 +762,28 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
     <div class="sec-head">
       <div class="eyebrow">03 ── RELATIONSHIPS</div>
       <h2>表どうしの関係</h2>
-      <p class="sec-lede">受領データの表が「どのキーでつながり」「どの向きに流れているか」を2つの図で示します。まず<b>キー関係図（ER）</b>で対応関係を、次に<b>データの流れ</b>で全体像をご確認ください。</p>
+      <p class="sec-lede">表が<b>どのキーでつながり</b>、<b>どの向きに流れているか</b>を2つの図で示します。</p>
     </div>
     ${er ? `
     <h3 class="sub-h">キー関係図（ER）</h3>
-    <p class="graph-guide">各ボックス＝表。<b>🔑＝主キー</b>（1行を一意に決める列）／◇＝軸。表を結ぶ線は同じキー列での対応で、<b>端の 1 / N が対応関係（1対多）</b>を表します（1＝一意＝マスタ側、N＝繰り返し＝明細側）。</p>
+    <ul class="graph-guide">
+      <li><b>ボックス＝表</b>。<span class="k">🔑</span>＝主キー（1行を一意に決める列）／<span class="k">◇</span>＝軸</li>
+      <li><b>線＝同じキー列での対応</b>。端の <b>1 / N</b> が1対多（<b>1</b>＝マスタ側／<b>N</b>＝明細側）</li>
+    </ul>
     <div class="map-scroll er-scroll">${er.svg}</div>
-    ${er.omitted > 0 ? `<p class="tbl-note">※ キーでつながる表を優先して表示しています（ほか ${er.omitted} 表は省略）。全体はお打ち合わせで画面をご覧いただけます。</p>` : ''}
+    ${er.omitted > 0 ? `<p class="tbl-note">※ キーでつながる表を優先表示（ほか ${er.omitted} 表は省略）。</p>` : ''}
     ` : ''}
     <h3 class="sub-h">最終アウトプットへの流れ</h3>
-    <p class="graph-guide">各ノード＝<b>1つの表</b>（<b>🔑＝主キー/軸</b>を表示）。有機的に配置しつつ、<b>上＝元データ → 下＝最終アウトプット</b>で縦位置が流れを表します（最終は最下段）。<span class="only-screen">表を<b>クリック</b>すると関係先と<b>最終アウトプットまでの経路</b>を強調し、右パネル（パンくず＋上流/下流）で掘り下げられます。ノードは<b>ドラッグ</b>で動かせ、右上の <b>＋ / － / ⤢全画面 / ⟳</b> で拡大・全画面（Escで戻る）。</span><span class="only-print">※ 本紙は静止画です。操作版はブラウザでご覧ください。</span> 線の色＝関係の種類、<b>破線＝手作業コピー（要確認）</b>。</p>
+    <ul class="graph-guide">
+      <li><b>ノード＝表</b>。<b>上＝元データ → 下＝最終アウトプット</b>、矢印の向きにデータが流れます</li>
+      <li><b>線の色＝関係の種類</b>／<b>破線＝手作業コピー（要確認）</b></li>
+      <li class="only-screen"><b>クリック</b>すると、その表の関係先と最終アウトプットまでの経路を右パネルに表示します（パンくずで戻れます）</li>
+      <li class="only-screen">右上のボタン：<span class="k">＋ －</span> 拡大縮小／<span class="k">▤</span> レイアウト／<span class="k">☾</span> 配色／<span class="k">⤢</span> 全画面（Escで戻る）／<span class="k">⟳</span> リセット。背景ドラッグで移動</li>
+    </ul>
+    <p class="graph-guide only-print">※ 本紙は静止画です。操作版はブラウザでご覧ください。</p>
     <div class="map-static map-scroll">${map.svg}</div>
     <div class="map-interactive relgraph-wrap" id="relgraph-wrap">
-      <figure class="relgraph-stage" id="relgraph" aria-label="表どうしの関係グラフ（操作可能）"></figure>
+      <figure class="relgraph-stage lightmode" id="relgraph" aria-label="表どうしの関係グラフ（操作可能）"></figure>
       <aside class="relgraph-panel">
         <div class="relgraph-crumbs" id="relgraph-crumbs"><span class="cur">表を選択</span></div>
         <div class="relgraph-pbody" id="relgraph-pbody"><div class="empty">左のグラフで<b>表</b>をクリックすると、関係している表（上流／下流）と<b>最終アウトプットまでの経路</b>がここに出て、そのまま掘り下げられます。</div></div>
@@ -800,7 +802,7 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
       <span class="li"><span class="nrole out"></span>最終アウトプット</span>
       <span class="li"><span class="nrole iso"></span>独立（つながりなし・要確認）</span>
     </div>
-    ${map.omittedNodes > 0 || map.omittedEdges > 0 ? `<p class="tbl-note">※ 図はつながりの多い表を優先して表示しています（省略: 表 ${map.omittedNodes}・関係 ${map.omittedEdges}）。全体はお打ち合わせで画面をご覧いただけます。</p>` : ''}
+    <p class="tbl-note">※ 円の大きさ＝つながりの本数。つながりの多い表を優先表示${map.omittedNodes > 0 || map.omittedEdges > 0 ? `（省略: 表 ${map.omittedNodes}・関係 ${map.omittedEdges}）` : ''}。</p>
     <div class="callout info">
       <span class="mark">ℹ️</span>
       <span>ピボットテーブル・INDIRECT関数・ファイル間の数式リンクは自動追跡の対象外です。該当する処理をお使いの場合は、お打ち合わせで補足をお願いします。</span>
@@ -887,7 +889,7 @@ ${REPORT_CSS}
     </div>
     <div style="overflow-x:auto">
       <table class="ot">
-        <tr><th>ファイル</th><th>シート</th><th>主な列 ／ 位置</th><th>行数</th><th>主キー／軸（推定）</th><th>役割（推定）</th></tr>
+        <tr><th>ファイル</th><th>シート</th><th>表（位置）</th><th>行数</th><th>主キー／軸（推定）</th><th>役割（推定）</th></tr>
         ${invRows.join('\n        ')}
       </table>
       ${invNote}
@@ -914,7 +916,7 @@ ${mapSection}
     <div class="sec-head">
       <div class="eyebrow">05 ── QUESTIONS</div>
       <h2>ご確認いただきたい点（${questions.length}件）</h2>
-      <p class="sec-lede">自動解析では「推定」までしかできない箇所です。お打ち合わせの際、上から順にご回答をいただけますと、kpieeの設定を正確に進められます。<b>回答メモ欄は印刷してそのままお使いいただけます。</b></p>
+      <p class="sec-lede">自動解析では「推定」までしかできない箇所です。上から順にご回答をいただけますと、kpieeの設定を正確に進められます。<b>回答メモ欄は印刷してそのままお使いいただけます。</b></p>
     </div>
     ${qCards}
     <div class="callout info">
@@ -1081,6 +1083,12 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
 .sub-h{font-family:var(--disp);font-weight:700;font-size:18px;color:var(--ink);margin:30px 0 6px}
 .er-scroll svg{min-width:640px;width:100%;height:auto;display:block;font-family:var(--body)}
 .graph-guide{font-size:12.5px;color:var(--text);line-height:1.7;margin-bottom:12px}
+/* 図の凡例テキスト: 1行1項目で読ませる */
+ul.graph-guide{list-style:none;padding:0;display:flex;flex-direction:column;gap:4px}
+ul.graph-guide li{padding-left:15px;position:relative}
+ul.graph-guide li::before{content:'―';position:absolute;left:0;color:var(--sub)}
+ul.graph-guide b{color:var(--ink)}
+ul.graph-guide .k{font-family:var(--mono);font-size:11.5px;color:var(--ink)}
 .only-print{display:none}
 .legend .lg-h{font-weight:700;color:var(--ink);font-size:12px;margin-right:2px}
 .nrole{width:13px;height:13px;border-radius:50%;display:inline-block;border:2px solid;vertical-align:-2px}
@@ -1093,27 +1101,42 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
 /* 関係グラフ本体（JS 有効時のみ表示。印刷・JS無効は静的SVG .map-static へ） */
 .map-interactive{display:none}
 .relgraph-wrap{grid-template-columns:1fr 300px;gap:14px;align-items:stretch}
-.relgraph-stage{position:relative;background:#FCFDFE;background-image:radial-gradient(circle at 1px 1px,#E4EBF3 1px,transparent 0);background-size:22px 22px;border:1px solid var(--line);border-radius:14px;overflow:hidden;min-height:480px;touch-action:none}
-.relgraph-stage svg{width:100%;height:100%;display:block;font-family:var(--body)}
+.relgraph-stage{position:relative;border:1px solid var(--line);border-radius:14px;overflow:hidden;min-height:560px;touch-action:none;
+  --gbg:#12141C;--glbl:#C9D1DE;--glbl2:#7F8A9C;
+  --c-src:#3FCF8E;--c-mst:#5AA9FF;--c-mid:#B392F0;--c-out:#FF8B7B;--c-iso:#8B98A5;
+  background:radial-gradient(circle at 50% 38%,#1C1F2A 0%,#12141C 72%)}
+.relgraph-stage.lightmode{--gbg:#FCFDFE;--glbl:#0E2A47;--glbl2:#7A8794;
+  --c-src:#1E9E6A;--c-mst:#1F5FAE;--c-mid:#7B5EA7;--c-out:#C0392B;--c-iso:#9AA7B4;
+  background:#FCFDFE;background-image:radial-gradient(circle at 1px 1px,#E4EBF3 1px,transparent 0);background-size:22px 22px}
+.relgraph-stage svg{width:100%;height:100%;display:block;font-family:var(--body);cursor:grab}
+.relgraph-stage svg.panning{cursor:grabbing}
 .relgraph-ctrl{position:absolute;top:10px;right:10px;display:flex;gap:6px;z-index:3}
-.relgraph-ctrl button{width:32px;height:32px;padding:0;border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:8px;font-size:15px;line-height:1;cursor:pointer;box-shadow:0 1px 3px rgba(14,42,71,.1)}
-.relgraph-ctrl button:hover{background:var(--blue-bg);border-color:var(--blue);color:var(--blue)}
-.node{cursor:pointer;transition:opacity .16s}
-.node .box{fill:#fff;stroke-width:1.6}
-.node.role-src .box{fill:var(--green-bg);stroke:var(--green)}
-.node.role-mst .box{fill:var(--blue-bg);stroke:var(--blue)}
-.node.role-mid .box{fill:var(--violet-bg);stroke:var(--violet)}
-.node.role-out .box{fill:var(--red-bg);stroke:var(--red);stroke-width:2.4}
-.node.role-iso .box{fill:#F2F5F8;stroke:#9AA7B4}
-.node .lbl{fill:var(--ink);font-weight:700;font-size:12px}
-.node .rolesub{fill:var(--sub);font-size:9.5px}
-.node .ring{fill:none;stroke:none}
-.node.sel .ring{stroke:var(--blue);stroke-width:2.5}
-.edge{fill:none;stroke-width:1.7;transition:.16s}
-.relgraph-stage svg.focused .node:not(.hl):not(.path){opacity:.16}
-.relgraph-stage svg.focused .edge:not(.epath):not(.ehl){opacity:.07}
-.edge.epath{stroke-width:3}
-.edge.ehl{stroke-width:2.6}
+.relgraph-ctrl button{width:32px;height:32px;padding:0;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.09);color:#E3E9F2;border-radius:8px;font-size:14px;line-height:1;cursor:pointer;backdrop-filter:blur(4px)}
+.relgraph-ctrl button:hover{background:rgba(255,255,255,.2);border-color:rgba(255,255,255,.34)}
+.relgraph-stage.lightmode .relgraph-ctrl button{border-color:var(--line);background:#fff;color:var(--ink);box-shadow:0 1px 3px rgba(14,42,71,.1)}
+.relgraph-stage.lightmode .relgraph-ctrl button:hover{background:var(--blue-bg);border-color:var(--blue);color:var(--blue)}
+.relgraph-hint{position:absolute;left:12px;bottom:10px;z-index:3;font-size:10.5px;letter-spacing:.02em;color:var(--glbl2);pointer-events:none}
+/* ノード（Obsidian風の円） */
+.node{cursor:pointer;transition:opacity .18s}
+.node .dot{stroke:var(--gbg);stroke-width:1.5}
+.node .halo{fill:none;stroke:none;transition:.18s}
+.node.role-src .dot{fill:var(--c-src)}
+.node.role-mst .dot{fill:var(--c-mst)}
+.node.role-mid .dot{fill:var(--c-mid)}
+.node.role-out .dot{fill:var(--c-out)}
+.node.role-iso .dot{fill:var(--c-iso)}
+.node.role-out .halo{stroke:var(--c-out);stroke-opacity:.32;stroke-width:2}
+.node .lbl{fill:var(--glbl);font-size:11px;font-weight:600;text-anchor:middle;paint-order:stroke;stroke:var(--gbg);stroke-width:3.4px;stroke-linejoin:round;pointer-events:none}
+.node.hov .lbl,.node.sel .lbl{fill:#fff;font-weight:700}
+.relgraph-stage.lightmode .node.hov .lbl,.relgraph-stage.lightmode .node.sel .lbl{fill:var(--ink)}
+.node.hov .halo,.node.sel .halo{stroke:#fff;stroke-opacity:.55;stroke-width:2.4}
+.relgraph-stage.lightmode .node.hov .halo,.relgraph-stage.lightmode .node.sel .halo{stroke:var(--blue);stroke-opacity:.85}
+.node.role-out .lbl{font-weight:800}
+.edge{fill:none;stroke-width:1.3;opacity:.5;transition:opacity .18s,stroke-width .18s}
+.relgraph-stage svg.focused .node:not(.hl):not(.path){opacity:.14}
+.relgraph-stage svg.focused .edge:not(.epath):not(.ehl){opacity:.05}
+.edge.epath{stroke-width:3;opacity:1}
+.edge.ehl{stroke-width:2.4;opacity:1}
 /* インスペクタ */
 .relgraph-panel{background:#fff;border:1px solid var(--line);border-radius:14px;overflow:hidden;display:flex;flex-direction:column;min-height:480px}
 .relgraph-crumbs{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:10px 13px;border-bottom:1px solid var(--line);font-size:11.5px;min-height:42px}
@@ -1133,8 +1156,6 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
 .rolechip.rc-iso{color:var(--sub);background:#F2F5F8;border-color:#9AA7B4}
 .p-meta{font-size:11.5px;color:var(--sub);margin:10px 0 3px}
 .p-keys{font-family:var(--mono);font-size:11.5px;color:var(--text);background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
-.p-cols{font-size:12px;color:var(--text);background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:7px 10px;line-height:1.75}
-.loc-sub{font-size:10.5px;color:var(--sub);margin-top:2px}
 .p-route{display:flex;align-items:center;flex-wrap:wrap;gap:4px;background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:12px}
 .p-route .r{cursor:pointer;color:var(--blue);background:none;border:0;font:inherit;padding:1px 3px;border-radius:5px}
 .p-route .r:hover{background:var(--blue-bg)}
@@ -1166,9 +1187,10 @@ body.relgraph-noscroll{overflow:hidden}
 }
 `;
 
-// 関係グラフ（Obsidian 風の力学配置＋流れ）。#relgraph-data(JSON) を読み、各表を有機的に配置しつつ、
-// 縦位置で「最終アウトプットまでの距離」を表す（上=元データ→下=最終、最終は最下段に固定）。各ノードに
-// 🔑主キーを表示。表クリックで関係先＋出力までの経路を強調し、右パネル（パンくず＋上流/下流）で掘り下げる。
+// 関係グラフ（Obsidian 風の力学配置＋階層レイアウト）。#relgraph-data(JSON) を読み、円ノードで各表を描く。
+// 円の大きさ＝つながりの本数、縦位置＝最終アウトプットまでの距離（上=元データ→下=最終）。ホバーで一時強調、
+// クリックで固定し、右パネル（パンくず＋経路＋上流/下流）から掘り下げる。右上ボタンで拡大・レイアウト切替
+// （階層⇔力学）・配色切替（ライト⇔ダーク）・全画面・リセット。
 // 初期化に失敗したら静的SVG（.map-static）へ戻す。※テンプレートリテラルに埋めるためバッククォート/${ は使わない。
 const REPORT_GRAPH_JS = `
 (function(){
@@ -1185,119 +1207,238 @@ const REPORT_GRAPH_JS = `
     wrap.style.display='grid';
 
     var NS='http://www.w3.org/2000/svg';
-    var nodes=data.nodes, links=data.links, byId={};
+    var nodes=data.nodes, byId={};
     nodes.forEach(function(n){ byId[n.id]=n; });
+    var links=(data.links||[]).filter(function(l){ return byId[l.s]&&byId[l.t]; });
     var outAdj={}, inAdj={}; nodes.forEach(function(n){ outAdj[n.id]=[]; inAdj[n.id]=[]; });
-    links.forEach(function(l){ if(byId[l.s]&&byId[l.t]){ outAdj[l.s].push(l); inAdj[l.t].push(l); } });
+    links.forEach(function(l){ outAdj[l.s].push(l); inAdj[l.t].push(l); });
 
-    // 最終アウトプットノード（役割=最終 優先 / 無ければ下流なしで上流最多 / それも無ければ最多次数）
-    var output=null, bestDeg=-1;
+    function roleClass(role){ if(/最終/.test(role)) return 'out'; if(/マスタ/.test(role)) return 'mst'; if(/中間/.test(role)) return 'mid'; if(/元/.test(role)) return 'src'; return 'iso'; }
+    function ekey(l){ return l.s+'>'+l.t+'#'+(l.label||''); }
+    function fit(s,n){ s=String(s); return s.length<=n? s : s.slice(0,n)+'…'; }
+    function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+    /* ---- 最終アウトプット & 階層（経路計算・縦位置のヒントに使用） ---- */
+    var output=null,bestDeg=-1;
     nodes.forEach(function(n){ if(/最終/.test(n.role)){ var d=inAdj[n.id].length; if(d>bestDeg){bestDeg=d;output=n.id;} } });
     if(!output){ bestDeg=-1; nodes.forEach(function(n){ if(outAdj[n.id].length===0){ var d=inAdj[n.id].length; if(d>bestDeg){bestDeg=d;output=n.id;} } }); }
     if(!output){ bestDeg=-1; nodes.forEach(function(n){ if((n.deg||0)>bestDeg){bestDeg=n.deg||0;output=n.id;} }); }
-
-    // layer = 出力までの最長ホップ（出力=0=最下段、上流ほど大）
     var layer={};
-    function dist(id, seen){ if(id===output) return 0; if(layer[id]!=null) return layer[id]; if(seen[id]) return 0; seen[id]=1; var best=0, any=false; outAdj[id].forEach(function(l){ any=true; var d=1+dist(l.t,seen); if(d>best) best=d; }); layer[id]= any?best:1; return layer[id]; }
+    function dist(id,seen){ if(id===output) return 0; if(layer[id]!=null) return layer[id]; if(seen[id]) return 0; seen[id]=1; var best=0,any=false; outAdj[id].forEach(function(l){ any=true; var d=1+dist(l.t,seen); if(d>best) best=d; }); layer[id]=any?best:1; return layer[id]; }
     nodes.forEach(function(n){ dist(n.id,{}); }); layer[output]=0;
-    var maxL=0; nodes.forEach(function(n){ if(layer[n.id]>maxL) maxL=layer[n.id]; });
+    function pathToOutput(id){ var ns=[id],es=[],cur=id,guard=0; while(cur!==output&&guard++<60){ var outs=outAdj[cur]; if(!outs.length) break; var best=outs[0]; for(var i=1;i<outs.length;i++){ if(layer[outs[i].t]<layer[best.t]) best=outs[i]; } es.push(ekey(best)); ns.push(best.t); cur=best.t; } return {ns:ns,es:es}; }
 
-    var BW=152, BH=50, PADT=46, PADB=40;
-    var W=host.clientWidth||820;
-    var H=Math.max(460, Math.min(800, (maxL+1)*150));
-    var usable=H-PADT-PADB;
-    nodes.forEach(function(n,i){ n.ly=PADT+(maxL-layer[n.id])/(maxL||1)*usable; n.x=BW/2+10+((i*151)%Math.max(1,W-BW-20)); n.y=n.ly; n.vx=0; n.vy=0; n.fx=null; n.fy=null; });
-    var outNode=byId[output]; if(outNode){ outNode.fx=W/2; outNode.fy=outNode.ly; }
+    /* ---- ノード半径＝つながりの多さ ---- */
+    var W=1280,H=780,PAD=64,maxLink=1;
+    nodes.forEach(function(n){ n._d=inAdj[n.id].length+outAdj[n.id].length; if(n._d>maxLink) maxLink=n._d; });
+    nodes.forEach(function(n){ n.r=8+18*Math.sqrt(n._d/maxLink); if(roleClass(n.role)==='out') n.r=Math.max(n.r,13); });
 
-    var svg=document.createElementNS(NS,'svg'); svg.setAttribute('viewBox','0 0 '+W+' '+H); host.appendChild(svg);
+    /* ---- 初期配置（元の階層座標を種にして再現性を確保） ---- */
+    var sw=data.w||1848, sh=data.h||634;
+    function jit(i,k){ var v=Math.sin((i+1)*(k===0?12.9898:78.233))*43758.5453; return (v-Math.floor(v))-0.5; }
+    nodes.forEach(function(n,i){
+      n.px=PAD+((n.x||0)/sw)*(W-2*PAD)+jit(i,0)*70;
+      n.py=PAD+((n.y||0)/sh)*(H-2*PAD)+jit(i,1)*70;
+      n.vx=0; n.vy=0; n.fx=null; n.fy=null;
+    });
+    /* 階層レイアウト時の目標座標（＋力学時の緩やかな縦バイアス） */
+    var byLayer={}; nodes.forEach(function(n){ (byLayer[layer[n.id]]=byLayer[layer[n.id]]||[]).push(n); });
+    var maxL=0; Object.keys(byLayer).forEach(function(k){ maxL=Math.max(maxL,+k); });
+    Object.keys(byLayer).forEach(function(k){
+      var L=+k,row=byLayer[k], y=PAD+((maxL-L)/(maxL||1))*(H-2*PAD-40)+20;
+      var gap=Math.min(210,(W-2*PAD)/Math.max(1,row.length)), x0=W/2-gap*(row.length-1)/2;
+      row.forEach(function(n,i){ n.tx=x0+i*gap; n.ty=y; });
+    });
+
+    /* ---- SVG 生成 ---- */
+    var svg=document.createElementNS(NS,'svg');
+    svg.setAttribute('viewBox','0 0 '+W+' '+H);
+    svg.setAttribute('preserveAspectRatio','xMidYMid meet');
+    host.appendChild(svg);
     var defs=document.createElementNS(NS,'defs'); svg.appendChild(defs);
-    var mk={}; links.forEach(function(l){ if(mk[l.color]!=null) return; var id='ar'+Object.keys(mk).length; var m=document.createElementNS(NS,'marker'); m.setAttribute('id',id); m.setAttribute('viewBox','0 0 10 10'); m.setAttribute('refX','9'); m.setAttribute('refY','5'); m.setAttribute('markerWidth','7'); m.setAttribute('markerHeight','7'); m.setAttribute('orient','auto'); var pa=document.createElementNS(NS,'path'); pa.setAttribute('d','M0,0 L10,5 L0,10 z'); pa.setAttribute('fill',l.color); m.appendChild(pa); defs.appendChild(m); mk[l.color]=id; });
     var gZoom=document.createElementNS(NS,'g'); svg.appendChild(gZoom);
     var gE=document.createElementNS(NS,'g'); gZoom.appendChild(gE);
     var gN=document.createElementNS(NS,'g'); gZoom.appendChild(gN);
 
-    function roleClass(role){ if(/最終/.test(role)) return 'out'; if(/マスタ/.test(role)) return 'mst'; if(/中間/.test(role)) return 'mid'; if(/元/.test(role)) return 'src'; return 'iso'; }
-    function ekey(l){ return l.s+'>'+l.t; }
-    function fit(s,n){ s=s||''; return s.length<=n? s : s.slice(0,n)+'…'; }
-    function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    var dark=false;
+    var DARKMAP={'#1F5FAE':'#6BB0FF','#1E9E6A':'#43D39E','#7B5EA7':'#B392F0','#B96A00':'#F2A33C'};
+    function ecol(l){ return dark? (DARKMAP[l.color]||l.color) : l.color; }
+    var markers={};
+    function markerFor(col){
+      if(markers[col]) return markers[col];
+      var id='rgar'+Object.keys(markers).length;
+      var m=document.createElementNS(NS,'marker');
+      m.setAttribute('id',id); m.setAttribute('viewBox','0 0 10 10'); m.setAttribute('refX','9'); m.setAttribute('refY','5');
+      m.setAttribute('markerWidth','6'); m.setAttribute('markerHeight','6'); m.setAttribute('orient','auto');
+      var pa=document.createElementNS(NS,'path'); pa.setAttribute('d','M0,0 L10,5 L0,10 z'); pa.setAttribute('fill',col); pa.setAttribute('fill-opacity','.85');
+      m.appendChild(pa); defs.appendChild(m); markers[col]=id; return id;
+    }
+
+    /* 平行エッジのカーブ量 */
+    var cnt={}; links.forEach(function(l){ var k=[l.s,l.t].sort().join('|'); cnt[k]=(cnt[k]||0)+1; });
+    var seen={}; links.forEach(function(l){ var k=[l.s,l.t].sort().join('|'); var i=(seen[k]=(seen[k]||0)); seen[k]++; l._cv=(i-(cnt[k]-1)/2)*38; });
 
     var edgeEls={};
-    links.forEach(function(l){ var p=document.createElementNS(NS,'path'); p.setAttribute('class','edge'); p.setAttribute('stroke',l.color); p.setAttribute('stroke-width','1.7'); if(l.dashed) p.setAttribute('stroke-dasharray','7 5'); p.setAttribute('marker-end','url(#'+mk[l.color]+')'); gE.appendChild(p); edgeEls[ekey(l)]=p; });
+    links.forEach(function(l){
+      var p=document.createElementNS(NS,'path'); p.setAttribute('class','edge');
+      if(l.dashed) p.setAttribute('stroke-dasharray','6 5');
+      p.setAttribute('stroke-width', Math.min(3.2,1+Math.log10((l.count||1)+1)*1.1));
+      var tt=document.createElementNS(NS,'title'); tt.textContent=byId[l.s].label+' → '+byId[l.t].label+' ／ '+(l.label||'')+(l.qid?(' ／ '+l.qid):'')+(l.count?(' ／ '+l.count+'件'):''); p.appendChild(tt);
+      gE.appendChild(p); edgeEls[ekey(l)]=p;
+    });
+    function paintEdges(){ links.forEach(function(l){ var c=ecol(l), e=edgeEls[ekey(l)]; e.setAttribute('stroke',c); e.setAttribute('marker-end','url(#'+markerFor(c)+')'); }); }
+    paintEdges();
 
-    var drag=null;
-    var nodeEls={};
-    nodes.forEach(function(n){ var g=document.createElementNS(NS,'g'); g.setAttribute('class','node role-'+roleClass(n.role)); g.style.cursor='pointer';
-      var ring=document.createElementNS(NS,'rect'); ring.setAttribute('class','ring'); ring.setAttribute('x',-4); ring.setAttribute('y',-4); ring.setAttribute('width',BW+8); ring.setAttribute('height',BH+8); ring.setAttribute('rx',14); g.appendChild(ring);
-      var r=document.createElementNS(NS,'rect'); r.setAttribute('class','box'); r.setAttribute('width',BW); r.setAttribute('height',BH); r.setAttribute('rx',10); g.appendChild(r);
-      var t1=document.createElementNS(NS,'text'); t1.setAttribute('class','lbl'); t1.setAttribute('x',BW/2); t1.setAttribute('y',20); t1.setAttribute('text-anchor','middle'); t1.textContent=(roleClass(n.role)==='out'?'★ ':'')+fit(n.label,16); g.appendChild(t1);
-      var t2=document.createElementNS(NS,'text'); t2.setAttribute('class','rolesub'); t2.setAttribute('x',BW/2); t2.setAttribute('y',38); t2.setAttribute('text-anchor','middle'); t2.textContent=n.pk? ('🔑 '+fit(n.pk,15)) : n.role.replace(/（.*$/,''); g.appendChild(t2);
-      var tt=document.createElementNS(NS,'title'); tt.textContent=n.label+' ／ '+n.role+(n.pk?(' ／ 🔑'+n.pk):'')+' ／ '+(n.sub||'')+(n.cols&&n.cols.length?(' ／ 列: '+n.cols.slice(0,6).join('・')):''); g.appendChild(tt);
-      g.addEventListener('click',function(ev){ if(moved) return; ev.stopPropagation(); jumpTo(n.id,true); });
-      g.addEventListener('pointerdown',function(ev){ drag=n; n.fx=n.x; n.fy=n.y; moved=false; ev.stopPropagation(); if(svg.setPointerCapture){ try{ svg.setPointerCapture(ev.pointerId); }catch(e){} } });
-      gN.appendChild(g); nodeEls[n.id]=g; });
+    var nodeEls={}, lblEls={};
+    nodes.forEach(function(n){
+      var g=document.createElementNS(NS,'g'); g.setAttribute('class','node role-'+roleClass(n.role));
+      var halo=document.createElementNS(NS,'circle'); halo.setAttribute('class','halo'); halo.setAttribute('r',n.r+5); g.appendChild(halo);
+      var c=document.createElementNS(NS,'circle'); c.setAttribute('class','dot'); c.setAttribute('r',n.r); g.appendChild(c);
+      var t=document.createElementNS(NS,'text'); t.setAttribute('class','lbl'); t.setAttribute('y','13');
+      t.textContent=(roleClass(n.role)==='out'?'★ ':'')+fit(n.label,14); g.appendChild(t);
+      var tt=document.createElementNS(NS,'title'); tt.textContent=n.label+' ／ '+n.role+' ／ '+(n.sub||'')+' ／ つながり '+n._d+'本'; g.appendChild(tt);
+      g.addEventListener('pointerdown',function(ev){ startDrag(n,ev); });
+      g.addEventListener('mouseenter',function(){ hoverId=n.id; paintFocus(); });
+      g.addEventListener('mouseleave',function(){ if(hoverId===n.id){ hoverId=null; paintFocus(); } });
+      g.addEventListener('click',function(ev){ ev.stopPropagation(); if(lastDragDist<5) jumpTo(n.id,true); });
+      gN.appendChild(g); nodeEls[n.id]=g; lblEls[n.id]=t;
+    });
 
+    /* ---- 力学シミュレーション ---- */
+    var REP=20000, SPRING=0.006, GRAV=0.003, FLOW=0.014, DAMP=0.86;
+    var alpha=1, mode='layer', raf=null;
+    function step(){
+      var i,j,a,b,dx,dy,d,d2,f,ux,uy;
+      if(mode==='layer'){
+        var moving=false;
+        for(i=0;i<nodes.length;i++){ a=nodes[i];
+          if(a.fx!=null){ a.px=a.fx; a.py=a.fy; continue; }
+          dx=a.tx-a.px; dy=a.ty-a.py; if(Math.abs(dx)+Math.abs(dy)>0.4) moving=true;
+          a.px+=dx*0.16; a.py+=dy*0.16; }
+        return moving||!!dragN;
+      }
+      if(alpha<0.005 && !dragN) return false;
+      for(i=0;i<nodes.length;i++){ a=nodes[i];
+        for(j=i+1;j<nodes.length;j++){ b=nodes[j];
+          dx=b.px-a.px; dy=b.py-a.py; d2=dx*dx+dy*dy;
+          if(d2<1){ dx=(i-j)||1; dy=1; d2=2; }
+          d=Math.sqrt(d2); ux=dx/d; uy=dy/d;
+          f=REP/d2; if(f>3) f=3;
+          a.vx-=ux*f; a.vy-=uy*f; b.vx+=ux*f; b.vy+=uy*f;
+          var mn=a.r+b.r+40;
+          if(d<mn){ var ps=(mn-d)*0.22; a.vx-=ux*ps; a.vy-=uy*ps; b.vx+=ux*ps; b.vy+=uy*ps; }
+        }
+      }
+      for(i=0;i<links.length;i++){ var l=links[i]; a=byId[l.s]; b=byId[l.t];
+        dx=b.px-a.px; dy=b.py-a.py; d=Math.sqrt(dx*dx+dy*dy)||1; ux=dx/d; uy=dy/d;
+        var s=(d-(a.r+b.r+120))*SPRING;
+        a.vx+=ux*s; a.vy+=uy*s; b.vx-=ux*s; b.vy-=uy*s;
+      }
+      for(i=0;i<nodes.length;i++){ a=nodes[i];
+        a.vx+=(W/2-a.px)*GRAV; a.vy+=(H/2-a.py)*GRAV;
+        a.vy+=(a.ty-a.py)*FLOW;              /* 上流→下流の縦の流れを緩く維持 */
+        if(a.fx!=null){ a.px=a.fx; a.py=a.fy; a.vx=0; a.vy=0; continue; }
+        a.vx*=DAMP; a.vy*=DAMP;
+        var sp=Math.sqrt(a.vx*a.vx+a.vy*a.vy); if(sp>14){ a.vx*=14/sp; a.vy*=14/sp; }
+        a.px+=a.vx*alpha; a.py+=a.vy*alpha;
+        a.px=Math.max(a.r+44,Math.min(W-a.r-44,a.px));
+        a.py=Math.max(a.r+22,Math.min(H-a.r-36,a.py));
+      }
+      alpha*=0.985;
+      return true;
+    }
     function draw(){
-      links.forEach(function(l){ var a=byId[l.s], b=byId[l.t]; var e=edgeEls[ekey(l)]; var down=a.y<=b.y; var y1=a.y+(down?BH/2:-BH/2), y2=b.y+(down?-BH/2:BH/2); var my=(y1+y2)/2; e.setAttribute('d','M'+a.x+','+y1+' C'+a.x+','+my+' '+b.x+','+my+' '+b.x+','+y2); });
-      nodes.forEach(function(n){ nodeEls[n.id].setAttribute('transform','translate('+(n.x-BW/2)+','+(n.y-BH/2)+')'); });
+      for(var i=0;i<links.length;i++){ var l=links[i], a=byId[l.s], b=byId[l.t];
+        var dx=b.px-a.px, dy=b.py-a.py, d=Math.sqrt(dx*dx+dy*dy)||1, ux=dx/d, uy=dy/d;
+        var mx=(a.px+b.px)/2-uy*l._cv, my=(a.py+b.py)/2+ux*l._cv;
+        var sx=a.px+ux*(a.r+2), sy=a.py+uy*(a.r+2);
+        var ex=b.px-ux*(b.r+7), ey=b.py-uy*(b.r+7);
+        edgeEls[ekey(l)].setAttribute('d','M'+sx.toFixed(1)+','+sy.toFixed(1)+' Q'+mx.toFixed(1)+','+my.toFixed(1)+' '+ex.toFixed(1)+','+ey.toFixed(1));
+      }
+      for(i=0;i<nodes.length;i++){ var n=nodes[i]; nodeEls[n.id].setAttribute('transform','translate('+n.px.toFixed(1)+','+n.py.toFixed(1)+')'); }
     }
+    function loop(){ raf=null; var more=step(); draw(); if(more) raf=requestAnimationFrame(loop); }
+    function kick(a){ if(a!=null&&a>alpha) alpha=a; if(!raf) raf=requestAnimationFrame(loop); }
+    for(var w=0;w<60;w++) step();   /* 初期は少し落ち着かせてから描画 */
 
-    var alpha=1, raf=null;
-    function tick(){
-      var i,j,a,b,dx,dy,d2,d,f,ux,uy;
-      for(i=0;i<nodes.length;i++){ for(j=i+1;j<nodes.length;j++){ a=nodes[i]; b=nodes[j]; dx=a.x-b.x; dy=a.y-b.y; d2=dx*dx+dy*dy+0.01; d=Math.sqrt(d2); f=9500/d2; ux=dx/d; uy=dy/d; a.vx+=ux*f; a.vy+=uy*f; b.vx-=ux*f; b.vy-=uy*f; } }
-      links.forEach(function(l){ var a=byId[l.s], b=byId[l.t]; var dx=b.x-a.x, dy=b.y-a.y; var d=Math.sqrt(dx*dx+dy*dy)+0.01; var f=(d-130)*0.012; var ux=dx/d, uy=dy/d; a.vx+=ux*f; a.vy+=uy*f; b.vx-=ux*f; b.vy-=uy*f; });
-      nodes.forEach(function(n){ n.vy+=(n.ly-n.y)*0.09; n.vx+=(W/2-n.x)*0.004; });
-      nodes.forEach(function(n){ if(n.fx!=null){ n.x=n.fx; n.y=n.fy; n.vx=0; n.vy=0; return; } n.vx*=0.85; n.vy*=0.85; n.x+=n.vx*alpha; n.y+=n.vy*alpha; n.x=Math.max(BW/2+6,Math.min(W-BW/2-6,n.x)); n.y=Math.max(BH/2+6,Math.min(H-BH/2-6,n.y)); });
-      draw(); alpha*=0.985; if(alpha>0.02){ raf=requestAnimationFrame(tick); } else { raf=null; }
+    /* ---- ハイライト（ホバー＝一時／クリック＝固定） ---- */
+    var trail=[], selId=null, hoverId=null;
+    function paintFocus(){
+      var act=hoverId||selId;
+      svg.classList.toggle('focused',!!act);
+      var hl={},pN={},pE={},eH={};
+      if(act){ hl[act]=1;
+        inAdj[act].forEach(function(l){ hl[l.s]=1; eH[ekey(l)]=1; });
+        outAdj[act].forEach(function(l){ hl[l.t]=1; eH[ekey(l)]=1; });
+        var p=pathToOutput(act); p.ns.forEach(function(x){ pN[x]=1; }); p.es.forEach(function(x){ pE[x]=1; });
+      }
+      nodes.forEach(function(n){ var c='node role-'+roleClass(n.role);
+        if(n.id===selId) c+=' sel'; if(n.id===hoverId) c+=' hov';
+        if(hl[n.id]) c+=' hl'; if(pN[n.id]) c+=' path';
+        nodeEls[n.id].setAttribute('class',c); });
+      links.forEach(function(l){ var k=ekey(l),c='edge'; if(pE[k]) c+=' epath'; else if(eH[k]) c+=' ehl'; edgeEls[k].setAttribute('class',c); });
     }
-    function reheat(){ alpha=Math.max(alpha,0.5); if(!raf) raf=requestAnimationFrame(tick); }
+    function render(){ paintFocus(); renderPanel(); renderCrumbs(); }
+    function jumpTo(id,push){ if(push){ var ix=trail.indexOf(id); if(ix>=0) trail=trail.slice(0,ix+1); else trail.push(id); } selId=id; render(); }
+    function crumbJump(i){ trail=trail.slice(0,i+1); selId=trail[i]; render(); }
+    function clearFocus(){ trail=[]; selId=null; hoverId=null; render(); }
 
-    function pathToOutput(id){ var ns=[id], es=[], cur=id, guard=0; while(cur!==output && guard++<60){ var outs=outAdj[cur]; if(!outs.length) break; var best=outs[0]; for(var i=1;i<outs.length;i++){ if(layer[outs[i].t]<layer[best.t]) best=outs[i]; } es.push(ekey(best)); ns.push(best.t); cur=best.t; } return {ns:ns,es:es}; }
-
-    var trail=[], selId=null;
-    function jumpTo(id,push){ if(push){ var ix=trail.indexOf(id); if(ix>=0) trail=trail.slice(0,ix+1); else trail.push(id); } selId=id; renderFocus(); }
-    function crumbJump(i){ trail=trail.slice(0,i+1); selId=trail[i]; renderFocus(); }
-    function clearFocus(){ trail=[]; selId=null; renderFocus(); }
-
-    function renderFocus(){
-      svg.classList.toggle('focused',!!selId);
-      var hl={}, pN={}, pE={}, eH={};
-      if(selId){ hl[selId]=1; inAdj[selId].forEach(function(l){ hl[l.s]=1; eH[ekey(l)]=1; }); outAdj[selId].forEach(function(l){ hl[l.t]=1; eH[ekey(l)]=1; }); var p=pathToOutput(selId); p.ns.forEach(function(x){ pN[x]=1; }); p.es.forEach(function(x){ pE[x]=1; }); }
-      nodes.forEach(function(n){ var c='node role-'+roleClass(n.role); if(n.id===selId) c+=' sel'; if(hl[n.id]) c+=' hl'; if(pN[n.id]) c+=' path'; nodeEls[n.id].setAttribute('class',c); });
-      links.forEach(function(l){ var k=ekey(l); var c='edge'; if(pE[k]) c+=' epath'; else if(eH[k]) c+=' ehl'; edgeEls[k].setAttribute('class',c); });
-      renderPanel(); renderCrumbs();
-    }
     function renderCrumbs(){ if(!selId){ crumbsEl.innerHTML='<span class="cur">表を選択</span>'; return; } var h=''; trail.forEach(function(id,i){ if(i>0) h+='<span class="sep">›</span>'; if(i===trail.length-1) h+='<span class="cur">'+esc(byId[id].label)+'</span>'; else h+='<button class="c" data-i="'+i+'">'+esc(byId[id].label)+'</button>'; }); crumbsEl.innerHTML=h; Array.prototype.forEach.call(crumbsEl.querySelectorAll('.c'),function(b){ b.addEventListener('click',function(){ crumbJump(+b.getAttribute('data-i')); }); }); }
-    function chip(l,dir){ var other=dir==='in'?l.s:l.t; var b=document.createElement('button'); b.className='p-chip'; b.innerHTML='<span class="dot" style="background:'+l.color+'"></span><span>'+esc(byId[other].label)+'</span><span class="via">'+esc(l.label||'')+(l.qid?(' '+l.qid):'')+'</span>'; b.addEventListener('click',function(){ jumpTo(other,true); }); return b; }
-    function renderPanel(){ if(!selId){ pbody.innerHTML='<div class="empty">左のグラフで<b>表</b>をクリックすると、関係している表（上流／下流）と<b>最終アウトプットまでの経路</b>がここに出て、そのまま掘り下げられます。</div>'; return; } var n=byId[selId]; pbody.innerHTML=''; var nm=document.createElement('div'); nm.className='pname'; nm.textContent=n.label; pbody.appendChild(nm); var rc=document.createElement('span'); rc.className='rolechip rc-'+roleClass(n.role); rc.textContent=n.role; pbody.appendChild(rc); if(n.pk){ var pm=document.createElement('div'); pm.className='p-meta'; pm.textContent='🔑 主キー / 軸'; pbody.appendChild(pm); var pkb=document.createElement('div'); pkb.className='p-keys'; pkb.textContent=n.pk; pbody.appendChild(pkb); } if(n.sub){ var mt=document.createElement('div'); mt.className='p-meta'; mt.textContent='規模'; pbody.appendChild(mt); var kb=document.createElement('div'); kb.className='p-keys'; kb.textContent=n.sub; pbody.appendChild(kb); }
-      if(n.cols && n.cols.length){ var cm=document.createElement('div'); cm.className='p-meta'; cm.textContent='主な列'; pbody.appendChild(cm); var cb=document.createElement('div'); cb.className='p-cols'; cb.textContent=n.cols.join('・')+((n.colN||n.cols.length)>n.cols.length?(' …他'+(n.colN-n.cols.length)+'列'):''); pbody.appendChild(cb); }
+    function chip(l,dir){ var other=dir==='in'?l.s:l.t; var b=document.createElement('button'); b.className='p-chip'; b.innerHTML='<span class="dot" style="background:'+l.color+'"></span><span>'+esc(byId[other].label)+'</span><span class="via">'+esc(l.label||'')+(l.qid?(' '+l.qid):'')+'</span>'; b.addEventListener('click',function(){ jumpTo(other,true); }); b.addEventListener('mouseenter',function(){ hoverId=other; paintFocus(); }); b.addEventListener('mouseleave',function(){ if(hoverId===other){ hoverId=null; paintFocus(); } }); return b; }
+    function renderPanel(){ if(!selId){ pbody.innerHTML='<div class="empty">左のグラフで<b>表</b>をクリックすると、関係している表（上流／下流）と<b>最終アウトプットまでの経路</b>がここに出て、そのまま掘り下げられます。</div>'; return; } var n=byId[selId]; pbody.innerHTML=''; var nm=document.createElement('div'); nm.className='pname'; nm.textContent=n.label; pbody.appendChild(nm); var rc=document.createElement('span'); rc.className='rolechip rc-'+roleClass(n.role); rc.textContent=n.role; pbody.appendChild(rc); if(n.sub){ var mt=document.createElement('div'); mt.className='p-meta'; mt.textContent='規模 / キー'; pbody.appendChild(mt); var kb=document.createElement('div'); kb.className='p-keys'; kb.textContent=n.sub; pbody.appendChild(kb); }
+      var mt2=document.createElement('div'); mt2.className='p-meta'; mt2.textContent='つながりの数'; pbody.appendChild(mt2); var kb2=document.createElement('div'); kb2.className='p-keys'; kb2.textContent='上流 '+inAdj[selId].length+' ／ 下流 '+outAdj[selId].length+'（計 '+n._d+'）'; pbody.appendChild(kb2);
       var rt=document.createElement('div'); rt.className='p-grp'; rt.innerHTML='<h4>最終アウトプットまでの経路</h4>'; var route=document.createElement('div'); route.className='p-route'; if(roleClass(n.role)==='out'){ route.innerHTML='<span>この表が最終アウトプットです。</span>'; } else { var p=pathToOutput(selId); if(p.ns.length<=1){ route.innerHTML='<span>最終アウトプットへの経路は見つかりませんでした。</span>'; } else { p.ns.forEach(function(id,i){ if(i>0){ var a=document.createElement('span'); a.className='arw'; a.textContent='▸'; route.appendChild(a); } var b=document.createElement('button'); b.className='r'+(id===output?' out':''); b.textContent=byId[id].label; b.addEventListener('click',function(){ jumpTo(id,true); }); route.appendChild(b); }); } } rt.appendChild(route); pbody.appendChild(rt);
       var g1=document.createElement('div'); g1.className='p-grp'; g1.innerHTML='<h4>← この表に入ってくる（上流）</h4>'; var c1=document.createElement('div'); c1.className='p-chips'; if(inAdj[selId].length) inAdj[selId].forEach(function(l){ c1.appendChild(chip(l,'in')); }); else { var e=document.createElement('div'); e.className='p-chip none'; e.textContent='上流なし（起点データ）'; c1.appendChild(e); } g1.appendChild(c1); pbody.appendChild(g1);
       var g2=document.createElement('div'); g2.className='p-grp'; g2.innerHTML='<h4>→ この表から出ていく（下流）</h4>'; var c2=document.createElement('div'); c2.className='p-chips'; if(outAdj[selId].length) outAdj[selId].forEach(function(l){ c2.appendChild(chip(l,'out')); }); else { var e2=document.createElement('div'); e2.className='p-chip none'; e2.textContent='下流なし（最終アウトプット）'; c2.appendChild(e2); } g2.appendChild(c2); pbody.appendChild(g2);
     }
 
-    // zoom / pan / expand / drag
+    /* ---- 座標変換 / ズーム / パン ---- */
     var scale=1,ox=0,oy=0,pan=null,moved=false;
-    function apply(){ gZoom.setAttribute('transform','translate('+ox+','+oy+') scale('+scale+')'); }
-    function zoomAt(cx,cy,f){ var ns=Math.max(0.4,Math.min(4,scale*f)); ox=cx-(cx-ox)*(ns/scale); oy=cy-(cy-oy)*(ns/scale); scale=ns; apply(); }
-    function toG(ev){ var r=svg.getBoundingClientRect(); return {x:((ev.clientX-r.left)*(W/r.width)-ox)/scale, y:((ev.clientY-r.top)*(H/r.height)-oy)/scale}; }
-    svg.addEventListener('pointerdown',function(ev){ if(ev.target.closest && ev.target.closest('.node')) return; pan={x:ev.clientX,y:ev.clientY,ox:ox,oy:oy}; moved=false; });
-    window.addEventListener('pointermove',function(ev){ if(drag){ moved=true; var p=toG(ev); drag.fx=p.x; drag.fy=p.y; reheat(); return; } if(pan){ moved=true; var r=svg.getBoundingClientRect(); ox=pan.ox+(ev.clientX-pan.x)*(W/r.width); oy=pan.oy+(ev.clientY-pan.y)*(H/r.height); apply(); } });
-    window.addEventListener('pointerup',function(){ if(drag){ if(drag.id!==output){ drag.fx=null; drag.fy=null; } drag=null; } pan=null; });
-    svg.addEventListener('click',function(ev){ if(!(ev.target.closest && ev.target.closest('.node')) && !moved) clearFocus(); });
-    svg.addEventListener('wheel',function(ev){ ev.preventDefault(); var r=svg.getBoundingClientRect(); var mx=(ev.clientX-r.left)*(W/r.width), my=(ev.clientY-r.top)*(H/r.height); zoomAt(mx,my, ev.deltaY<0?1.12:0.9); },{passive:false});
+    function apply(){
+      gZoom.setAttribute('transform','translate('+ox+','+oy+') scale('+scale+')');
+      var k=1/scale;
+      nodes.forEach(function(n){ lblEls[n.id].setAttribute('transform','translate(0,'+n.r+') scale('+k+')'); });
+    }
+    function toVB(cx,cy){ var m=svg.getScreenCTM(); if(!m) return {x:0,y:0,k:1}; var p=svg.createSVGPoint(); p.x=cx; p.y=cy; var q=p.matrixTransform(m.inverse()); q.k=m.a||1; return q; }
+    function toWorld(ev){ var v=toVB(ev.clientX,ev.clientY); return {x:(v.x-ox)/scale, y:(v.y-oy)/scale}; }
+    function zoomAt(vx,vy,f){ var ns=Math.max(0.35,Math.min(5,scale*f)); ox=vx-(vx-ox)*(ns/scale); oy=vy-(vy-oy)*(ns/scale); scale=ns; apply(); }
 
+    var dragN=null, lastDragDist=0, dragStart=null;
+    function startDrag(n,ev){
+      ev.stopPropagation();
+      dragN=n; lastDragDist=0; dragStart={x:ev.clientX,y:ev.clientY};
+      var p=toWorld(ev); n._ox=p.x-n.px; n._oy=p.y-n.py; n.fx=n.px; n.fy=n.py;
+      kick(0.4);
+    }
+    window.addEventListener('pointermove',function(ev){
+      if(dragN){ var p=toWorld(ev); dragN.fx=p.x-dragN._ox; dragN.fy=p.y-dragN._oy;
+        lastDragDist=Math.abs(ev.clientX-dragStart.x)+Math.abs(ev.clientY-dragStart.y); kick(0.35); return; }
+      if(pan){ moved=true; var v=toVB(ev.clientX,ev.clientY); ox=pan.ox+(ev.clientX-pan.x)/v.k; oy=pan.oy+(ev.clientY-pan.y)/v.k; apply(); }
+    });
+    window.addEventListener('pointerup',function(){
+      if(dragN){ dragN.fx=null; dragN.fy=null; dragN=null; kick(0.2); }
+      if(pan){ pan=null; svg.classList.remove('panning'); }
+    });
+    svg.addEventListener('pointerdown',function(ev){ if(ev.target.closest&&ev.target.closest('.node')) return; pan={x:ev.clientX,y:ev.clientY,ox:ox,oy:oy}; moved=false; svg.classList.add('panning'); });
+    svg.addEventListener('click',function(ev){ if(!(ev.target.closest&&ev.target.closest('.node'))&&!moved) clearFocus(); });
+    svg.addEventListener('wheel',function(ev){ ev.preventDefault(); var v=toVB(ev.clientX,ev.clientY); zoomAt(v.x,v.y, ev.deltaY<0?1.12:0.9); },{passive:false});
+
+    /* ---- コントロール ---- */
     var bar=document.createElement('div'); bar.className='relgraph-ctrl';
-    function ctl(txt,title,fn){ var b=document.createElement('button'); b.type='button'; b.textContent=txt; b.title=title; b.setAttribute('aria-label',title); b.addEventListener('click',function(ev){ ev.stopPropagation(); fn(); }); bar.appendChild(b); }
+    function ctl(txt,title,fn){ var b=document.createElement('button'); b.type='button'; b.textContent=txt; b.title=title; b.setAttribute('aria-label',title); b.addEventListener('click',function(ev){ ev.stopPropagation(); fn(b); }); bar.appendChild(b); return b; }
     ctl('＋','拡大',function(){ zoomAt(W/2,H/2,1.25); });
     ctl('－','縮小',function(){ zoomAt(W/2,H/2,0.8); });
+    ctl('▤','レイアウト切替（階層 → 力学）',function(b){ mode=(mode==='force'?'layer':'force'); b.textContent=(mode==='force'?'⚛':'▤'); b.title=(mode==='force'?'レイアウト切替（力学 → 階層）':'レイアウト切替（階層 → 力学）'); alpha=1; kick(1); });
+    ctl('☾','配色切替（ライト ⇔ ダーク）',function(b){ dark=!dark; host.classList.toggle('lightmode',!dark); b.textContent=dark?'☀':'☾'; paintEdges(); });
     var expanded=false; function toggleExpand(){ expanded=!expanded; wrap.classList.toggle('expanded',expanded); document.body.classList.toggle('relgraph-noscroll',expanded); }
     ctl('⤢','全画面で見る（Escで戻る）',function(){ toggleExpand(); });
-    ctl('⟳','表示をリセット',function(){ scale=1; ox=0; oy=0; apply(); reheat(); });
+    ctl('⟳','配置と表示をリセット',function(){ scale=1; ox=0; oy=0; apply(); nodes.forEach(function(n,i){ n.px=PAD+((n.x||0)/sw)*(W-2*PAD)+jit(i,0)*70; n.py=PAD+((n.y||0)/sh)*(H-2*PAD)+jit(i,1)*70; n.vx=0; n.vy=0; n.fx=null; n.fy=null; }); alpha=1; kick(1); });
     host.appendChild(bar);
+    var hint=document.createElement('div'); hint.className='relgraph-hint'; hint.textContent='ドラッグで移動 ／ ホイールで拡大縮小 ／ ノードをドラッグして並べ替え';
+    host.appendChild(hint);
     document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ if(expanded) toggleExpand(); else clearFocus(); } });
 
-    apply(); draw(); renderFocus(); reheat();
+    apply(); draw(); render(); kick(1);
   }catch(e){
     var w=document.getElementById('relgraph-wrap'); if(w) w.style.display='none';
     var s=document.querySelector('.map-static'); if(s) s.style.display='';
