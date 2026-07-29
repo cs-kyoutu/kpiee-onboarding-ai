@@ -8,7 +8,8 @@
 //  - ワークブックはプロジェクト単位でキャッシュし、1 質問内の多数のツール呼び出しを高速化する。
 import ExcelJS from 'exceljs';
 import { db } from '../db.js';
-import { materializeBuffer } from '../artifacts.js';
+import { materializeWorkbookSource } from '../artifacts.js';
+import type { ParsedArtifact } from '../preprocess/parse.js';
 
 /** セル値を JSON 化可能なプリミティブへ正規化する（parse.ts と同方針） */
 function normalize(v: ExcelJS.CellValue): string | number | null {
@@ -33,7 +34,28 @@ function formulaOf(cell: ExcelJS.Cell): string | undefined {
   return cell.formula || fv?.formula || fv?.sharedFormula || undefined;
 }
 
-interface ArtifactRow { id: number; original_filename: string; storage_key: string }
+interface ArtifactRow { id: number; original_filename: string; storage_key: string; parsed_key: string | null }
+
+/**
+ * 解析済み構造から ExcelJS ワークブックを組み立てる。
+ * ネイティブ Google シートは原本 xlsx を持たない（チャンク読みで直接解析するため）ので、
+ * セル参照ツール用にここで等価なワークブックを作る。大規模シートで行を絞っている場合は
+ * その絞った範囲が見える（絞り込みは列統計に畳んでいるので、セル単位の質疑対象は残っている行のみ）。
+ */
+function workbookFromParsed(parsed: ParsedArtifact): ExcelJS.Workbook {
+  const wb = new ExcelJS.Workbook();
+  for (const sheet of parsed.sheets) {
+    const ws = wb.addWorksheet(sheet.name);
+    for (const row of sheet.rows) {
+      for (const cell of row.cells) {
+        const target = ws.getCell(cell.ref);
+        if (cell.formula) target.value = { formula: cell.formula, result: cell.value ?? undefined } as ExcelJS.CellValue;
+        else target.value = cell.value;
+      }
+    }
+  }
+  return wb;
+}
 
 /** プロジェクト配下の xlsx ワークブック群（キャッシュ付き）。シート名 → 所属ワークブックも引ける */
 interface ProjectBook {
@@ -47,7 +69,7 @@ const cache = new Map<number, Promise<ProjectBook>>();
 
 async function loadProjectBooks(projectId: number): Promise<ProjectBook> {
   const rows = await db.prepare(
-    `SELECT id, original_filename, storage_key FROM artifacts WHERE project_id = ?`,
+    `SELECT id, original_filename, storage_key, parsed_key FROM artifacts WHERE project_id = ?`,
   ).all(projectId) as ArtifactRow[];
 
   const books: ProjectBook['books'] = new Map();
@@ -55,8 +77,16 @@ async function loadProjectBooks(projectId: number): Promise<ProjectBook> {
 
   for (const r of rows) {
     if (!/\.(xlsx|xlsm)$/i.test(r.original_filename)) continue; // CSV はセル参照対象外
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load((await materializeBuffer(r.storage_key)) as unknown as ArrayBuffer);
+    // 原本 xlsx があればそれを読む（全セル忠実）。ネイティブ Google シートはバイトを持たないので
+    // 解析済み構造から等価なワークブックを組み立てる。
+    const src = await materializeWorkbookSource(r);
+    let wb: ExcelJS.Workbook;
+    if (src.kind === 'buffer') {
+      wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(src.buffer as unknown as ArrayBuffer);
+    } else {
+      wb = workbookFromParsed(src.parsed);
+    }
     books.set(r.id, { filename: r.original_filename, wb });
     wb.eachSheet(ws => { if (!sheetIndex.has(ws.name)) sheetIndex.set(ws.name, r.id); });
   }

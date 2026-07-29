@@ -126,8 +126,9 @@ function gridFromCsv(buffer: Buffer, file: string): RawGrid {
   return { file, name: 'データ', cells, maxR, maxC };
 }
 
-/** ファイル名から拡張子を除いた表示ラベル */
-function fileLabelOf(filename: string): string {
+/** ファイル名から拡張子を除いた表示ラベル。格子を外部で組む経路（Drive チャンク読み）でも
+ *  同じラベルにする必要があるため公開する（Region.id の一部になり、辺の from/to が食い違うと壊れる） */
+export function fileLabelOf(filename: string): string {
   return filename.replace(/\.[^.]+$/, '') || filename;
 }
 
@@ -1118,7 +1119,27 @@ export async function analyzeBuffer(buffer: Buffer): Promise<RelationGraph> {
 // ファイル間・重処理ステップ間で毎回譲ることで、最大連続ブロックを「単一ステップ（exceljs 読込 ~数秒）」に抑える。
 const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve));
 
-export async function analyzeArtifacts(arts: { filename: string; load: () => Promise<Buffer> }[]): Promise<RelationGraph> {
+/**
+ * 関係分析の1ファイル分の入力。
+ * grids が与えられていればそれを使う（Drive ネイティブシートのチャンク読み結果）。
+ * 無ければ load() で原本バイトを取り、従来どおりパースして格子を作る（xlsx / CSV）。
+ */
+export interface RelationInput {
+  filename: string;
+  load?: () => Promise<Buffer>;
+  grids?: RawGrid[];
+  /** シート名 → 実際の総行数。取り込み時に行を絞ったシートの dataRowCount を実際の規模へ補正する */
+  rowTotals?: Record<string, number>;
+  /**
+   * 手コピー指紋の計算を省くシート名。
+   * 手コピー判定は「列の値が長さ・順序込みで完全一致」なので、行を絞ったシートでは成立しない
+   * （絞った標本同士が偶然一致すると誤検出にもなる）。ノードとしての Region 登録は行うので
+   * 関係タブ・関係レポートには raw の出発点として表示される。
+   */
+  skipFingerprintSheets?: string[];
+}
+
+export async function analyzeArtifacts(arts: RelationInput[]): Promise<RelationGraph> {
   const regionsAll: Region[] = [];
   const fEdgesAll: Edge[] = [];
   const keyLinksAll: KeyLink[] = [];
@@ -1126,12 +1147,21 @@ export async function analyzeArtifacts(arts: { filename: string; load: () => Pro
   for (const a of arts) {
     // バッファはここで初めて取得する（Drive 等からの遅延ロード）。前ファイルの原本を保持したまま
     // 全ファイルをメモリに載せないため、ピークを最大単一ファイルに抑える設計を fetch 経路でも保つ。
-    const buffer = await a.load();
-    // このファイルのグリッドはこのブロック内でのみ生存し、次ファイルへ進む際に GC される
-    const grids = await gridsFromArtifact(a.filename, buffer);
+    // 既に格子が渡されている場合（ネイティブシートのチャンク読み）はパースを飛ばす。
+    const grids = a.grids ?? await gridsFromArtifact(a.filename, await a.load!());
     if (grids.length === 0) continue;
     await yieldToEventLoop(); // exceljs 読込（同期CPU重）直後に一度譲る
     const regions = grids.flatMap(detectRegions);
+    // 行を絞ったシートは格子が標本しか持たないので、表の規模を実際の総行数へ補正する。
+    // これをしないと関係レポートに「79行の表」のように出て規模を誤認させる。
+    if (a.rowTotals) {
+      for (const reg of regions) {
+        const total = a.rowTotals[reg.sheet];
+        if (total === undefined) continue;
+        const headerOffset = reg.headerRow === null ? 0 : reg.headerRow - reg.r0 + 1;
+        if (total - headerOffset > reg.dataRowCount) reg.dataRowCount = total - headerOffset;
+      }
+    }
     regionsAll.push(...regions);
     await yieldToEventLoop();
     // 数式参照はファイル内で解決するのでファイル単位で確定（キーの対応も同様にファイル内で閉じる）
@@ -1139,7 +1169,9 @@ export async function analyzeArtifacts(arts: { filename: string; load: () => Pro
     fEdgesAll.push(...lineage.edges);
     keyLinksAll.push(...lineage.keyLinks);
     await yieldToEventLoop();
-    fpsAll.push(...fingerprintColumns(grids, regions)); // 生の値は捨て、指紋だけ持ち越す
+    const skip = new Set(a.skipFingerprintSheets ?? []);
+    const fpRegions = skip.size === 0 ? regions : regions.filter(r => !skip.has(r.sheet));
+    if (fpRegions.length > 0) fpsAll.push(...fingerprintColumns(grids, fpRegions)); // 生の値は捨て、指紋だけ持ち越す
     await yieldToEventLoop(); // 次ファイルへ進む前に譲る
   }
   // 数式で連結済みの列ペア（無向）。コピー推定の重複ノイズ抑制に使う

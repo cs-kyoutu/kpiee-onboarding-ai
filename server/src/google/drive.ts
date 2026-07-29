@@ -10,8 +10,9 @@
 //   GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET … OAuth クライアント
 //   GOOGLE_OAUTH_REFRESH_TOKEN                          … 本人同意で得たトークン（デプロイ時はタスク定義 env に設定）
 import { google } from 'googleapis';
-import ExcelJS from 'exceljs';
 import { loadRefreshToken, saveRefreshToken, clearRefreshToken } from './tokenStore.js';
+import { columnLetter, type ParsedArtifact } from '../preprocess/parse.js';
+import { SheetAccumulator, type AccumCell } from '../preprocess/sheetAccum.js';
 
 /** OAuth クライアント(CLIENT_ID/SECRET)が設定済みか。Web ログインフローの前提 */
 export function oauthClientConfigured(): boolean {
@@ -204,30 +205,20 @@ export async function listFolderChildren(folderId?: string): Promise<{ folders: 
   }
 }
 
-/**
- * ドライブのファイルを取り込み用に取得する。
- * - ネイティブ Google シート → Sheets API で読んで xlsx 化（容量制限・クォータ回避）
- * - アップロード済み xlsx / CSV → Drive API で原本をそのままダウンロード
- */
-export async function fetchDriveFile(urlOrId: string): Promise<{ filename: string; buffer: Buffer }> {
-  const id = extractSpreadsheetId(urlOrId);
-  if (!id) throw new Error('Google ドライブの URL または ID を認識できませんでした');
-  const auth = authClient();
-  const drive = google.drive({ version: 'v3', auth });
-
-  let mimeType = ''; let name = id;
+/** Drive のファイル情報（取り込み経路の分岐に使う） */
+async function driveMeta(id: string): Promise<{ name: string; mimeType: string }> {
+  const drive = google.drive({ version: 'v3', auth: authClient() });
   try {
     const meta = await drive.files.get({ fileId: id, fields: 'name,mimeType', supportsAllDrives: true });
-    mimeType = meta.data.mimeType ?? '';
-    name = meta.data.name ?? id;
+    return { name: meta.data.name ?? id, mimeType: meta.data.mimeType ?? '' };
   } catch (e) {
     throw new Error(`ファイル情報の取得に失敗: ${gErr(e)}`);
   }
+}
 
-  // ネイティブ Google シートは Sheets API 経由（巨大シートも分割取得）
-  if (mimeType === MIME_NATIVE) return readNativeSheet(auth, id, name);
-
-  // アップロード済みファイル（xlsx / CSV 等）は原本をそのままダウンロード
+/** アップロード済み実ファイル（xlsx / CSV 等）の原本をそのままダウンロードする */
+async function downloadRawFile(id: string, name: string, mimeType: string): Promise<{ filename: string; buffer: Buffer }> {
+  const drive = google.drive({ version: 'v3', auth: authClient() });
   try {
     const res = await drive.files.get({ fileId: id, alt: 'media', supportsAllDrives: true }, { responseType: 'arraybuffer' });
     const buffer = Buffer.from(res.data as ArrayBuffer);
@@ -241,77 +232,253 @@ export async function fetchDriveFile(urlOrId: string): Promise<{ filename: strin
 }
 
 /**
- * ネイティブ Google シートを Sheets API で直接読み取り、xlsx の buffer に組み立てる。
- * Drive の export には容量制限があるため、values.batchGet で取得し自前で xlsx 化する。
- * 数式は Google ネイティブ原文（QUERY/IMPORTRANGE 等、__xludf 包装なし）で取得できる。
+ * ドライブのファイルを取り込み用に取得する（原本バイトが要る経路のための互換 API）。
+ * ネイティブ Google シートには使えない（xlsx 化を廃止したため）。ネイティブシートは
+ * fetchDriveArtifact / fetchDriveForRelations を使う。
  */
-async function readNativeSheet(auth: ReturnType<typeof authClient>, id: string, fileName: string): Promise<{ filename: string; buffer: Buffer }> {
-  const sheetsApi = google.sheets({ version: 'v4', auth });
+export async function fetchDriveFile(urlOrId: string): Promise<{ filename: string; buffer: Buffer }> {
+  const id = extractSpreadsheetId(urlOrId);
+  if (!id) throw new Error('Google ドライブの URL または ID を認識できませんでした');
+  const { name, mimeType } = await driveMeta(id);
+  if (mimeType === MIME_NATIVE) {
+    throw new Error('ネイティブ Google シートは原本バイトを持ちません（fetchDriveArtifact を使ってください）');
+  }
+  return downloadRawFile(id, name, mimeType);
+}
+
+// ============================================================
+// ネイティブ Google シートのチャンク読み
+// ============================================================
+// 旧実装は「全シートを1回の batchGet で取得 → ExcelJS でワークブックを組み立て → xlsx へ直列化」
+// していた。同じデータの表現を同時に何벌も抱えるため、実測 78,942 行 × 99 列（780万セル）の
+// シートで 4GB ヒープでも OOM しプロセスが落ちた（rss: batchGet 1,170MB → 組み立て 2,540MB → 直列化で死亡）。
+// xlsx を作っていた理由は「既存の xlsx パーサに合流させる」ためだけで、batchGet の時点で
+// 数式原文と値は既に手元にある。そこで xlsx を経由せず、行チャンクを受け取りながら
+// SheetAccumulator に畳み込む方式に変える。ピークメモリはチャンク1個分に固定され、行数に依存しない。
+// チャンク間に必ずネットワーク待ちが入るのでイベントループも解放され、取り込み中も /healthz が応答する。
+
+/** チャンク1個の目標セル数。列が多いシートは自動的に1チャンクの行数が減る */
+const CELLS_PER_CHUNK = 400_000;
+const MIN_CHUNK_ROWS = 200;
+const MAX_CHUNK_ROWS = 20_000;
+
+interface NativeSheetMeta { title: string; rowCount: number; columnCount: number; merges: string[] }
+
+/** GridRange（0始まり・終端排他）を "A1:C3" 形式へ */
+function mergeRef(m: { startRowIndex?: number | null; endRowIndex?: number | null; startColumnIndex?: number | null; endColumnIndex?: number | null }): string {
+  const r0 = (m.startRowIndex ?? 0) + 1;
+  const c0 = (m.startColumnIndex ?? 0) + 1;
+  const r1 = m.endRowIndex ?? r0;
+  const c1 = m.endColumnIndex ?? c0;
+  return `${columnLetter(c0)}${r0}:${columnLetter(c1)}${r1}`;
+}
+
+/** シート構成（枚数・グリッド寸法・結合セル）を1回で取る */
+async function nativeSheetMetas(id: string): Promise<{ title: string; sheets: NativeSheetMeta[] }> {
+  const sheetsApi = google.sheets({ version: 'v4', auth: authClient() });
   try {
-    const meta = await sheetsApi.spreadsheets.get({
+    const res = await sheetsApi.spreadsheets.get({
       spreadsheetId: id,
-      fields: 'properties.title,sheets.properties(title,gridProperties(rowCount,columnCount))',
+      fields: 'properties.title,sheets(properties(title,gridProperties(rowCount,columnCount)),merges)',
     });
-    const title = meta.data.properties?.title ?? fileName;
-    const wb = new ExcelJS.Workbook();
-
-    // Excel が禁止する文字を含むシート名を整える（Google export と同様）。
-    // 元名→最終名のマップを作り、数式中の参照も合わせて置換して整合を保つ。
-    const origNames = (meta.data.sheets ?? []).map(s => s.properties?.title ?? 'Sheet');
-    const nameMap = new Map<string, string>();
-    const used = new Set<string>();
-    for (const orig of origNames) {
-      let final = orig.replace(/[[\]:\\/*?]/g, '').slice(0, 31) || 'Sheet';
-      if (used.has(final)) { let i = 2; while (used.has(`${final.slice(0, 28)}_${i}`)) i++; final = `${final.slice(0, 28)}_${i}`; }
-      used.add(final);
-      nameMap.set(orig, final);
-    }
-    const changed = [...nameMap.entries()].filter(([o, f]) => o !== f);
-    const rewriteRefs = (formula: string): string => {
-      let f = formula;
-      for (const [orig, fin] of changed) f = f.split(`'${orig}'`).join(`'${fin}'`);
-      return f;
-    };
-
-    // 全シートを2回の batchGet（数式原文 + 計算値）で取得 → API 呼び出しを最小化（分間クォータ対策）
-    const ranges = origNames.map(n => `'${n.replace(/'/g, "''")}'`);
-    const [fRes, vRes] = await Promise.all([
-      sheetsApi.spreadsheets.values.batchGet({ spreadsheetId: id, ranges, valueRenderOption: 'FORMULA', majorDimension: 'ROWS' }),
-      sheetsApi.spreadsheets.values.batchGet({ spreadsheetId: id, ranges, valueRenderOption: 'UNFORMATTED_VALUE', majorDimension: 'ROWS' }),
-    ]);
-    const fRanges = fRes.data.valueRanges ?? [];
-    const vRanges = vRes.data.valueRanges ?? [];
-
-    origNames.forEach((name, si) => {
-      const ws = wb.addWorksheet(nameMap.get(name) ?? name);
-      const fRows = (fRanges[si]?.values ?? []) as unknown[][];
-      const vRows = (vRanges[si]?.values ?? []) as unknown[][];
-      const n = Math.max(fRows.length, vRows.length);
-      for (let r = 0; r < n; r++) {
-        const fRow = fRows[r] ?? [];
-        const vRow = vRows[r] ?? [];
-        const width = Math.max(fRow.length, vRow.length);
-        if (width === 0) continue;
-        const row = ws.getRow(r + 1);
-        for (let c = 0; c < width; c++) {
-          const f = fRow[c];
-          const v = vRow[c];
-          const empty = (f === '' || f === undefined || f === null) && (v === '' || v === undefined || v === null);
-          if (empty) continue;
-          const cell = row.getCell(c + 1);
-          if (typeof f === 'string' && f.startsWith('=')) {
-            cell.value = { formula: rewriteRefs(f.slice(1)), result: (v as string | number | boolean) ?? undefined } as ExcelJS.CellValue;
-          } else {
-            cell.value = (v ?? f) as ExcelJS.CellValue;
-          }
-        }
-      }
-    });
-
-    const buffer = Buffer.from(await wb.xlsx.writeBuffer());
-    const filename = title.toLowerCase().endsWith('.xlsx') ? title : `${title}.xlsx`;
-    return { filename, buffer };
+    const sheets: NativeSheetMeta[] = (res.data.sheets ?? []).map(s => ({
+      title: s.properties?.title ?? 'Sheet',
+      rowCount: s.properties?.gridProperties?.rowCount ?? 0,
+      columnCount: s.properties?.gridProperties?.columnCount ?? 0,
+      merges: (s.merges ?? []).map(mergeRef),
+    }));
+    return { title: res.data.properties?.title ?? id, sheets };
   } catch (e) {
-    throw new Error(`Google スプレッドシート取得に失敗: ${gErr(e)}`);
+    throw new Error(`Google スプレッドシートの構成取得に失敗: ${gErr(e)}`);
   }
 }
+
+/** 一時的な失敗（レート制限・5xx）と判断できるか */
+function isTransient(e: unknown): boolean {
+  const status = (e as { response?: { status?: number } })?.response?.status ?? 0;
+  if (status === 429 || status >= 500) return true;
+  return /rate ?limit|quota|backend ?error|internal error|try again/i.test(gErr(e));
+}
+
+/**
+ * レート制限・一時障害を指数バックオフで再試行する。
+ * Sheets API は「ユーザーあたり毎分 60 リクエスト」の枠があり、1シートの読み取りが
+ * 数十リクエストに分かれる本方式では複数ファイルの連続取り込みで枠に触れる。枠は毎分回復するので
+ * 待って再試行するのが正しい対処（実測でここに当たったため追加）。
+ */
+async function withRetry<T>(label: string, fn: () => Promise<T>, attempts = 6): Promise<T> {
+  let waitMs = 2000;
+  for (let i = 1; ; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (!isTransient(e) || i >= attempts) throw e;
+      console.warn(`[drive] ${label} 一時失敗 (${i}/${attempts})、${waitMs}ms 待って再試行: ${gErr(e).slice(0, 140)}`);
+      await new Promise(r => setTimeout(r, waitMs));
+      waitMs = Math.min(waitMs * 2, 30_000);
+    }
+  }
+}
+
+/** 数式レンダリング結果に数式セルが1つでもあるか */
+function hasAnyFormula(rows: unknown[][]): boolean {
+  for (const row of rows) {
+    for (const v of row) if (typeof v === 'string' && v.startsWith('=')) return true;
+  }
+  return false;
+}
+
+/**
+ * 全シートを行チャンクで読み進め、シートごとに emit() の結果を返す。
+ *
+ * 1チャンクにつき、まず数式原文（FORMULA）を取る。そのチャンクに数式が1つも無ければ
+ * 計算値（UNFORMATTED_VALUE）は取りに行かない — 数式が無いセルの FORMULA レンダリングは
+ * 保存されている値そのものなので、値として使える。これで基幹システム出力のような
+ * 「数式ゼロの大規模シート」ではリクエスト数が半分になる（毎分 60 リクエスト枠の節約）。
+ * 数式が含まれるチャンクだけ計算値も取り、数式セルの結果を正確に持つ。
+ *
+ * 末尾に到達したら（返却行数がチャンク行数未満）そのシートを打ち切る。Sheets API は
+ * 末尾の空行を返さないので、グリッド寸法が実データより大きくても無駄打ちは1回で済む。
+ */
+async function streamNativeSheets(id: string): Promise<StreamResult> {
+  const sheetsApi = google.sheets({ version: 'v4', auth: authClient() });
+  const meta = await nativeSheetMetas(id);
+  const sheets: StreamResult['sheets'] = [];
+  for (const sh of meta.sheets) {
+    const acc = new SheetAccumulator(sh.title);
+    const width = Math.max(1, sh.columnCount);
+    const rowsPerChunk = Math.min(MAX_CHUNK_ROWS, Math.max(MIN_CHUNK_ROWS, Math.floor(CELLS_PER_CHUNK / width)));
+    const endCol = columnLetter(width);
+    const quoted = `'${sh.title.replace(/'/g, "''")}'`;
+    const gridRows = Math.max(1, sh.rowCount);
+    for (let start = 0; start < gridRows; start += rowsPerChunk) {
+      const range = `${quoted}!A${start + 1}:${endCol}${Math.min(gridRows, start + rowsPerChunk)}`;
+      const label = `シート「${sh.title}」${start + 1}行目`;
+      let fRows: unknown[][] = [];
+      let vRows: unknown[][] = [];
+      try {
+        const fRes = await withRetry(`${label} 数式取得`, () => sheetsApi.spreadsheets.values.get({
+          spreadsheetId: id, range, valueRenderOption: 'FORMULA', majorDimension: 'ROWS',
+        }));
+        fRows = (fRes.data.values ?? []) as unknown[][];
+        if (hasAnyFormula(fRows)) {
+          const vRes = await withRetry(`${label} 値取得`, () => sheetsApi.spreadsheets.values.get({
+            spreadsheetId: id, range, valueRenderOption: 'UNFORMATTED_VALUE', majorDimension: 'ROWS',
+          }));
+          vRows = (vRes.data.values ?? []) as unknown[][];
+        } else {
+          vRows = fRows; // 数式が無いチャンクは FORMULA の値がそのまま保存値
+        }
+      } catch (e) {
+        throw new Error(`${label}からの取得に失敗: ${gErr(e)}`);
+      }
+      const got = Math.max(fRows.length, vRows.length);
+      if (got === 0) break;                // これ以降にデータは無い
+      acc.push(start, fRows, vRows);
+      if (got < rowsPerChunk) break;       // 末尾に到達
+    }
+    sheets.push({ acc, meta: sh });
+  }
+  return { title: meta.title, sheets };
+}
+
+/** 1ファイル分のストリーミング読み結果（蓄積器のまま持つ。ここから解析済み構造も格子も導ける） */
+interface StreamResult { title: string; sheets: { acc: SheetAccumulator; meta: NativeSheetMeta }[] }
+
+// ストリーミング読みの結果を短時間だけ保持する。
+// 取り込み → 役割分類 → プレビュー → 関係分析 → 解読 と同じシートを何度も読むが、
+// Sheets API の「毎分 60 リクエスト/ユーザー」枠に対し 1 シートの読み取りが数十リクエストに
+// 分かれるため、素直に読み直すと複数ファイルのバッチで確実に枠を超える（実測で超えた）。
+// 蓄積器のまま保持することで、解析済み構造（取り込み用）と生格子（関係分析用）の両方を
+// 1回の読み取りから導ける。保持するのは絞り込み後の軽い構造（実測 8,213 セル）だけで、
+// 原本をディスクに残さない方針(C3/C4)は変えない。
+const STREAM_CACHE_TTL_MS = 180_000;
+const streamCache = new Map<string, { at: number; value: Promise<StreamResult> }>();
+
+/** ストリーミング読みを1回に纏める。進行中の読み取りがあれば合流する（重複リクエストを防ぐ） */
+function streamOnce(id: string): Promise<StreamResult> {
+  const hit = streamCache.get(id);
+  if (hit && Date.now() - hit.at <= STREAM_CACHE_TTL_MS) return hit.value;
+  const p = streamNativeSheets(id);
+  streamCache.set(id, { at: Date.now(), value: p });
+  p.catch(() => streamCache.delete(id)); // 失敗は残さず、次回やり直せるようにする
+  return p;
+}
+
+/** ストリーミング結果キャッシュを破棄する（アーティファクト削除・再取り込み時に呼ぶ） */
+export function clearStreamCache(): void {
+  streamCache.clear();
+}
+
+/** ネイティブシートの表示名。拡張子 .xlsx を保つ（下流の拡張子判定・テーブル名生成が依存している） */
+function nativeFilename(title: string): string {
+  return title.toLowerCase().endsWith('.xlsx') ? title : `${title}.xlsx`;
+}
+
+/** 取り込み結果。ネイティブシートは解析済み構造、実ファイルは原本バイト */
+export type DriveArtifact =
+  | { filename: string; kind: 'parsed'; parsed: ParsedArtifact }
+  | { filename: string; kind: 'buffer'; buffer: Buffer };
+
+/**
+ * 取り込み用にドライブのファイルを取得する。
+ * - ネイティブ Google シート → チャンク読みで ParsedArtifact を直接作る（xlsx を経由しない）
+ * - アップロード済み xlsx / CSV → 原本バイトを返し、従来のパーサに任せる
+ */
+export async function fetchDriveArtifact(urlOrId: string): Promise<DriveArtifact> {
+  const id = extractSpreadsheetId(urlOrId);
+  if (!id) throw new Error('Google ドライブの URL または ID を認識できませんでした');
+  const { name, mimeType } = await driveMeta(id);
+  if (mimeType !== MIME_NATIVE) {
+    const { filename, buffer } = await downloadRawFile(id, name, mimeType);
+    return { filename, kind: 'buffer', buffer };
+  }
+  const { title, sheets } = await streamOnce(id);
+  return {
+    filename: nativeFilename(title),
+    kind: 'parsed',
+    parsed: { fileType: 'xlsx', sheets: sheets.map(s => s.acc.finishParsed(s.meta.merges)) },
+  };
+}
+
+/** 関係分析用の生格子（relations.ts の RawGrid と構造互換） */
+export interface DriveGrid { file: string; name: string; cells: AccumCell[]; maxR: number; maxC: number }
+
+/** 関係分析用のドライブ取得結果 */
+export type DriveRelationSource =
+  | {
+      kind: 'grids';
+      grids: DriveGrid[];
+      /** シート名 → 実際の総行数。絞り込んだシートの Region.dataRowCount を補正する */
+      rowTotals: Record<string, number>;
+      /** 絞り込んだシート名。手コピー指紋（列の全値一致）は成り立たないので計算を省く */
+      truncatedSheets: string[];
+    }
+  | { kind: 'buffer'; buffer: Buffer };
+
+/**
+ * 関係分析用にドライブから取得する。
+ * ネイティブシートはチャンク読みで格子を作る。絞り込んだシートはヘッダー＋標本＋数式行だけの
+ * 格子になるので、表領域(Region)はノードとして登録されるが手コピー指紋は計算しない。
+ */
+export async function fetchDriveForRelations(urlOrId: string, file: string): Promise<DriveRelationSource> {
+  const id = extractSpreadsheetId(urlOrId);
+  if (!id) throw new Error('Google ドライブの URL または ID を認識できませんでした');
+  const { name, mimeType } = await driveMeta(id);
+  if (mimeType !== MIME_NATIVE) {
+    const { buffer } = await downloadRawFile(id, name, mimeType);
+    return { kind: 'buffer', buffer };
+  }
+  const { sheets } = await streamOnce(id);
+  const grids: DriveGrid[] = [];
+  const rowTotals: Record<string, number> = {};
+  const truncatedSheets: string[] = [];
+  for (const s of sheets) {
+    const g = s.acc.finishGrid();
+    grids.push({ file, name: s.meta.title, cells: g.cells, maxR: g.maxR, maxC: g.maxC });
+    rowTotals[s.meta.title] = g.totalRows;
+    if (g.truncated) truncatedSheets.push(s.meta.title);
+  }
+  return { kind: 'grids', grids, rowTotals, truncatedSheets };
+}
+

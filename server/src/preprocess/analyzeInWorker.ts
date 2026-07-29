@@ -9,7 +9,7 @@
 // 原本バイトの取得（Drive/ディスク I/O）はメイン側で行い、buffer だけをワーカーへ渡す
 // （ワーカーは OAuth トークンや http を持たないため）。解析結果(RelationGraph)は構造化クローンで戻る。
 import { Worker } from 'node:worker_threads';
-import { analyzeArtifacts, type RelationGraph } from './relations.js';
+import { analyzeArtifacts, type RelationGraph, type RawGrid } from './relations.js';
 
 // tsx 実行時は .ts をワーカーで読むため tsx ローダーを渡す。将来 tsc コンパイル運用に切り替わっても
 // 壊れないよう、このモジュール自身の拡張子で分岐する（.ts→tsx/.ts、.js→追加フラグ無し/.js）。
@@ -19,7 +19,16 @@ const EXEC_ARGV = IS_TS ? ['--import', 'tsx'] : [];
 
 type WorkerMsg = { ok: true; graph: RelationGraph } | { ok: false; error: string };
 
-function runInWorker(files: { filename: string; buffer: Buffer }[]): Promise<RelationGraph> {
+/** ワーカーへ渡す1ファイル分。原本バイト経路（xlsx/CSV）と格子経路（ネイティブシート）の両方を運ぶ */
+export interface WorkerFile {
+  filename: string;
+  buffer?: Buffer;
+  grids?: RawGrid[];
+  rowTotals?: Record<string, number>;
+  skipFingerprintSheets?: string[];
+}
+
+function runInWorker(files: WorkerFile[]): Promise<RelationGraph> {
   return new Promise<RelationGraph>((resolve, reject) => {
     const worker = new Worker(WORKER_URL, { workerData: { files }, execArgv: EXEC_ARGV });
     let settled = false;
@@ -37,13 +46,21 @@ function runInWorker(files: { filename: string; buffer: Buffer }[]): Promise<Rel
  * （analyzeArtifacts はステップ間で setImmediate 譲歩するため、最悪でも単一ステップ分のブロックに収まる）。
  */
 export async function analyzeArtifactsInWorker(
-  arts: { filename: string; load: () => Promise<Buffer> }[],
+  arts: { filename: string; load: () => Promise<WorkerFile> }[],
 ): Promise<RelationGraph> {
-  const files = await Promise.all(arts.map(async a => ({ filename: a.filename, buffer: await a.load() })));
+  // 取得はメイン側で1件ずつ直列に行う。並行に取ると全ファイル分の原本・格子が同時にメモリへ載り、
+  // 「ピークは最大単一ファイル」という analyzeArtifacts の設計が崩れる（大規模シートで致命的）。
+  const files: WorkerFile[] = [];
+  for (const a of arts) files.push(await a.load());
   try {
     return await runInWorker(files);
   } catch (e) {
     console.warn(`[relations] ワーカー実行に失敗、イベントループ内実行へフォールバック: ${String(e)}`);
-    return analyzeArtifacts(files.map(f => ({ filename: f.filename, load: async () => f.buffer })));
+    return analyzeArtifacts(files.map(f => ({
+      filename: f.filename,
+      ...(f.grids ? { grids: f.grids } : { load: async () => f.buffer! }),
+      rowTotals: f.rowTotals,
+      skipFingerprintSheets: f.skipFingerprintSheets,
+    })));
   }
 }

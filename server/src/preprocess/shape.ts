@@ -123,7 +123,12 @@ function shapeSheet(sheet: ParsedArtifact['sheets'][number], role: string | unde
     rowCount: sheet.rowCount, columnCount: sheet.columnCount, formulaCellCount: sheet.formulaCellCount,
     merges: sheet.merges, headerRows, formulaPatterns, sampleDataRows,
     omitted: {
-      dataRows: Math.max(0, pureData.length - sampleDataRows.length),
+      // 取り込み時点で行を絞ったシート（大規模な基幹システム出力）では pureData 自体が
+      // 標本しか持たないため、そこから引くと「生略 0 行」に見えてしまう。実際の総行数
+      // (sheet.rowCount。絞っても総計を保つ) を基準にして、AI と検収者が本当の規模を見られるようにする。
+      dataRows: sheet.truncated
+        ? Math.max(0, sheet.truncated.totalRows - headerRows.length - sampleDataRows.length)
+        : Math.max(0, pureData.length - sampleDataRows.length),
       formulaPatterns: Math.max(0, allPatterns.length - formulaPatterns.length),
     },
   };
