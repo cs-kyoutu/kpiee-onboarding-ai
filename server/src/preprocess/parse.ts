@@ -19,13 +19,49 @@ export interface ParsedRow {
   compressedRange?: { from: number; to: number; count: number };
 }
 
+/**
+ * 列ごとの実測統計。大規模シートで行を絞っても「全行を通して」算出する。
+ * 用途: 照合の CREATE TABLE の型推定 / キー・軸推定 / 手修正（数式列への手入力上書き）検出。
+ * 絞った行の情報をここに畳むことで、セルを全量オブジェクト化せずに判定材料を残す。
+ */
+export interface ParsedColumnStat {
+  c: number;                    // 列番号（1始まり）
+  name: string;                 // ヘッダー名（無ければ列記号）
+  filled: number;               // 非空セル数
+  numeric: number;              // 数値セル数
+  text: number;                 // 非数値文字列セル数
+  formulaCells: number;         // 数式セル数
+  manualNumeric: number;        // 数式なしの数値セル数（手修正候補の総数。件数は正確に数える）
+  manualNumericRefs: string[];  // 上記の例。列あたり MANUAL_REF_CAP 件まで（例示用なので上限で足りる）
+  /** 一意値数。UNIQ_CAP に達したら数えるのを止め uniqCapped=true にする
+   *  （全一意値を保持すると 8万行×99列で数百MBになるため。高カーディナリティの判別には上限で足りる） */
+  uniq: number;
+  uniqCapped: boolean;
+}
+
+/** 手修正候補の例示セル参照を列あたり何件まで持つか。件数自体は manualNumeric で正確に数える */
+export const MANUAL_REF_CAP = 200;
+/** 一意値の計数上限（列あたり）。これを超えたら「高カーディナリティ」とだけ分かればよい */
+export const UNIQ_CAP = 1000;
+
+/** 大規模シートで行を絞った場合の情報。絞っていなければ undefined */
+export interface SheetTruncation {
+  totalRows: number;   // 実際の総行数（絞る前）
+  keptRows: number;    // rows に残した行数
+  reason: string;      // 検収者向けの理由（日本語）
+}
+
 export interface ParsedSheet {
   name: string;
-  rowCount: number;
+  rowCount: number;     // 実際の総行数。行を絞った場合も総計を保つ（生略行数の算出に使う）
   columnCount: number;
   formulaCellCount: number;
   merges: string[];     // 結合セル範囲（例: A1:C1）
   rows: ParsedRow[];
+  /** 行を絞った場合のみ設定。未設定＝全行保持（従来どおり） */
+  truncated?: SheetTruncation;
+  /** 列統計（Drive ストリーミング取り込み経路のみ設定。xlsx/CSV 経路は未設定） */
+  columnStats?: ParsedColumnStat[];
 }
 
 export interface ParsedArtifact {
@@ -112,7 +148,7 @@ function xlsxLoadHint(buffer: Buffer): string | null {
 
 /** 同一数式パターンの連続行を圧縮する（数式を持つ行のみ対象、3行以上で代表行＋範囲メタに畳む）。
  *  exceljs 経路・SheetJS 経路の両方で同じ結果になるよう共通化する。 */
-function compressFormulaRows(rows: ParsedRow[]): ParsedRow[] {
+export function compressFormulaRows(rows: ParsedRow[]): ParsedRow[] {
   const compressed: ParsedRow[] = [];
   let i = 0;
   while (i < rows.length) {

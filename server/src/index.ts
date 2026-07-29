@@ -11,11 +11,11 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { db, setProjectStatus, getProjectUsage, initDb } from './db.js';
 import { putObject, removeObject } from './storage.js';
-import { materializeBuffer, materializeParsed, driveKey } from './artifacts.js';
+import { materializeBuffer, materializeParsed, driveKey, isDriveKey, driveIdOf } from './artifacts.js';
 import { parseArtifact, type ParsedArtifact } from './preprocess/parse.js';
 import { classifySheetRoles, type SheetClassification } from './preprocess/classify.js';
-import { analyzeBuffer, analyzeArtifacts, type RelationGraph } from './preprocess/relations.js';
-import { analyzeArtifactsInWorker } from './preprocess/analyzeInWorker.js';
+import { analyzeBuffer, analyzeArtifacts, fileLabelOf, type RelationGraph } from './preprocess/relations.js';
+import { analyzeArtifactsInWorker, type WorkerFile } from './preprocess/analyzeInWorker.js';
 import { artifactSetSignature, getCachedRelationGraph, setCachedRelationGraph, invalidateRelationGraph } from './relationsCache.js';
 import { runDecode, runGenerate, runMatch, tableNameOf } from './pipeline/orchestrator.js';
 import { buildKpieePreview, buildImplReport } from './match/kpieePreview.js';
@@ -25,7 +25,7 @@ import { startAsk as qaStartAsk, isAskPending as qaIsPending, getHistory as qaHi
 import { invalidateBooks } from './qa/tools.js';
 import { aiAvailable, MODEL, estimateCostUsd } from './ai/client.js';
 import {
-  googleConfigured, fetchDriveFile, listSpreadsheets, listFolderChildren, extractSpreadsheetId,
+  googleConfigured, fetchDriveArtifact, fetchDriveForRelations, clearStreamCache, listSpreadsheets, listFolderChildren, extractSpreadsheetId,
   oauthClientConfigured, connectionStatus, buildAuthUrl, exchangeCodeAndStore, disconnect, warmupDrive,
 } from './google/drive.js';
 
@@ -127,11 +127,21 @@ const ARTIFACT_EPHEMERAL = process.env.ARTIFACT_EPHEMERAL === '1';
 
 // ファイル(buffer)を保存し前処理（§6.1）まで行う共通処理。アップロード／Google Sheet 取り込みで共用。
 // driveFileId を渡し、かつ無保存モードのときは原本・パース結果を保存せず Drive 参照のみを記録する。
-async function ingestArtifact(projectId: number, filename: string, buffer: Buffer, kind: string, driveFileId?: string): Promise<number> {
+// source は「原本バイト」か「既に解析済みの構造」のいずれか。
+// ネイティブ Google シートは xlsx 化をやめチャンク読みで直接解析するため原本バイトを持たない
+// （2026-07-28: 78,942 行 × 99 列のシートで xlsx 直列化が OOM しプロセスが落ちた対策）。
+type IngestSource = { kind: 'buffer'; buffer: Buffer } | { kind: 'parsed'; parsed: ParsedArtifact };
+
+async function ingestArtifact(projectId: number, filename: string, source: IngestSource, kind: string, driveFileId?: string): Promise<number> {
   const ephemeral = ARTIFACT_EPHEMERAL && !!driveFileId;
-  // 無保存モードは Drive 参照キー、通常モードはローカル保存キー
-  const rawKey = ephemeral ? driveKey(driveFileId!) : `project-${projectId}/raw/${Date.now()}-${filename}`;
-  if (!ephemeral) putObject(rawKey, buffer);
+  // 原本バイトが無い（ネイティブシート）場合はローカル保存できないので、常に Drive 参照キーにする
+  const canStoreRaw = source.kind === 'buffer';
+  const useDriveKey = (ephemeral || !canStoreRaw) && !!driveFileId;
+  if (!canStoreRaw && !driveFileId) {
+    throw new Error('原本バイトが無いアーティファクトには Drive 参照が必要です');
+  }
+  const rawKey = useDriveKey ? driveKey(driveFileId!) : `project-${projectId}/raw/${Date.now()}-${filename}`;
+  if (!useDriveKey && source.kind === 'buffer') putObject(rawKey, source.buffer);
   const result = await db.prepare(`
     INSERT INTO artifacts (project_id, kind, original_filename, storage_key, parse_status)
     VALUES (?, ?, ?, ?, 'parsing')
@@ -139,7 +149,8 @@ async function ingestArtifact(projectId: number, filename: string, buffer: Buffe
   const artifactId = Number(result.lastInsertRowid);
   try {
     // パース自体は無保存モードでも一度は必要（シート役割の自動分類のため）。結果はメモリに留め永続化しない。
-    const parsed = await parseArtifact(filename, buffer);
+    // ネイティブシートは取得時点で解析が終わっているのでそれをそのまま使う。
+    const parsed = source.kind === 'parsed' ? source.parsed : await parseArtifact(filename, source.buffer);
     let parsedKey: string | null = null;
     if (!ephemeral) {
       parsedKey = `project-${projectId}/parsed/${artifactId}.json`;
@@ -154,9 +165,12 @@ async function ingestArtifact(projectId: number, filename: string, buffer: Buffe
   }
   invalidateBooks(projectId); // Q&A 用ワークブックキャッシュを破棄（新規取込で内容が変わるため）
   await invalidateRelationGraph(projectId); // 関係グラフの保存キャッシュも破棄（アーティファクト変更で構造が変わる）
-  // 取込後にワーカーで関係グラフを先行計算してキャッシュを温める（＝関係/要確認タブを開いた時に即表示）。
-  // 複数ファイルの連続取込は debounce で最後の1回にまとめ、無駄な再計算を避ける。
-  schedulePrecomputeRelations(projectId);
+  // 関係グラフの先行計算はここでは行わない（関係/要確認タブを開いた時に計算する）。
+  // 以前は debounce 1.5 秒で「最後の取込の1回だけ」に纏める意図で呼んでいたが、取込1件が 1.5 秒より
+  // 長いため実際には毎回発火し、そのたびにプロジェクト全ファイルを再取得・再パースしていた。
+  // 実測: 8件バッチで先行計算に累積 135 秒（単発最大 37 秒）を費やし、しかも計算結果は次の取込の
+  // invalidateRelationGraph が即破棄するため一度も使われない。無保存モードでは Drive 再ダウンロードも
+  // 伴い、バッチ全体で数十回に達してレート制限の原因にもなっていた。
   return artifactId;
 }
 
@@ -176,7 +190,7 @@ app.post('/api/projects/:id/artifacts', upload.single('file'), async (req, res) 
     return res.status(400).json({ error: 'kind は input_data / final_output / working_sheet / auto のいずれかです' });
   }
   const filename = Buffer.from(req.file.originalname, 'latin1').toString('utf-8');
-  const artifactId = await ingestArtifact(projectId, filename, req.file.buffer, kind);
+  const artifactId = await ingestArtifact(projectId, filename, { kind: 'buffer', buffer: req.file.buffer }, kind);
   res.status(201).json(await db.prepare(
     `SELECT id, kind, original_filename, parse_status, parse_error, sheet_roles FROM artifacts WHERE id = ?`,
   ).get(artifactId));
@@ -243,7 +257,8 @@ app.get('/api/google/drive', async (req, res) => {
 });
 
 // ---- Google スプレッドシート取り込み（リモート）----
-// シート URL を受け取り、Drive API で xlsx 書き出し→通常のアップロードと同じ前処理に流す。
+// シート URL を受け取る。ネイティブシートは Sheets API を行チャンクで読みながら解析まで済ませ、
+// アップロード済み xlsx / CSV は原本を落として通常のアップロードと同じ前処理に流す。
 app.post('/api/projects/:id/import-sheet', async (req, res) => {
   const projectId = Number(req.params.id);
   const { url, kind } = req.body as { url?: string; kind?: string };
@@ -254,10 +269,13 @@ app.post('/api/projects/:id/import-sheet', async (req, res) => {
     return res.status(400).json({ error: 'Google 連携が未設定です。対象アカウント本人が「Google でログイン」から同意し、Drive 連携を有効化してください' });
   }
   try {
-    const { filename, buffer } = await fetchDriveFile(url);
+    const art = await fetchDriveArtifact(url);
     // 無保存モードのために Drive のファイル ID を控える（storage_key を drive:<id> にして都度取得できるように）
     const driveFileId = extractSpreadsheetId(url) ?? undefined;
-    const artifactId = await ingestArtifact(projectId, filename, buffer, k, driveFileId);
+    const source: IngestSource = art.kind === 'parsed'
+      ? { kind: 'parsed', parsed: art.parsed }
+      : { kind: 'buffer', buffer: art.buffer };
+    const artifactId = await ingestArtifact(projectId, art.filename, source, k, driveFileId);
     res.status(201).json(await db.prepare(
       `SELECT id, kind, original_filename, parse_status, parse_error, sheet_roles FROM artifacts WHERE id = ?`,
     ).get(artifactId));
@@ -292,6 +310,9 @@ app.patch('/api/artifacts/:id/roles', async (req, res) => {
 app.delete('/api/artifacts/:id', async (req, res) => {
   const row = await db.prepare(`SELECT project_id FROM artifacts WHERE id = ?`).get(req.params.id) as { project_id: number } | undefined;
   await db.prepare(`DELETE FROM artifacts WHERE id = ?`).run(req.params.id);
+  // 取消は「やり直す」意思表示なので、Drive ストリーミング読みの短期キャッシュも捨てて
+  // 再取り込みが必ず最新のシートを読むようにする。
+  clearStreamCache();
   if (row) { invalidateBooks(row.project_id); await invalidateRelationGraph(row.project_id); }
   res.json({ ok: true });
 });
@@ -441,17 +462,25 @@ async function loadProjectRelationGraph(projectId: number): Promise<{ graph: Awa
 
 // 取込後の関係グラフ先行計算（debounce 付き）。連続アップロードのたびに再計算しないよう、
 // 最後の取込から一定時間後に1回だけワーカー計算を起動してキャッシュを温める。
-const precomputeTimers = new Map<number, ReturnType<typeof setTimeout>>();
-function schedulePrecomputeRelations(projectId: number): void {
-  const prev = precomputeTimers.get(projectId);
-  if (prev) clearTimeout(prev);
-  const t = setTimeout(() => {
-    precomputeTimers.delete(projectId);
-    // ワーカーで計算しキャッシュへ保存（結果は捨てる）。失敗してもタブ表示時に再計算されるので致命的でない。
-    loadProjectRelationGraph(projectId).catch(e => console.error(`[relations:precompute] project=${projectId}`, e));
-  }, 1500);
-  if (typeof t.unref === 'function') t.unref(); // 保留タイマーがプロセス終了を妨げないように
-  precomputeTimers.set(projectId, t);
+/**
+ * 関係分析ワーカーへ渡す1ファイル分を用意する。
+ * ネイティブ Google シートは原本バイトを持たないので、Drive からチャンク読みして格子を作る。
+ * 行を絞ったシートはヘッダー＋標本＋数式行だけの格子になり、表領域（ノード）としては登録されるが
+ * 手コピー指紋（列の値が長さ・順序込みで完全一致）は成立しないので計算対象から外す。
+ * 実際の総行数は rowTotals で渡し、表の規模が実物どおり表示されるようにする。
+ */
+async function relationSourceOf(r: { storage_key: string; original_filename: string }): Promise<WorkerFile> {
+  if (!isDriveKey(r.storage_key)) {
+    return { filename: r.original_filename, buffer: await materializeBuffer(r.storage_key) };
+  }
+  const src = await fetchDriveForRelations(driveIdOf(r.storage_key), fileLabelOf(r.original_filename));
+  if (src.kind === 'buffer') return { filename: r.original_filename, buffer: src.buffer };
+  return {
+    filename: r.original_filename,
+    grids: src.grids,
+    rowTotals: src.rowTotals,
+    skipFingerprintSheets: src.truncatedSheets,
+  };
 }
 
 async function loadProjectRelationGraphUncached(projectId: number): Promise<{ graph: Awaited<ReturnType<typeof analyzeArtifacts>>; fileCount: number } | null> {
@@ -466,7 +495,7 @@ async function loadProjectRelationGraphUncached(projectId: number): Promise<{ gr
     // キャッシュ無し／古い → 解析して保存。解析はワーカースレッドで行い、CPU 重量級の処理が
     // メインのイベントループ（一覧配信・ヘルスチェック）を止めないようにする。原本の取得は load() でメイン側。
     const full = await analyzeArtifactsInWorker(
-      supported.map(r => ({ filename: r.original_filename, load: () => materializeBuffer(r.storage_key) })),
+      supported.map(r => ({ filename: r.original_filename, load: () => relationSourceOf(r) })),
     );
     // 巨大グラフは保存前に辺を集約（warnings/構造は全件維持）。キャッシュを小さく保ち、
     // 命中時の JSON.parse と後段処理がメインを詰まらせないようにする。

@@ -9,9 +9,47 @@
 //   - どこも参照せず誰からも参照されない:
 //       数式あり → working_sheet（独立した作業シート）
 //       数式なし → unknown（値貼り付け or 手入力。人の確認が必要）
-import type { ParsedArtifact } from './parse.js';
+import type { ParsedArtifact, ParsedSheet } from './parse.js';
 
 export type SheetRole = 'input_data' | 'working_sheet' | 'final_output' | 'unknown';
+
+/** システム出力(raw)と見なす行数の下限。これ以下の「数式なしシート」は値貼り付け・手入力の
+ *  可能性が残るので従来どおり unknown（人の確認）に回す。ここで閾値を切る意味がそれ。 */
+const SYSTEM_EXPORT_MIN_ROWS = 1000;
+/** 「全行に値が入っている列」と見なす充填率。ヘッダー付きの表なら主要列はほぼ全行埋まる */
+const DENSE_COLUMN_RATIO = 0.9;
+/** 上記の密な列が最低いくつあれば「表形式」と見なすか */
+const MIN_DENSE_COLUMNS = 2;
+/** 列統計が無い経路（xlsx/CSV）での代替判定: 行の幅が最大幅のこの割合以上なら「揃っている」 */
+const WIDTH_TOLERANCE = 0.7;
+const UNIFORM_ROW_RATIO = 0.8;
+
+/**
+ * 「数式が1つも無く、大量の行が均一な表形式で並ぶ」＝基幹システム出力（raw）と判定できるか。
+ * 行を絞ったシート（truncated）でも判定できるよう、行数は sheet.rowCount（＝実際の総行数。
+ * 絞っても総計を保つ）を見る。
+ *
+ * 均一性は列統計があればそれで見る（Drive ストリーミング経路。全行から算出済みなので最も確か）。
+ * 無い経路では保持行の幅分布で見るが、空セルは詰められて幅が揺れるため「最大幅の一定割合以上」
+ * という緩い基準にする（幅の完全一致で判定すると実データでほぼ通らない）。
+ */
+function isSystemExportSheet(sheet: ParsedSheet): boolean {
+  if (sheet.formulaCellCount > 0) return false;
+  if (sheet.rowCount < SYSTEM_EXPORT_MIN_ROWS) return false;
+  if (sheet.columnCount < 2) return false;
+
+  if (sheet.columnStats && sheet.columnStats.length > 0) {
+    const dense = sheet.columnStats.filter(c => c.filled >= sheet.rowCount * DENSE_COLUMN_RATIO).length;
+    return dense >= MIN_DENSE_COLUMNS;
+  }
+
+  const body = sheet.rows.filter(r => r.rowNumber > 1); // ヘッダー行を除く
+  if (body.length < 2) return false;
+  const maxWidth = Math.max(...body.map(r => r.cells.length));
+  if (maxWidth < 2) return false;
+  const aligned = body.filter(r => r.cells.length >= maxWidth * WIDTH_TOLERANCE).length;
+  return aligned / body.length >= UNIFORM_ROW_RATIO;
+}
 
 export interface SheetClassification {
   role: SheetRole;
@@ -84,6 +122,14 @@ export function classifySheetRoles(parsed: ParsedArtifact): Record<string, Sheet
     } else if (sheet.formulaCellCount > 0) {
       role = 'working_sheet';
       reason = '他シートとの参照関係はないが数式を含む → 独立した作業シートと推定';
+    } else if (isSystemExportSheet(sheet)) {
+      // CSV 特例（下記）と同じ論理。数式が1つも無く、大量の行が均一な表形式で並ぶシートは
+      // 人が値を貼ったものではなく基幹システムの出力（raw）と見るのが実務上ほぼ確実。
+      // これを unknown にすると SQL の FROM 対象にもテーブル定義書にも載らず、
+      // 必須のインプットデータが毎回手動指定待ちになる。
+      role = 'input_data';
+      reason = `数式が無く ${sheet.rowCount.toLocaleString()} 行 × ${sheet.columnCount} 列の均一な表形式`
+        + ` → 基幹システム出力（インプットデータ）と推定`;
     } else {
       role = 'unknown';
       reason = '数式がなく参照関係もないため自動判定不能（値貼り付け・手入力の可能性）。役割を手動で指定してください';
