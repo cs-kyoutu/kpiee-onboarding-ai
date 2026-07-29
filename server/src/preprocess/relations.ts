@@ -635,10 +635,78 @@ function keyPairArgs(f: string | undefined, maxArg: number): [number, number][] 
 
 const KEY_LINK_CAP = 800;
 
+/**
+ * INDIRECT($I$3&"!"&I$2&$B10) のような「セル値を文字列連結して参照を組み立てる」パターンを、
+ * 実際のセル値を読んで実参照に解決する（月選択式の集計表などで多用される）。
+ * 対応するのは「セル参照 と クォート文字列リテラルを & で連結」した単純な形のみ。
+ * 関数呼び出しや四則演算を含む項は評価せず諦める（安全側 = 従来どおり検出なしに落ちるだけ）。
+ */
+function resolveIndirectRef(formula: string, curFile: string, curSheet: string, cellIndex: CellIndex): Ref | null {
+  const m = /INDIRECT\s*\(/i.exec(formula);
+  if (!m) return null;
+  const start = m.index + m[0].length;
+  let depth = 1, i = start;
+  for (; i < formula.length && depth > 0; i++) {
+    if (formula[i] === '(') depth++;
+    else if (formula[i] === ')') depth--;
+  }
+  if (depth !== 0) return null; // 対応する閉じ括弧が見つからない（壊れた/未対応の形）
+  const arg = formula.slice(start, i - 1);
+
+  // 深度0（クォート外）の '&' で項に分割
+  const terms: string[] = [];
+  let buf = '', inQuote = false, d = 0;
+  for (const ch of arg) {
+    if (ch === '"') inQuote = !inQuote;
+    if (!inQuote) {
+      if (ch === '(') d++;
+      else if (ch === ')') d--;
+      else if (ch === '&' && d === 0) { terms.push(buf); buf = ''; continue; }
+    }
+    buf += ch;
+  }
+  terms.push(buf);
+
+  let out = '';
+  for (const raw of terms) {
+    const t = raw.trim();
+    const lit = /^"(.*)"$/.exec(t);
+    if (lit) { out += lit[1].replace(/""/g, '"'); continue; }
+    const cm = /^(?:'([^']+)'|([A-Za-z0-9_À-鿿぀-ヿ＀-￯]+))?!?\$?([A-Za-z]{1,3})\$?(\d+)$/.exec(t);
+    if (!cm) return null; // セル参照でも文字列リテラルでもない項（式・関数呼び出し）は非対応
+    const sheet = cm[1] ?? cm[2] ?? curSheet;
+    const v = cellIndex.get(curFile, sheet, Number(cm[4]), colNum(cm[3]));
+    if (v === null || v === undefined) return null;
+    out += String(v);
+  }
+
+  // 組み立てた文字列を「シート名!セル(:セル)」として解釈する
+  const rm = /^(?:'([^']+)'|([^!]+))!\$?([A-Za-z]{1,3})\$?(\d+)?(?::\$?([A-Za-z]{1,3})\$?(\d+)?)?$/.exec(out.trim());
+  if (!rm) return null;
+  const sheet = rm[1] ?? rm[2];
+  const c0 = colNum(rm[3]);
+  const c1 = rm[5] ? colNum(rm[5]) : c0;
+  const r0 = rm[4] ? Number(rm[4]) : null;
+  const r1 = rm[6] ? Number(rm[6]) : r0;
+  return { sheet, c0: Math.min(c0, c1), c1: Math.max(c0, c1), r0, r1, argIndex: -1 };
+}
+
+/** (file, sheet, row, col) → セル値。resolveIndirectRef が実値を読むための索引 */
+class CellIndex {
+  private m = new Map<string, RawCell>();
+  constructor(grids: RawGrid[]) {
+    for (const g of grids) for (const c of g.cells) this.m.set(`${g.file} ${g.name} ${c.r} ${c.c}`, c);
+  }
+  get(file: string, sheet: string, r: number, c: number): string | number | null {
+    return this.m.get(`${file} ${sheet} ${r} ${c}`)?.value ?? null;
+  }
+}
+
 export function formulaLineage(grids: RawGrid[], regions: Region[]): { edges: Edge[]; keyLinks: KeyLink[] } {
   const edges = new Map<string, Edge>();
   const keyLinks = new Map<string, KeyLink>();
   const locate = buildLocator(regions); // region をシート単位に索引化（呼び出しごとの全件探索を回避）
+  const cellIndex = new CellIndex(grids);
   // フィルダウンで構造的に同一な数式セルの重複処理を避けるための既処理指紋集合。
   const seen = new Set<string>();
   for (const g of grids) {
@@ -650,7 +718,12 @@ export function formulaLineage(grids: RawGrid[], regions: Region[]): { edges: Ed
       if (seen.has(shapeKey)) continue;
       seen.add(shapeKey);
       const fname = topFunc(cell.formula);
-      const refs = extractRefs(cell.formula, g.name);
+      // INDIRECT(セル&"!"&セル…) は通常抽出だと組立用のセル参照を素通りで拾って自シート内の
+      // 誤った辺を作ってしまうため、その区間を無害化してから通常抽出にかけ、解決できた実参照を足す。
+      const indirectRef = /INDIRECT\s*\(/i.test(cell.formula) ? resolveIndirectRef(cell.formula, g.file, g.name, cellIndex) : null;
+      const formulaForRefs = indirectRef ? cell.formula.replace(/INDIRECT\s*\([^)]*\)/i, 'INDIRECT()') : cell.formula;
+      const refs = extractRefs(formulaForRefs, g.name);
+      if (indirectRef) refs.push(indirectRef);
       for (const ref of refs) {
         const baseType = classifyRef(cell.formula, ref);
         for (let c = ref.c0; c <= ref.c1; c++) {
