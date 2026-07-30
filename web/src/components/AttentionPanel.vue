@@ -27,6 +27,14 @@ const KIND_INFO: Record<string, { label: string; desc: string }> = {
     label: '参照先不明',
     desc: '数式の参照先が表として特定できなかった箇所。取り込み漏れ・外部参照の可能性があります。',
   },
+  declared_not_detected: {
+    label: 'ブック関係が未検出',
+    desc: '「ブック関係」で登録されたつながりの根拠（数式・値の一致）が見つかりませんでした。外部リンク・ピボットテーブル・手作業のいずれかの可能性が高いので、手順を顧客に確認してください。',
+  },
+  declared_direction_conflict: {
+    label: 'ブック関係と逆向き',
+    desc: '「ブック関係」で登録した向きと、検出した値の流れが逆です。どちらが元データかを顧客に確認してください。',
+  },
 }
 const kindLabel = (k: string) => KIND_INFO[k]?.label ?? k
 const kindDesc = (k: string) => KIND_INFO[k]?.desc ?? ''

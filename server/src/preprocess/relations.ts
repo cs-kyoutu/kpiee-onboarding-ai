@@ -476,6 +476,8 @@ export interface Edge {
   from: string; to: string; type: RelType;
   evidence: string; confidence: number;
   needsConfirmation?: boolean;
+  /** 担当者が登録したブック関係と向きが逆（relations/declared.ts が後段で付ける。解析側では立たない） */
+  conflictsDeclared?: boolean;
 }
 
 interface Ref { sheet: string; c0: number; c1: number; r0: number | null; r1: number | null; argIndex: number }
@@ -919,7 +921,13 @@ const unorderedPair = (a: string, b: string) => a < b ? `${a}::${b}` : `${b}::${
 // ============================================================
 // 統合エントリ
 // ============================================================
-export interface RelationWarning { kind: 'mixed_formula_column' | 'unknown_region'; ref: string; message: string }
+// declared_* は解析そのものでなく「担当者が登録したブック関係との突き合わせ」で出る警告
+// （relations/declared.ts が後段で追加する）。解析結果のキャッシュには含まれない。
+export interface RelationWarning {
+  kind: 'mixed_formula_column' | 'unknown_region' | 'declared_direction_conflict' | 'declared_not_detected';
+  ref: string;
+  message: string;
+}
 
 // ============================================================
 // シート内部構造（階層フロー）: 1シートを「入力→計算→出力」の段で要約する。

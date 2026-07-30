@@ -33,6 +33,22 @@ CREATE TABLE IF NOT EXISTS artifacts (
   created_at ${ts}
 );
 
+-- ブック（ファイル）どうしの関係。運用担当者が「この Excel はあの Excel へ集約されている」という
+-- 業務知識を入れる場所で、シート単位の自動解析より上位の入力になる。
+-- 自動検出（値の一致による手コピー推定）は初期案として提示するだけで、確定するのは人。
+-- ファイルの識別は artifact_id（FK）で持つ。関係グラフ側のキーである fileLabelOf(original_filename)
+-- はラベルなのでリネームで壊れる。ラベルへの解決は読み出し時に行う。
+CREATE TABLE IF NOT EXISTS file_relations (
+  id ${pk},
+  project_id INTEGER NOT NULL REFERENCES projects(id),
+  from_artifact_id INTEGER NOT NULL REFERENCES artifacts(id),
+  to_artifact_id INTEGER NOT NULL REFERENCES artifacts(id),
+  rel_type TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  origin TEXT NOT NULL DEFAULT 'manual',
+  created_at ${ts}
+);
+
 CREATE TABLE IF NOT EXISTS analysis_runs (
   id ${pk},
   project_id INTEGER NOT NULL REFERENCES projects(id),

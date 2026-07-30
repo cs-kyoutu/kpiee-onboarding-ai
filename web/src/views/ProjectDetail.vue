@@ -7,6 +7,7 @@ import { useRoute } from 'vue-router'
 import { get, post, type ProjectDetailData } from '../api'
 import UploadPanel from '../components/UploadPanel.vue'
 import ScriptsPanel from '../components/ScriptsPanel.vue'
+import FileRelationsPanel from '../components/FileRelationsPanel.vue'
 import RelationsPanel from '../components/RelationsPanel.vue'
 import AttentionPanel from '../components/AttentionPanel.vue'
 import ReviewPanel from '../components/ReviewPanel.vue'
@@ -19,7 +20,7 @@ const route = useRoute()
 const projectId = Number(route.params.id)
 
 const project = ref<ProjectDetailData | null>(null)
-const tab = ref<'upload' | 'scripts' | 'relations' | 'attention' | 'review' | 'deliverables' | 'match' | 'questions' | 'chat'>('upload')
+const tab = ref<'upload' | 'scripts' | 'filerels' | 'relations' | 'attention' | 'review' | 'deliverables' | 'match' | 'questions' | 'chat'>('upload')
 const error = ref('')
 const refreshKey = ref(0) // 子パネルへ再読込を伝えるためのキー
 
@@ -58,9 +59,16 @@ const guide = computed((): { text: string; action?: { label: string; stage: 'dec
   if (isRunning.value) return { text: 'AI が処理中です。完了すると自動で結果が表示されます。' }
   const s = project.value?.status
   if (s === 'draft' || !s) {
-    return hasArtifacts.value
-      ? { text: '資料が揃いました。まず「② AI解読」を実行しましょう。', action: { label: '② AI解読を実行', stage: 'decode' } }
-      : { text: 'まずは顧客から受け取った Excel / CSV をアップロードしてください。', goTab: 'upload' }
+    if (!hasArtifacts.value) {
+      return { text: 'まずは顧客から受け取った Excel / CSV をアップロードしてください。', goTab: 'upload' }
+    }
+    // 資料が複数あるのにブック関係が未登録なら、先にそれを確定させる。
+    // ファイル間のつながりは自動検出だと推定止まりなので、ここで人の業務知識を入れると
+    // 以降のシート関係の確度と顧客共有レポートの説明がまとめて良くなる。
+    if (fileRelCount.value === 0 && (project.value?.artifacts.length ?? 0) > 1) {
+      return { text: 'まず「📚 ブック関係」でファイルどうしのつながりをご確認ください（自動検出の初期案が出ています）。', goTab: 'filerels' }
+    }
+    return { text: '資料が揃いました。まず「② AI解読」を実行しましょう。', action: { label: '② AI解読を実行', stage: 'decode' } }
   }
   if (s === 'analyzing') return { text: '解読が終わると「③ 検収」に進めます。' }
   if (s === 'reviewing') return { text: '「③ 検収」で読み取り結果を確認・承認したら「④ 成果物生成」へ。', action: { label: '④ 成果物を生成', stage: 'generate' }, goTab: 'review' }
@@ -73,6 +81,32 @@ const guide = computed((): { text: string; action?: { label: string; stage: 'dec
 async function runGuideAction() {
   const a = guide.value.action
   if (a) await startStage(a.stage)
+}
+
+/**
+ * ブック関係を変えると、シート関係の確度補正と顧客共有レポートの内容が変わる。
+ * 関係グラフのキャッシュ自体は変わらない（宣言は読み出し時に重ねる）ので再解析は走らないが、
+ * 既に描画済みのシート関係パネルは古い確度を持っているため作り直させる。
+ */
+function onFileRelsChanged() {
+  refreshKey.value++
+  void loadFileRelCount()
+}
+
+async function onArtifactsChanged() {
+  await load()
+  void loadFileRelCount()
+}
+
+// 確定済みブック関係の件数。0 件なら「次にやること」でブック関係の確認を促す
+const fileRelCount = ref<number | null>(null)
+async function loadFileRelCount() {
+  try {
+    const d = await get<{ declared: unknown[] }>(`/projects/${projectId}/file-relations`)
+    fileRelCount.value = d.declared.length
+  } catch {
+    fileRelCount.value = null // 取得できないときは案内を出さない（誤誘導しない）
+  }
 }
 
 let timer: ReturnType<typeof setInterval> | null = null
@@ -98,6 +132,7 @@ function downloadPackage() {
 
 onMounted(async () => {
   await load()
+  void loadFileRelCount()
   // 実行中ステータスの反映のため 2 秒間隔でポーリングする
   timer = setInterval(async () => {
     const wasRunning = isRunning.value
@@ -145,6 +180,7 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
     <div class="tabs">
       <button :class="{ active: tab === 'upload' }" @click="tab = 'upload'">📥 資料アップロード</button>
       <button :class="{ active: tab === 'scripts' }" @click="tab = 'scripts'">📜 変換スクリプト</button>
+      <button :class="{ active: tab === 'filerels' }" @click="tab = 'filerels'">📚 ブック関係</button>
       <button :class="{ active: tab === 'relations' }" @click="tab = 'relations'">🔗 シート関係</button>
       <button :class="{ active: tab === 'attention' }" @click="tab = 'attention'">⚠ 要確認</button>
       <button :class="{ active: tab === 'review' }" @click="tab = 'review'">✅ 解読検収</button>
@@ -154,9 +190,11 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
       <button :class="{ active: tab === 'chat' }" @click="tab = 'chat'">🤖 AI Q&A</button>
     </div>
 
-    <UploadPanel v-if="tab === 'upload'" :project-id="projectId" :artifacts="project.artifacts" @changed="load" />
+    <!-- ファイルが増減すると初期案・未接続ファイルが変わるので、ブック関係の件数も取り直す -->
+    <UploadPanel v-if="tab === 'upload'" :project-id="projectId" :artifacts="project.artifacts" @changed="onArtifactsChanged" />
     <ScriptsPanel v-else-if="tab === 'scripts'" :project-id="projectId" />
-    <RelationsPanel v-else-if="tab === 'relations'" :project-id="projectId" :artifacts="project.artifacts" @open-attention="tab = 'attention'" />
+    <FileRelationsPanel v-else-if="tab === 'filerels'" :project-id="projectId" @changed="onFileRelsChanged" />
+    <RelationsPanel v-else-if="tab === 'relations'" :key="refreshKey" :project-id="projectId" :artifacts="project.artifacts" @open-attention="tab = 'attention'" />
     <AttentionPanel v-else-if="tab === 'attention'" :project-id="projectId" />
     <ReviewPanel v-else-if="tab === 'review'" :key="refreshKey" :project-id="projectId" :artifacts="project.artifacts" />
     <DeliverablesPanel v-else-if="tab === 'deliverables'" :key="refreshKey" :project-id="projectId" />

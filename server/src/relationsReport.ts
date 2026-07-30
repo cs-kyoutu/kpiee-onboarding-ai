@@ -5,14 +5,42 @@
 //   - 「ご確認いただきたい点」を Q-01.. の番号付きカードとして決定的に自動抽出する（AI 呼び出しなし）
 //   - セルの生値は載せない（列名・数式・行数などの構造情報のみ）— 社外共有しても原本数値が漏れない
 // summaryDoc.ts（Word/md のパッケージ資料）と同じ「保存済み派生結果から決定的に組み立てる」等級。
+//
+// 構成は4節。読み合わせの打ち合わせで上から順に説明していける並びにしてある:
+//   01 受領データ一覧 … どのブックが何で、各シートがどういう役割か（取込時に入力された情報）
+//   02 全体の流れと詳細ロジック … ブック単位の全体フロー図 → 流れの段ごとに分けたシート関係ブロック
+//   03 ご確認いただきたい点 … 自動解析が「推定」に留まる箇所
+//   04 今後の進め方
+// 02 の各ブロックは折りたたみ＋「確認済」チェックを持ち、読み合わせでどこまで説明したかを追える。
 import type { RelationGraph, Region, Edge, RelationWarning, KeyLink } from './preprocess/relations.js';
-import { colLetter } from './preprocess/relations.js';
+import { colLetter, fileLabelOf } from './preprocess/relations.js';
+import {
+  regionIdOf, colNameOf, regionPairKey, filePairKey,
+  groupOf, GROUP_META, GROUP_ORDER, aggregatePairs, dominantGroup, computeLayers,
+  aggregateFilePairs, dominantFileGroup, computeFileLayers,
+  type Group, type PairAgg, type FilePair,
+} from './relations/fileGraph.js';
+import { FILE_REL_LABELS, type DeclaredFileRel, type FileRelAudit } from './relations/declared.js';
+
+/** 取込時のファイル情報。kind は運用担当者が指定した種別で、final_output が「最終アウトプット」の正解になる */
+export interface ReportArtifact {
+  filename: string;
+  kind?: string;
+  /** シート名 → 役割（input_data / working_sheet / final_output / unknown）。未指定なら kind を全シートへ適用 */
+  sheetRoles?: Record<string, string>;
+}
 
 export interface RelationsReportInput {
   customerName: string;
   generatedAt: Date;
   fileCount: number;
   graph: RelationGraph;
+  /** 受領ファイル一覧（取込時の種別指定込み）。無い場合はファイル間の流れから最終アウトプットを推定する */
+  artifacts?: ReportArtifact[];
+  /** 担当者が確定したブック関係。02 の各ブロックに「担当者の説明」として載る */
+  declaredFileRels?: DeclaredFileRel[];
+  /** 宣言と自動検出の突き合わせ。01 の表と 03 の質問になる */
+  fileRelAudit?: FileRelAudit[];
 }
 
 // ============================================================
@@ -21,76 +49,21 @@ export interface RelationsReportInput {
 const esc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-const regionIdOf = (key: string): string => {
-  const i = key.indexOf(':');
-  return i < 0 ? key : key.slice(0, i);
-};
-const colNameOf = (key: string): string => {
-  const i = key.indexOf(':');
-  return i < 0 ? '' : key.slice(i + 1);
-};
-
 const shortText = (s: string, max = 72): string => (s.length <= max ? s : `${s.slice(0, max)}…`);
-
-/** 関係種別を顧客向けの4分類へ畳む */
-type Group = 'ref' | 'agg' | 'move' | 'copy';
-const groupOf = (t: Edge['type']): Group =>
-  t === 'copy' ? 'copy'
-  : (t === 'aggregation' || t === 'filtered-agg') ? 'agg'
-  : (t === 'lookup-join' || t === 'filter-key') ? 'ref'
-  : 'move';
-
-// 4色は色覚多様性チェック（validate_palette）通過済みの組。ラベル併記で色だけに頼らない。
-const GROUP_META: Record<Group, { label: string; color: string; cls: string; dashed: boolean }> = {
-  ref:  { label: '参照・照合（VLOOKUP等）', color: '#1F5FAE', cls: 'lookup', dashed: false },
-  agg:  { label: '集計（SUMIFS・SUM等）',   color: '#1E9E6A', cls: 'agg',    dashed: false },
-  move: { label: '転記・計算（=参照・四則）', color: '#7B5EA7', cls: 'move',   dashed: false },
-  copy: { label: '手コピー推定（要確認）',   color: '#B96A00', cls: 'copy',   dashed: true },
-};
-const GROUP_ORDER: Group[] = ['ref', 'agg', 'move', 'copy'];
 
 const confLabel = (c: number): string => (c >= 0.8 ? '高' : c >= 0.5 ? '中' : '低');
 
-// ============================================================
-// 表領域ペア単位の辺集約・役割・レイヤ計算
-// ============================================================
-interface PairAgg {
-  from: string; to: string;                 // region id
-  counts: Partial<Record<Group, number>>;
-  best: Partial<Record<Group, Edge>>;       // 各分類の代表辺（確信度最大）
-  total: number;
-}
-
-function aggregatePairs(edges: Edge[]): PairAgg[] {
-  const map = new Map<string, PairAgg>();
-  for (const e of edges) {
-    const from = regionIdOf(e.from);
-    const to = regionIdOf(e.to);
-    if (!from || !to || from === to) continue;
-    const k = `${from}\u0000${to}`;
-    let p = map.get(k);
-    if (!p) { p = { from, to, counts: {}, best: {}, total: 0 }; map.set(k, p); }
-    const g = groupOf(e.type);
-    p.counts[g] = (p.counts[g] ?? 0) + 1;
-    p.total++;
-    const cur = p.best[g];
-    if (!cur || (e.confidence ?? 0) > (cur.confidence ?? 0)) p.best[g] = e;
-  }
-  return [...map.values()];
-}
-
-const dominantGroup = (p: PairAgg): Group => {
-  // 数式由来を優先（copy は数式が無い時だけ代表色になる）。
-  // 同数のときは agg を優先: SUMIFS は filtered-agg + filter-key の対で出るため、
-  // 参照(ref)と同数になりがちだが、データフローとしての意味は「集計」の側にある。
-  const order: Group[] = ['agg', 'move', 'ref'];
-  let best: Group | null = null;
-  for (const g of order) {
-    if ((p.counts[g] ?? 0) === 0) continue;
-    if (best === null || (p.counts[g] ?? 0) > (p.counts[best] ?? 0)) best = g;
-  }
-  return best ?? 'copy';
+/** 取込時に指定・確認されたシート役割の表示名（classify.ts / UploadPanel と同じ語彙） */
+const SHEET_ROLE_LABELS: Record<string, string> = {
+  input_data: 'インプット（raw）',
+  working_sheet: '中間シート',
+  final_output: '最終帳票',
+  unknown: '判定不能',
 };
+
+// ============================================================
+// 表領域の役割
+// ============================================================
 
 type Role = 'マスタ（参照元）' | '元データ（明細）' | '中間集計' | '最終アウトプット' | '独立（つながりなし）';
 
@@ -119,21 +92,6 @@ function computeRoles(regions: Region[], pairs: PairAgg[]): Map<string, Role> {
   return roles;
 }
 
-/** 前段からの最長距離でレイヤを割り当てる（循環は反復上限で自然に打ち切り） */
-function computeLayers(ids: string[], pairs: PairAgg[]): Map<string, number> {
-  const layer = new Map<string, number>(ids.map(id => [id, 0]));
-  const cap = Math.min(ids.length + 2, 12); // レポートで見せる深さはこの程度で十分
-  for (let pass = 0; pass < cap; pass++) {
-    let changed = false;
-    for (const p of pairs) {
-      const lf = layer.get(p.from); const lt = layer.get(p.to);
-      if (lf === undefined || lt === undefined) continue;
-      if (lt < lf + 1 && lf + 1 < cap) { layer.set(p.to, lf + 1); changed = true; }
-    }
-    if (!changed) break;
-  }
-  return layer;
-}
 
 // ============================================================
 // 表示ラベル・キー要約
@@ -197,12 +155,56 @@ interface Question {
 function buildQuestions(
   regions: Region[], pairs: PairAgg[], warnings: RelationWarning[],
   labels: Map<string, string>, roles: Map<string, Role>,
+  fileRelAudit: FileRelAudit[], fileNameOf: (label: string) => string,
 ): Question[] {
   const qs: Omit<Question, 'id'>[] = [];
 
-  // (1) 手コピー推定（値一致）: 表ペア単位に1問。列数の多い順に最大3問
+  // (0) 登録いただいたブック関係と自動検出の食い違い。
+  // 人の業務知識と機械の検出がズレている箇所なので、確認の優先度は最も高い。
+  for (const a of fileRelAudit.filter(x => x.verdict === 'direction_conflict')) {
+    qs.push({
+      priority: 'high', kind: 'ブック関係の確認',
+      title: `ご登録は「${fileNameOf(a.fromFile)} → ${fileNameOf(a.toFile)}」ですが、検出した値の流れは逆向きです。`,
+      analysis: `値の一致からは「${fileNameOf(a.toFile)} → ${fileNameOf(a.fromFile)}」の向きで ${a.detectedTotal} 件を検出しました。`,
+      ask: 'どちらが元（正）のデータでしょうか？ 両方向に転記されている場合は、その運用も教えてください。',
+      kpiee: '正しい向きが確定すれば、kpiee 側は元データだけを取り込めば済みます。',
+    });
+  }
+  for (const a of fileRelAudit.filter(x => x.verdict === 'declared_not_detected')) {
+    qs.push({
+      priority: 'high', kind: 'ブック関係の確認',
+      title: `ご登録いただいた「${fileNameOf(a.fromFile)} → ${fileNameOf(a.toFile)}」のつながりを自動検出できませんでした。`,
+      analysis: '数式・値の一致のいずれからも、この2ファイルを結ぶ根拠が見つかりませんでした。'
+        + (a.note ? `（ご登録の説明: ${shortText(a.note, 50)}）` : ''),
+      ask: 'このつながりは、外部リンク・ピボットテーブル・手作業のどれにあたりますか？ 手順を教えてください。',
+      kpiee: '手順が分かれば、その処理を kpiee の取込ロジックとして再現します。',
+    });
+  }
+  const undeclaredPairs = fileRelAudit.filter(x => x.verdict === 'detected_not_declared');
+  if (undeclaredPairs.length > 0) {
+    const names = undeclaredPairs.slice(0, 3)
+      .map(a => `「${fileNameOf(a.fromFile)} → ${fileNameOf(a.toFile)}」`).join('、')
+      + (undeclaredPairs.length > 3 ? ` ほか${undeclaredPairs.length - 3}組` : '');
+    qs.push({
+      priority: 'mid', kind: 'ブック関係の確認',
+      title: `${names} でファイル間のつながりを検出しましたが、関係のご登録がありません。`,
+      analysis: '値の一致から自動検出したものです。意図した運用かどうかが判断できませんでした。',
+      ask: 'これらは実際に使われているつながりでしょうか？ 偶然の一致であればその旨をお知らせください。',
+    });
+  }
+
+  // (1) 手コピー推定（値一致）: 表ペア単位に1問。列数の多い順に最大3問。
+  // ブック関係の登録で裏が取れた（matched）ファイル対は確認不要なので外す — 残った本当の論点だけを並べる。
+  const confirmedFilePairs = new Set(
+    fileRelAudit.filter(a => a.verdict === 'matched').map(a => filePairKey(a.fromFile, a.toFile)),
+  );
+  const fileOfRegion = new Map(regions.map(r => [r.id, r.file]));
+  const isConfirmed = (p: PairAgg): boolean => {
+    const f = fileOfRegion.get(p.from); const t = fileOfRegion.get(p.to);
+    return !!f && !!t && f !== t && confirmedFilePairs.has(filePairKey(f, t));
+  };
   const copyPairs = pairs
-    .filter(p => (p.counts.copy ?? 0) > 0)
+    .filter(p => (p.counts.copy ?? 0) > 0 && !isConfirmed(p))
     .sort((a, b) => (b.counts.copy ?? 0) - (a.counts.copy ?? 0));
   for (const p of copyPairs.slice(0, 3)) {
     const from = labels.get(p.from) ?? p.from;
@@ -318,7 +320,13 @@ interface GLink { s: string; t: string; color: string; dashed: boolean; label: s
 interface GraphData { nodes: GNode[]; links: GLink[]; w: number; h: number }
 interface MapResult { svg: string; omittedNodes: number; omittedEdges: number; data: GraphData }
 
+/**
+ * 表どうしの関係図。02 のセグメントごとに呼ぶので、対象の regions / pairs は絞り込んで渡す。
+ * uid は同一ページに複数の SVG が並ぶための識別子（矢印マーカーの id が衝突すると
+ * 後から定義されたものに全部の矢印が引きずられ、色が全て同じになる）。
+ */
 function buildMap(
+  uid: string,
   regions: Region[], pairs: PairAgg[], labels: Map<string, string>,
   copyQuestionByPair: Map<string, string>, roles: Map<string, Role>,
 ): MapResult | null {
@@ -371,7 +379,7 @@ function buildMap(
   parts.push(`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="表どうしの関係マップ">`);
   parts.push('<defs>');
   for (const g of GROUP_ORDER) {
-    parts.push(`<marker id="arr-${g}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${GROUP_META[g].color}"/></marker>`);
+    parts.push(`<marker id="arr-${uid}-${g}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${GROUP_META[g].color}"/></marker>`);
   }
   parts.push('</defs>');
 
@@ -414,7 +422,7 @@ function buildMap(
       }
     }
     const dash = meta.dashed ? ' stroke-dasharray="7 5"' : '';
-    parts.push(`<path d="${d}" fill="none" stroke="${meta.color}" stroke-width="2"${dash} marker-end="url(#arr-${g})"/>`);
+    parts.push(`<path d="${d}" fill="none" stroke="${meta.color}" stroke-width="2"${dash} marker-end="url(#arr-${uid}-${g})"/>`);
     const qid = g === 'copy' ? copyQuestionByPair.get(`${p.from}\u0000${p.to}`) : undefined;
     if (showEdgeLabels || qid) {
       const text = qid ? `手コピー推定 → ${qid}` : `${meta.label.split('（')[0]}${p.total > 1 ? ` ×${p.total}` : ''}`;
@@ -469,13 +477,6 @@ function buildMap(
   };
 }
 
-// ============================================================
-// キー関係図（ER 図）— キー列でつながる表どうしを、主キー/軸と 1:N で示す
-// ============================================================
-const ER = { W: 226, HEAD: 30, ROW: 22, GX: 148, GY: 26, PAD: 16, CAP: 20 };
-
-interface ErResult { svg: string; omitted: number }
-
 /** 表示幅に収まるよう全角=1・半角=0.6 で概算して省略する（SVGは自動折返ししないため） */
 function fitText(s: string, maxPx: number, fontPx: number): string {
   let acc = 0, out = '';
@@ -487,137 +488,381 @@ function fitText(s: string, maxPx: number, fontPx: number): string {
   return out;
 }
 
-function buildErDiagram(regions: Region[], keyLinks: KeyLink[], labels: Map<string, string>): ErResult | null {
-  const links = [...keyLinks].sort((a, b) => b.count - a.count);
-  if (links.length === 0) return null; // 表間のキー対応が無ければ ER は描かない（内訳/詳細でキーは確認可能）
-  const byId = new Map(regions.map(r => [r.id, r]));
-  const withKeys = regions.filter(r => (r.keys?.keys?.length ?? 0) > 0);
-  const linkedIds = new Set(links.flatMap(l => [regionIdOf(l.a), regionIdOf(l.b)]));
-  const pool = withKeys.filter(r => linkedIds.has(r.id));
-  if (pool.length === 0) return null;
-  const show = [...pool].sort((a, b) => {
-    const pa = a.keys!.keys.some(k => k.role === 'primary') ? 1 : 0;
-    const pb = b.keys!.keys.some(k => k.role === 'primary') ? 1 : 0;
-    return pb - pa;
-  }).slice(0, ER.CAP);
-  const showIds = new Set(show.map(r => r.id));
-  const shownLinks = links.filter(l => showIds.has(regionIdOf(l.a)) && showIds.has(regionIdOf(l.b)));
-  if (shownLinks.length === 0) return null;
+// ============================================================
+// ファイル単位の集約 — 「受領データ一覧」と「全体の流れ図」の土台
+//
+// 表領域（region）単位の関係は細かすぎて全体像が見えないため、ファイル単位へ畳んだ層を別に持つ。
+// 顧客が最初に知りたいのは「どのファイルが何のために要るのか」「最終アウトプットはどれか」なので、
+// レポートはこのファイル層から入り、シート／キーの話は後段へ回す。
+// ============================================================
+type FileRole = '元データ' | '中間ファイル' | '最終アウトプット' | '独立';
 
-  // データは b（参照される側=マスタ）→ a（数式側）へ流れる。b を左の層へ置く（最長経路レイヤ）。
-  const layer = new Map<string, number>(show.map(r => [r.id, 0]));
-  const lp = shownLinks.map(l => ({ from: regionIdOf(l.b), to: regionIdOf(l.a) }));
-  const cap = Math.min(show.length + 2, 12);
-  for (let pass = 0; pass < cap; pass++) {
-    let changed = false;
-    for (const e of lp) {
-      const lf = layer.get(e.from), lt = layer.get(e.to);
-      if (lf === undefined || lt === undefined) continue;
-      if (lt < lf + 1 && lf + 1 < cap) { layer.set(e.to, lf + 1); changed = true; }
-    }
-    if (!changed) break;
-  }
-  const byLayer = new Map<number, Region[]>();
-  for (const r of show) {
-    const l = layer.get(r.id) ?? 0;
-    if (!byLayer.has(l)) byLayer.set(l, []);
-    byLayer.get(l)!.push(r);
-  }
-  const layersSorted = [...byLayer.entries()].sort((a, b) => a[0] - b[0]);
+interface FileStat {
+  label: string;                    // region.file と同じラベル（拡張子なし）
+  filename: string;                 // 表示用の元ファイル名（判明していれば拡張子込み）
+  declaredOutput: boolean;          // 取込時に「最終帳票」として指定されたか
+  sheets: string[];
+  regionCount: number;
+  rowTotal: number;
+  inFiles: Map<string, number>;     // 上流ファイル → 関係本数
+  outFiles: Map<string, number>;    // 下流ファイル
+  role: FileRole;
+}
 
-  // 交差を減らす簡易バリセンタ: 前の層の接続相手の平均位置で並べ替える
-  const partners = new Map<string, string[]>();
-  for (const l of shownLinks) {
-    const a = regionIdOf(l.a), b = regionIdOf(l.b);
-    (partners.get(a) ?? partners.set(a, []).get(a)!).push(b);
-    (partners.get(b) ?? partners.set(b, []).get(b)!).push(a);
-  }
-  const orderIndex = new Map<string, number>();
-  for (const [l, regs] of layersSorted) {
-    if (l > 0) {
-      const score = (id: string) => {
-        const ps = (partners.get(id) ?? []).filter(p => (layer.get(p) ?? 0) < l && orderIndex.has(p));
-        return ps.length === 0 ? 1e9 : ps.reduce((s, p) => s + orderIndex.get(p)!, 0) / ps.length;
+
+function buildFileStats(
+  regions: Region[], filePairs: FilePair[], artifacts: ReportArtifact[],
+): Map<string, FileStat> {
+  // 取込時の種別指定をラベル（拡張子なし）で引けるようにする
+  const declared = new Map<string, ReportArtifact>();
+  for (const a of artifacts) declared.set(fileLabelOf(a.filename), a);
+
+  const stats = new Map<string, FileStat>();
+  const ensure = (label: string): FileStat => {
+    let s = stats.get(label);
+    if (!s) {
+      const a = declared.get(label);
+      s = {
+        label, filename: a?.filename ?? label,
+        declaredOutput: a?.kind === 'final_output',
+        sheets: [], regionCount: 0, rowTotal: 0,
+        inFiles: new Map(), outFiles: new Map(), role: '独立',
       };
-      regs.sort((x, y) => score(x.id) - score(y.id));
+      stats.set(label, s);
     }
-    regs.forEach((r, i) => orderIndex.set(r.id, i));
+    return s;
+  };
+  for (const r of regions) {
+    const s = ensure(r.file);
+    s.regionCount++;
+    s.rowTotal += r.dataRowCount;
+    if (!s.sheets.includes(r.sheet)) s.sheets.push(r.sheet);
   }
+  // region を持たないファイル（解析対象外・空）も一覧には出す
+  for (const a of artifacts) ensure(fileLabelOf(a.filename));
 
-  const connectedKeys = new Set(shownLinks.flatMap(l => [l.a, l.b]));
-  const keysOf = (r: Region) => {
-    const conn = r.keys!.keys.filter(k => connectedKeys.has(`${r.id}:${k.column}`));
-    return conn.length > 0 ? conn : r.keys!.keys;
-  };
-  // カーディナリティ: 列の値が全行一意なら 1（マスタ側）、繰り返しがあれば N（明細側）
-  const cardOf = (key: string): string => {
-    const st = byId.get(regionIdOf(key))?.columns.find(c => c.name === colNameOf(key))?.stats;
-    return st ? (st.uniq === st.filled ? '1' : 'N') : '';
-  };
+  for (const p of filePairs) {
+    const f = stats.get(p.from); const t = stats.get(p.to);
+    if (!f || !t) continue;
+    f.outFiles.set(p.to, (f.outFiles.get(p.to) ?? 0) + p.total);
+    t.inFiles.set(p.from, (t.inFiles.get(p.from) ?? 0) + p.total);
+  }
+  return stats;
+}
 
-  const heightOf = (r: Region) => ER.HEAD + keysOf(r).length * ER.ROW + 6;
-  const layerHeights = layersSorted.map(([, regs]) => regs.reduce((s, r) => s + heightOf(r), 0) + (regs.length - 1) * ER.GY);
-  const maxLayerH = Math.max(...layerHeights, 90);
+/**
+ * 最終アウトプット（顧客が最後に見ている帳票）を決める。
+ * 取込時の指定を最優先にする — これは業務知識であって自動推定で当てるものではない。
+ * 指定が無い場合だけ「他ファイルから流れ込むが、どこへも流れ出さないファイル」を推定として使う。
+ */
+function resolveOutputFiles(stats: Map<string, FileStat>): { labels: string[]; declared: boolean } {
+  const declared = [...stats.values()].filter(s => s.declaredOutput).map(s => s.label);
+  if (declared.length > 0) return { labels: declared, declared: true };
+  const sinks = [...stats.values()]
+    .filter(s => s.inFiles.size > 0 && s.outFiles.size === 0)
+    .sort((a, b) => b.inFiles.size - a.inFiles.size)
+    .map(s => s.label);
+  return { labels: sinks, declared: false };
+}
 
-  interface Node { id: string; x: number; y: number; w: number; h: number; title: string; rows: { cy: number; mark: string; label: string; primary: boolean; connected: boolean }[] }
-  const nodes: Node[] = [];
-  const rowY = new Map<string, number>();
-  layersSorted.forEach(([l, regs], li) => {
-    let y = ER.PAD + (maxLayerH - layerHeights[li]) / 2;
-    for (const r of regs) {
-      const ks = keysOf(r);
-      const rows = ks.map((k, i) => {
-        const cy = y + ER.HEAD + i * ER.ROW + ER.ROW / 2;
-        const key = `${r.id}:${k.column}`;
-        rowY.set(key, cy);
-        return { cy, mark: k.role === 'primary' ? '🔑' : '◇', label: k.column, primary: k.role === 'primary', connected: connectedKeys.has(key) };
-      });
-      nodes.push({ id: r.id, x: ER.PAD + l * (ER.W + ER.GX), y, w: ER.W, h: heightOf(r), title: labels.get(r.id) ?? r.sheet, rows });
-      y += heightOf(r) + ER.GY;
-    }
-  });
-  const nodeById = new Map(nodes.map(n => [n.id, n]));
+/** ファイル役割を確定する（最終アウトプットの指定を反映してから流入・流出で分類） */
+function assignFileRoles(stats: Map<string, FileStat>, outputs: Set<string>): void {
+  for (const s of stats.values()) {
+    if (outputs.has(s.label)) { s.role = '最終アウトプット'; continue; }
+    if (s.inFiles.size === 0 && s.outFiles.size === 0) { s.role = '独立'; continue; }
+    s.role = s.inFiles.size === 0 ? '元データ' : s.outFiles.size > 0 ? '中間ファイル' : '最終アウトプット';
+  }
+}
 
-  // 同じキー列ペアは関数違いでも1本にまとめる
-  const pairMap = new Map<string, { a: string; b: string }>();
-  for (const l of shownLinks) pairMap.set(`${l.a}|${l.b}`, { a: l.a, b: l.b });
+// ---- 全体の流れ図（ファイル単位）----
+const FF = { W: 232, H: 74, GX: 116, GY: 26, PAD: 30, HEAD: 26 };
+const FILE_ROLE_STYLE: Record<FileRole, { fill: string; stroke: string; text: string }> = {
+  '元データ':        { fill: '#E9F7F0', stroke: '#1E9E6A', text: '#0E2A47' },
+  '中間ファイル':    { fill: '#F1EDF8', stroke: '#7B5EA7', text: '#0E2A47' },
+  '最終アウトプット': { fill: '#FBEFEF', stroke: '#C24141', text: '#0E2A47' },
+  '独立':            { fill: '#F2F5F8', stroke: '#9AA7B4', text: '#3A4552' },
+};
 
-  const maxLayer = Math.max(0, ...layersSorted.map(([l]) => l));
-  const width = ER.PAD * 2 + (maxLayer + 1) * (ER.W + ER.GX) - ER.GX;
-  const height = ER.PAD * 2 + maxLayerH;
+/**
+ * 受領ファイル → 最終アウトプットの流れ図。
+ * 最終アウトプットは指定どおり必ず最右列に置く（自動検出でつながりが出なかった場合も、
+ * 「つながり未検出」として最右に置いたまま示す — 図から消すと確認したい論点が消えてしまう）。
+ */
+function buildFileFlow(stats: Map<string, FileStat>, filePairs: FilePair[], outputs: Set<string>): string | null {
+  const all = [...stats.values()];
+  if (all.length === 0) return null;
+
+  // 最長経路でレイヤを決め、最終アウトプットは最右へ寄せる（02 のセグメント分割と同じ計算）
+  const layer = computeFileLayers(all.map(s => s.label), filePairs, outputs);
+
+  const byLayer = new Map<number, FileStat[]>();
+  for (const s of all) {
+    const l = layer.get(s.label) ?? 0;
+    if (!byLayer.has(l)) byLayer.set(l, []);
+    byLayer.get(l)!.push(s);
+  }
+  const layerNos = [...byLayer.keys()].sort((a, b) => a - b);
+  const layerIndex = new Map<number, number>(layerNos.map((l, i) => [l, i]));
+  for (const arr of byLayer.values()) arr.sort((a, b) => b.rowTotal - a.rowTotal);
+
+  const pos = new Map<string, { x: number; y: number }>();
+  let maxRows = 0;
+  for (const l of layerNos) {
+    const arr = byLayer.get(l)!;
+    maxRows = Math.max(maxRows, arr.length);
+    arr.forEach((s, i) => {
+      pos.set(s.label, { x: FF.PAD + layerIndex.get(l)! * (FF.W + FF.GX), y: FF.PAD + FF.HEAD + i * (FF.H + FF.GY) });
+    });
+  }
+  const width = FF.PAD * 2 + layerNos.length * FF.W + Math.max(0, layerNos.length - 1) * FF.GX;
+  const height = FF.PAD * 2 + FF.HEAD + maxRows * FF.H + Math.max(0, maxRows - 1) * FF.GY;
 
   const parts: string[] = [];
-  parts.push(`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="キー関係図（ER）">`);
-  // コネクタ（エルボ）＋端点のカーディナリティ
-  for (const p of pairMap.values()) {
-    const na = nodeById.get(regionIdOf(p.a))!, nb = nodeById.get(regionIdOf(p.b))!;
-    const ya = rowY.get(p.a) ?? na.y + ER.HEAD / 2;
-    const yb = rowY.get(p.b) ?? nb.y + ER.HEAD / 2;
-    const bLeft = nb.x + nb.w <= na.x;
-    const x1 = bLeft ? nb.x + nb.w : nb.x;
-    const x2 = bLeft ? na.x : na.x + na.w;
-    const midX = (x1 + x2) / 2;
-    parts.push(`<path d="M${x1},${yb} L${midX},${yb} L${midX},${ya} L${x2},${ya}" fill="none" stroke="#7A8794" stroke-width="1.6"/>`);
-    const bc = cardOf(p.b), ac = cardOf(p.a);
-    if (bc) parts.push(`<text x="${x1 + (bLeft ? 6 : -6)}" y="${yb - 5}" font-size="11" font-weight="700" fill="#1F5FAE" text-anchor="${bLeft ? 'start' : 'end'}">${bc}</text>`);
-    if (ac) parts.push(`<text x="${x2 + (bLeft ? -6 : 6)}" y="${ya - 5}" font-size="11" font-weight="700" fill="#B96A00" text-anchor="${bLeft ? 'end' : 'start'}">${ac}</text>`);
+  parts.push(`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="受領ファイルから最終アウトプットまでの流れ">`);
+  parts.push('<defs>');
+  for (const g of GROUP_ORDER) {
+    parts.push(`<marker id="ff-${g}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${GROUP_META[g].color}"/></marker>`);
   }
-  // エンティティ（表）ボックス
-  for (const n of nodes) {
-    parts.push(`<g>`);
-    parts.push(`<rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="9" fill="#fff" stroke="#C9D4E0" stroke-width="1.2"/>`);
-    parts.push(`<rect x="${n.x}" y="${n.y}" width="${n.w}" height="${ER.HEAD}" rx="9" fill="#0E2A47"/>`);
-    parts.push(`<rect x="${n.x}" y="${n.y + ER.HEAD - 9}" width="${n.w}" height="9" fill="#0E2A47"/>`);
-    parts.push(`<text x="${n.x + 12}" y="${n.y + 20}" font-size="12.5" font-weight="700" fill="#fff">${esc(fitText(n.title, n.w - 24, 12.5))}</text>`);
-    n.rows.forEach((row) => {
-      const ty = row.cy + 4;
-      if (row.connected) parts.push(`<rect x="${n.x + 3}" y="${row.cy - ER.ROW / 2}" width="${n.w - 6}" height="${ER.ROW}" fill="#EDF4FC"/>`);
-      parts.push(`<text x="${n.x + 12}" y="${ty}" font-size="11.5" fill="${row.primary ? '#0E2A47' : '#4b5563'}" font-weight="${row.primary ? 700 : 400}">${row.mark} ${esc(fitText(row.label, n.w - 34, 11.5))}</text>`);
-    });
-    parts.push(`</g>`);
+  parts.push('</defs>');
+
+  // 列見出し（元データ／中間／最終アウトプット）
+  for (const l of layerNos) {
+    const i = layerIndex.get(l)!;
+    const arr = byLayer.get(l)!;
+    const isOut = arr.every(s => outputs.has(s.label)) && arr.length > 0;
+    const cap2 = isOut ? '最終アウトプット' : i === 0 ? '受領データ（起点）' : '経由ファイル';
+    parts.push(`<text x="${FF.PAD + i * (FF.W + FF.GX)}" y="${FF.PAD + 8}" font-size="11" font-weight="700" fill="${isOut ? '#C24141' : '#7A8794'}" letter-spacing=".04em">${esc(cap2)}</text>`);
+  }
+
+  // 辺
+  for (const p of filePairs) {
+    const a = pos.get(p.from); const b = pos.get(p.to);
+    if (!a || !b) continue;
+    const meta = GROUP_META[dominantFileGroup(p)];
+    const g = dominantFileGroup(p);
+    let d: string;
+    if (Math.abs(a.x - b.x) < 1) {
+      const x = a.x + FF.W / 2;
+      d = a.y < b.y ? `M${x},${a.y + FF.H} L${x},${b.y}` : `M${x},${a.y} L${x},${b.y + FF.H}`;
+    } else {
+      const rev = a.x > b.x;
+      const src = rev ? b : a; const dst = rev ? a : b;
+      const x1 = src.x + FF.W, y1 = src.y + FF.H / 2, x2 = dst.x, y2 = dst.y + FF.H / 2;
+      d = rev
+        ? `M${x2},${y2} C${x2 - 50},${y2} ${x1 + 50},${y1} ${x1},${y1}`
+        : `M${x1},${y1} C${x1 + 50},${y1} ${x2 - 50},${y2} ${x2},${y2}`;
+    }
+    const dash = meta.dashed ? ' stroke-dasharray="7 5"' : '';
+    parts.push(`<path d="${d}" fill="none" stroke="${meta.color}" stroke-width="2"${dash} marker-end="url(#ff-${g})"/>`);
+  }
+
+  // ノード（ファイル）
+  for (const s of all) {
+    const p = pos.get(s.label)!;
+    const st = FILE_ROLE_STYLE[s.role];
+    const isOut = outputs.has(s.label);
+    const sub = `${s.sheets.length}シート ／ ${s.regionCount}表 ／ ${s.rowTotal.toLocaleString()}行`;
+    const orphanOut = isOut && s.inFiles.size === 0;
+    parts.push(`<g>` +
+      `<rect x="${p.x}" y="${p.y}" width="${FF.W}" height="${FF.H}" rx="11" fill="${st.fill}" stroke="${st.stroke}" stroke-width="${isOut ? 2 : 1.3}"${orphanOut ? ' stroke-dasharray="6 4"' : ''}/>` +
+      `<text x="${p.x + 14}" y="${p.y + 25}" font-size="12" font-weight="700" fill="${st.text}">${esc(fitText(s.filename, FF.W - 28, 12))}</text>` +
+      `<text x="${p.x + 14}" y="${p.y + 44}" font-size="10" fill="#7A8794">${esc(sub)}</text>` +
+      `<text x="${p.x + 14}" y="${p.y + 62}" font-size="10" font-weight="700" fill="${st.stroke}">${esc(s.role)}${orphanOut ? '（つながり未検出）' : ''}</text>` +
+      `</g>`);
   }
   parts.push('</svg>');
-  return { svg: parts.join('\n'), omitted: withKeys.length - show.length };
+  return parts.join('\n');
+}
+
+// ============================================================
+// 02 のセグメント — 全体の流れを「段」で切り、段ごとにシート関係を見せる
+//
+// 全表の関係を1枚にすると読めないので、読み合わせで説明できる単位へ機械的に切る。
+// 切り方は決定論的（AI 呼び出しなし）で、ファイルのレイヤ＝流れの段をそのまま使う:
+//   取込（元データ）▶ 集計（中間） / 集計 ▶ 最終アウトプット …
+// 1ファイル案件のようにファイルの段が付かない場合は、表(region)のレイヤでサブ分割する。
+// これが無いと 02 が1個の巨大ブロックになり、分けた意味が無くなる。
+// ============================================================
+
+/** 段のラベル。左端=元データ、右端=最終アウトプット、間は中間 */
+function layerLabel(layer: number, maxLayer: number, hasOutputs: boolean): string {
+  if (layer === 0) return '元データ（受領データ）';
+  if (hasOutputs && layer >= maxLayer) return '最終アウトプット';
+  return '中間ファイル';
+}
+
+interface Segment {
+  no: string;          // 「2-1」等
+  title: string;       // 「元データ ▶ 中間ファイル」
+  pairs: PairAgg[];    // この段に属する表ペア
+  fileNote: string;    // 「仕訳データ.xlsx、マスタ.xlsx → 月次報告.xlsx」
+  declared: DeclaredFileRel[]; // この段に関係する登録済みブック関係（担当者の説明を出す）
+  mainFrom: string;    // 主な送り元ファイル名（見出しが重なったときの区別用）
+}
+
+/** ファイル段が付かない（＝実質1段）ときに、表のレイヤでサブ分割するかの閾値 */
+const SUBSPLIT_MIN_PAIRS = 8;
+
+function buildSegments(
+  regions: Region[], pairs: PairAgg[], fileStats: Map<string, FileStat>,
+  filePairs: FilePair[], outputs: Set<string>, declared: DeclaredFileRel[],
+): Segment[] {
+  if (pairs.length === 0) return [];
+  const fileOfRegion = new Map(regions.map(r => [r.id, r.file]));
+  const fileLabels = [...fileStats.keys()];
+  const fileLayer = computeFileLayers(fileLabels, filePairs, outputs);
+  const filenameOf = (label: string) => fileStats.get(label)?.filename ?? label;
+
+  // 送り元ファイルの段でグループ化する。ファイル内で完結する流れも、そのファイルの段に属する。
+  const byLayer = new Map<number, PairAgg[]>();
+  for (const p of pairs) {
+    const fromFile = fileOfRegion.get(p.from);
+    const l = fromFile !== undefined ? (fileLayer.get(fromFile) ?? 0) : 0;
+    if (!byLayer.has(l)) byLayer.set(l, []);
+    byLayer.get(l)!.push(p);
+  }
+
+  // ファイルの段が実質1つしか無い（1ファイル案件など）のに関係が多い場合は、
+  // 表のレイヤで切り直す。「入力 ▶ 計算 ▶ 帳票」がシート内で完結している形に対応する。
+  if (byLayer.size <= 1 && pairs.length > SUBSPLIT_MIN_PAIRS) {
+    const regionLayer = computeLayers(regions.map(r => r.id), pairs);
+    byLayer.clear();
+    for (const p of pairs) {
+      const l = regionLayer.get(p.from) ?? 0;
+      if (!byLayer.has(l)) byLayer.set(l, []);
+      byLayer.get(l)!.push(p);
+    }
+  }
+
+  const layerNos = [...byLayer.keys()].sort((a, b) => a - b);
+  const maxLayer = Math.max(...layerNos, ...fileLabels.map(l => fileLayer.get(l) ?? 0));
+  const hasOutputs = outputs.size > 0;
+  const declaredByPair = new Map(declared.map(d => [filePairKey(d.fromFile, d.toFile), d]));
+
+  const segs = layerNos.map((l, i) => {
+    const segPairs = byLayer.get(l)!.sort((a, b) => b.total - a.total);
+    // この段に登場するファイルの組み合わせ（見出し下の「対象」行）
+    const froms = new Set<string>(); const tos = new Set<string>();
+    const segDeclared = new Map<string, DeclaredFileRel>();
+    let crossFile = 0;
+    for (const p of segPairs) {
+      const f = fileOfRegion.get(p.from); const t = fileOfRegion.get(p.to);
+      if (f) froms.add(f);
+      if (t) tos.add(t);
+      if (f && t && f !== t) {
+        crossFile++;
+        const d = declaredByPair.get(filePairKey(f, t));
+        if (d) segDeclared.set(filePairKey(f, t), d);
+      }
+    }
+    const fromNames = [...froms].map(filenameOf);
+    const toNames = [...tos].filter(t => !froms.has(t) || tos.size === 1).map(filenameOf);
+    const fileNote = toNames.length > 0 && fromNames.join() !== toNames.join()
+      ? `${shortText(fromNames.join('、'), 60)} → ${shortText(toNames.join('、'), 40)}`
+      : shortText(fromNames.join('、'), 90);
+
+    // 見出しは「送り元の段 ▶ 送り先の段」。送り先の段は実際の宛先ファイルから決める
+    // （layerNos の次の要素で決めると、最後の段が「最終アウトプット ▶ 最終アウトプット」になる）。
+    const dstLayers = [...tos].map(t => fileLayer.get(t) ?? l);
+    const dstLayer = dstLayers.length > 0 ? Math.max(...dstLayers) : l;
+    const srcName = layerLabel(l, maxLayer, hasOutputs);
+    const title = crossFile === 0 || dstLayer === l
+      ? `${srcName}（ブック内のロジック）`
+      : `${srcName} ▶ ${layerLabel(dstLayer, maxLayer, hasOutputs)}`;
+    // 主な送り元ファイル（見出しが重なったときの区別に使う）
+    const mainFrom = fromNames.length > 0 ? fromNames[0] : '';
+    return {
+      no: `2-${i + 1}`,
+      title,
+      pairs: segPairs,
+      fileNote,
+      declared: [...segDeclared.values()],
+      mainFrom,
+    };
+  });
+
+  // 「中間ファイル ▶ 最終アウトプット」が複数段に出ることがある（中間が2段以上あるとき）。
+  // 折りたたんだ状態では見出ししか見えないので、重複したら主な送り元ファイル名で区別する。
+  const titleCount = new Map<string, number>();
+  for (const s of segs) titleCount.set(s.title, (titleCount.get(s.title) ?? 0) + 1);
+  for (const s of segs) {
+    if ((titleCount.get(s.title) ?? 0) > 1 && s.mainFrom) {
+      s.title = `${s.title}：${shortText(s.mainFrom, 28)}`;
+    }
+  }
+  return segs;
+}
+
+// ---- セグメントの「詳細ロジック」表 ----
+// 「どのシートのどの列が、どのキーで、どんな処理で、どこへつながっているか」を1行1関係で出す。
+// キーは keyLinks（VLOOKUP/SUMIFS 等の引数位置から抽出した表間キー対応）から引く。
+const DETAIL_ROWS_PER_SEGMENT = 14;
+
+/** 表ペア → 「照合に使っているキー列」の要約。無ければ空文字 */
+function buildPairKeyIndex(keyLinks: KeyLink[]): Map<string, string> {
+  const byPair = new Map<string, Set<string>>();
+  const add = (fromRegion: string, toRegion: string, text: string) => {
+    for (const k of [regionPairKey(fromRegion, toRegion), regionPairKey(toRegion, fromRegion)]) {
+      let s = byPair.get(k);
+      if (!s) { s = new Set(); byPair.set(k, s); }
+      s.add(text);
+    }
+  };
+  for (const l of keyLinks) {
+    const ra = regionIdOf(l.a); const rb = regionIdOf(l.b);
+    if (!ra || !rb || ra === rb) continue;
+    const ca = colNameOf(l.a); const cb = colNameOf(l.b);
+    add(ra, rb, ca === cb ? ca : `${ca} ＝ ${cb}`);
+  }
+  const out = new Map<string, string>();
+  for (const [k, s] of byPair) out.set(k, [...s].slice(0, 3).join('／'));
+  return out;
+}
+
+/** 数式のトップレベル関数名（VLOOKUP / SUMIFS 等）。処理の説明に添える */
+function topFuncOf(formula: string): string {
+  return (formula.match(/^\s*=?\s*([A-Za-z]+)\s*\(/) ?? [])[1]?.toUpperCase() ?? '';
+}
+
+/**
+ * 「SUMIFS で集計」「VLOOKUP で引き当て」のような処理の一言。
+ * 種別バッジと同じ文字になるだけなら空を返す（同じ語が2行並ぶのを避ける）。
+ */
+function processLabel(g: Group, evidence: string): string {
+  if (g === 'copy') return '数式なし（値の一致から手作業コピーと推定）';
+  const fn = topFuncOf(evidence);
+  return fn ? `${fn} で${GROUP_META[g].label.split('（')[0]}` : '';
+}
+
+function buildDetailRows(
+  seg: Segment, labels: Map<string, string>, pairKeys: Map<string, string>,
+  copyQuestionByPair: Map<string, string>,
+): { rows: string[]; omitted: number } {
+  const endLabel = (key: string) => {
+    const rid = regionIdOf(key); const col = colNameOf(key);
+    const l = labels.get(rid) ?? rid;
+    return col ? `${esc(l)}<span class="dl-col">${esc(col)}</span>` : esc(l);
+  };
+  const rows: string[] = [];
+  const shown = seg.pairs.slice(0, DETAIL_ROWS_PER_SEGMENT);
+  for (const p of shown) {
+    const g = dominantGroup(p);
+    const e = p.best[g] ?? p.best.copy;
+    if (!e) continue;
+    const key = pairKeys.get(regionPairKey(p.from, p.to)) ?? '';
+    const qid = g === 'copy' ? copyQuestionByPair.get(regionPairKey(p.from, p.to)) : undefined;
+    const proc = processLabel(g, e.evidence);
+    rows.push(`<tr>` +
+      `<td>${endLabel(e.from)}</td>` +
+      `<td class="mono">${key ? esc(key) : '<span class="dl-none">（キー未特定）</span>'}</td>` +
+      `<td><span class="rel ${GROUP_META[g].cls}">${esc(GROUP_META[g].label.split('（')[0])}</span>` +
+        `${proc ? `<div class="dl-proc">${esc(proc)}</div>` : ''}</td>` +
+      `<td>${endLabel(e.to)}</td>` +
+      `<td class="mono dl-ev">${esc(shortText(e.evidence, 54))}</td>` +
+      `<td class="conf"><b>${confLabel(e.confidence ?? 0)}</b>${qid ? `<div class="dl-q">${qid}</div>` : ''}</td>` +
+      `</tr>`);
+  }
+  return { rows, omitted: seg.pairs.length - shown.length };
 }
 
 // ============================================================
@@ -632,116 +877,209 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   const labels = buildLabels(regions);
   const pairs = aggregatePairs(edges);
   const roles = computeRoles(regions, pairs);
-  const questions = buildQuestions(regions, pairs, warnings, labels, roles);
+
+  // ---- ファイル層（一覧・流れ図の土台）と最終アウトプットの確定 ----
+  const filePairs = aggregateFilePairs(regions, pairs);
+  const fileStats = buildFileStats(regions, filePairs, input.artifacts ?? []);
+  const { labels: outputLabels, declared: outputsDeclared } = resolveOutputFiles(fileStats);
+  const outputFiles = new Set(outputLabels);
+  assignFileRoles(fileStats, outputFiles);
+  const fileOfRegion = new Map(regions.map(r => [r.id, r.file]));
+  const fileNameOf = (label: string) => fileStats.get(label)?.filename ?? label;
+  // 最終アウトプットファイル内で「他ファイルへ流れ出さない表」を最終アウトプット表として扱う。
+  // これがないと、ファイル内で相互参照している帳票シートが一律「中間集計」に見えてしまう。
+  const outRegionIds = new Set<string>();
+  for (const r of regions) {
+    if (!outputFiles.has(r.file)) continue;
+    if (roles.get(r.id) === '独立（つながりなし）') continue;
+    const flowsOut = pairs.some(p => p.from === r.id && fileOfRegion.get(p.to) !== r.file);
+    if (!flowsOut) { outRegionIds.add(r.id); roles.set(r.id, '最終アウトプット'); }
+  }
+
+  const declaredRels = input.declaredFileRels ?? [];
+  const audit = input.fileRelAudit ?? [];
+  const questions = buildQuestions(regions, pairs, warnings, labels, roles, audit, fileNameOf);
   const copyQuestionByPair = new Map<string, string>();
   for (const q of questions) if (q.refPair) copyQuestionByPair.set(q.refPair, q.id);
-  const map = buildMap(regions, pairs, labels, copyQuestionByPair, roles);
-  const er = buildErDiagram(regions, graph.keyLinks ?? [], labels);
+  const fileFlow = buildFileFlow(fileStats, filePairs, outputFiles);
+
+  // ---- 02 のセグメント（流れの段ごとのシート関係ブロック）----
+  const segments = buildSegments(regions, pairs, fileStats, filePairs, outputFiles, declaredRels);
+  const pairKeys = buildPairKeyIndex(graph.keyLinks ?? []);
+  const regionById = new Map(regions.map(r => [r.id, r]));
+  const segBlocks = segments.map((seg, i) => {
+    // この段に登場する表だけで関係図を描く（全表を1枚にすると読めない）
+    const segRegionIds = new Set<string>();
+    for (const p of seg.pairs) { segRegionIds.add(p.from); segRegionIds.add(p.to); }
+    const segRegions = [...segRegionIds].map(id => regionById.get(id)).filter((r): r is Region => !!r);
+    const map = buildMap(`s${i + 1}`, segRegions, seg.pairs, labels, copyQuestionByPair, roles);
+    const { rows, omitted } = buildDetailRows(seg, labels, pairKeys, copyQuestionByPair);
+    const notes = seg.declared.filter(d => d.note.trim() !== '');
+    return `
+    <details class="seg" id="seg-${i + 1}"${i === 0 ? ' open' : ''}>
+      <summary>
+        <span class="seg-no">${seg.no}</span>
+        <span class="seg-title">${esc(seg.title)}</span>
+        <span class="seg-meta">${seg.pairs.length} 関係</span>
+        <label class="seg-done" title="説明が済んだらチェックしてください">
+          <input type="checkbox" class="doneck" data-seg="${i + 1}"><span>確認済</span>
+        </label>
+      </summary>
+      <div class="seg-body">
+        <p class="seg-files">対象：<b>${esc(seg.fileNote)}</b></p>
+        ${notes.length > 0 ? `<div class="seg-note"><span class="mark">📝</span><div>${notes.map(d =>
+          `<p><b>${esc(fileNameOf(d.fromFile))} → ${esc(fileNameOf(d.toFile))}（${esc(FILE_REL_LABELS[d.relType])}）</b>：${esc(d.note)}</p>`).join('')}</div></div>` : ''}
+        ${map ? `<div class="map-scroll seg-map">${map.svg}</div>
+        ${map.omittedNodes > 0 || map.omittedEdges > 0 ? `<p class="tbl-note">※ つながりの多い表を優先表示（省略: 表 ${map.omittedNodes}・関係 ${map.omittedEdges}）。</p>` : ''}` : ''}
+        <h4 class="dl-h">詳細ロジック — どのシートが、どのキーで、どうつながっているか</h4>
+        <div style="overflow-x:auto">
+          <table class="ot dl">
+            <tr><th>元（表・列）</th><th>キー</th><th>処理</th><th>先（表・列）</th><th>根拠（数式・一致）</th><th>確度</th></tr>
+            ${rows.join('\n            ')}
+          </table>
+          ${omitted > 0 ? `<p class="tbl-note">※ 関係が多いため上位 ${DETAIL_ROWS_PER_SEGMENT} 件を掲載しています（この段の全 ${seg.pairs.length} 件）。</p>` : ''}
+        </div>
+      </div>
+    </details>`;
+  }).join('\n');
 
   const edgeTotal = graph.edgeTotal ?? edges.length;
   const dateStr = input.generatedAt.toISOString().slice(0, 10);
   const customer = input.customerName ? `${input.customerName}様` : 'ご担当者様';
 
+  const sheetTotal = new Set(regions.map(r => `${r.file} ${r.sheet}`)).size;
+  const outStats = outputLabels.map(l => fileStats.get(l)!).filter(Boolean);
+
   // ---- サマリ文（決定的に組み立てる） ----
   const bullets: string[] = [];
   {
-    const sorted = regions.filter(r => roles.get(r.id) !== '独立（つながりなし）');
-    const srcs = sorted.filter(r => roles.get(r.id) === '元データ（明細）').sort((a, b) => b.dataRowCount - a.dataRowCount);
-    const sinks = sorted.filter(r => roles.get(r.id) === '最終アウトプット');
-    const masters = sorted.filter(r => roles.get(r.id) === 'マスタ（参照元）');
-    if (srcs.length > 0 && sinks.length > 0) {
-      bullets.push(`データは <b>「${esc(labels.get(srcs[0].id) ?? '')}」を起点</b>に、最終的に「${esc(labels.get(sinks[0].id) ?? '')}」へ流れています。` +
-        (masters.length > 0 ? `「${masters.slice(0, 2).map(m => esc(labels.get(m.id) ?? '')).join('」「')}」は引き当て用のマスタです。` : ''));
-    } else if (sorted.length > 0) {
-      bullets.push(`${regions.length}表のうち ${sorted.length}表が数式・値のつながりを持っています。`);
+    bullets.push(`受領した <b>${input.fileCount} ファイル</b>（${sheetTotal} シート／${regions.length} 表）を解析しました。内訳は 01 のとおりです。`);
+    if (outStats.length > 0) {
+      bullets.push(`最終アウトプットは <b>${outStats.length} 種</b>（${outStats.map(s => `「${esc(s.filename)}」`).join('、')}）` +
+        (outputsDeclared ? 'です（取込時のご指定にもとづきます）。' : 'と推定しました（流れの終着点から自動判定）。'));
+    }
+    if (declaredRels.length > 0) {
+      const matched = audit.filter(a => a.verdict === 'matched').length;
+      bullets.push(`ブックどうしの関係を <b>${declaredRels.length} 件</b>ご登録いただいており、うち ${matched} 件は自動解析でも同じつながりを確認できました。`);
     }
     const copyCount = pairs.filter(p => (p.counts.copy ?? 0) > 0).length;
     const formulaCount = pairs.length - copyCount;
     if (formulaCount > 0) bullets.push(`表をつなぐ関係の大半は数式（SUMIFS・VLOOKUP等）で、<b>構造は自動で追跡できました</b>。`);
     if (copyCount > 0) bullets.push(`一方、<b>数式ではなく手作業の転記と推定されるつながりが ${copyCount} 組</b>あります（値の一致から逆推定）。ここが今回確認したい中心です。`);
     else if (warnings.length > 0) bullets.push(`数式列への手入力の上書きなど、確認したい箇所が ${warnings.length} 件あります。`);
-    else if (copyCount === 0) bullets.push('手作業転記の疑いは検出されませんでした。');
+    else bullets.push('手作業転記の疑いは検出されませんでした。');
   }
 
-  // ---- 内訳テーブル ----
-  const INV_CAP = 40;
-  const invRows: string[] = [];
-  {
-    let prevFile = '\u0000'; let prevSheet = '\u0000';
-    for (const r of regions.slice(0, INV_CAP)) {
-      const fileCell = r.file === prevFile ? '' : esc(r.file || '─');
-      const sheetCell = r.file === prevFile && r.sheet === prevSheet ? '' : esc(r.sheet);
-      prevFile = r.file; prevSheet = r.sheet;
-      invRows.push(`<tr><td>${fileCell}</td><td>${sheetCell}</td>` +
-        `<td class="mono">${esc(rangeOf(r))}</td>` +
-        `<td class="r">${r.dataRowCount.toLocaleString()}</td><td>${esc(keySummary(r))}</td><td>${esc(roles.get(r.id) ?? '')}</td></tr>`);
-    }
+  // ---- 01 ファイル一覧 ----
+  // 登録済みブック関係をファイル単位で引けるようにする（一覧の「ご登録の関係」列）
+  const relsByFile = new Map<string, string[]>();
+  for (const d of declaredRels) {
+    const text = `→ ${fileNameOf(d.toFile)}（${FILE_REL_LABELS[d.relType]}）`;
+    const arr = relsByFile.get(d.fromFile) ?? [];
+    arr.push(text);
+    relsByFile.set(d.fromFile, arr);
   }
-  const invNote = regions.length > INV_CAP ? `<p class="tbl-note">※ 表が多いため上位 ${INV_CAP} 表のみ掲載しています（全 ${regions.length} 表）。</p>` : '';
+  const fileRows = [...fileStats.values()]
+    .sort((a, b) => {
+      const ra = a.role === '最終アウトプット' ? 1 : 0, rb = b.role === '最終アウトプット' ? 1 : 0;
+      return ra !== rb ? ra - rb : b.rowTotal - a.rowTotal; // 最終アウトプットは最後に置いて流れの順に読ませる
+    })
+    .map(s => {
+      const upstream = [...s.inFiles.keys()].map(l => fileNameOf(l));
+      const roleCls = s.role === '最終アウトプット' ? 'out' : s.role === '元データ' ? 'src' : s.role === '中間ファイル' ? 'mid' : 'iso';
+      const rels = relsByFile.get(s.label) ?? [];
+      return `<tr>` +
+        `<td><b>${esc(s.filename)}</b>${s.declaredOutput ? '<div class="rnote">取込時に「最終帳票」として指定</div>' : ''}</td>` +
+        `<td class="r">${s.sheets.length}</td><td class="r">${s.regionCount}</td><td class="r">${s.rowTotal.toLocaleString()}</td>` +
+        `<td><span class="nrole ${roleCls}"></span> ${esc(s.role)}</td>` +
+        `<td>${upstream.length > 0 ? esc(shortText(upstream.join('、'), 44)) : '—'}</td>` +
+        `<td>${rels.length > 0 ? esc(shortText(rels.join('／'), 44)) : '<span class="dl-none">—</span>'}</td>` +
+        `</tr>`;
+    });
 
-  // ---- 根拠テーブル（数式の代表 + 手コピー） ----
-  const evRows: string[] = [];
-  {
-    const fmtEnd = (key: string) => {
-      const rid = regionIdOf(key); const col = colNameOf(key);
-      const l = labels.get(rid) ?? rid;
-      return col ? `${esc(l)} の「${esc(col)}」` : esc(l);
-    };
-    const formulaBest = pairs
-      .flatMap(p => GROUP_ORDER.filter(g => g !== 'copy').map(g => p.best[g]).filter((e): e is Edge => !!e))
-      .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
-      .slice(0, 10);
-    for (const e of formulaBest) {
-      const g = groupOf(e.type);
-      evRows.push(`<tr><td>${fmtEnd(e.from)} → ${fmtEnd(e.to)}</td>` +
-        `<td><span class="rel ${GROUP_META[g].cls}">${esc(GROUP_META[g].label.split('（')[0])}</span></td>` +
-        `<td class="mono">${esc(shortText(e.evidence))}</td><td class="conf"><b>${confLabel(e.confidence ?? 0)}</b>（数式）</td></tr>`);
-    }
-    const copyBest = pairs.filter(p => p.best.copy).slice(0, 4);
-    for (const p of copyBest) {
-      const e = p.best.copy!;
-      const qid = copyQuestionByPair.get(`${p.from}\u0000${p.to}`);
-      evRows.push(`<tr><td>${fmtEnd(e.from)} → ${fmtEnd(e.to)}</td>` +
-        `<td><span class="rel copy">手コピー推定</span></td>` +
-        `<td>数式なし。${esc(shortText(e.evidence, 50))}</td><td class="conf"><b>${confLabel(e.confidence ?? 0)}</b>（値一致）${qid ? ` → ${qid}` : ''}</td></tr>`);
-    }
+  // ---- 01 ファイルごとの内訳（シートの役割 ＋ 表・列構成）----
+  // シートの役割は取込時に人が指定・確認した情報なので、自動推定の役割とは分けて見せる。
+  const sheetRoleOf = new Map<string, Record<string, string> | undefined>();
+  const kindOfFile = new Map<string, string | undefined>();
+  for (const a of input.artifacts ?? []) {
+    sheetRoleOf.set(fileLabelOf(a.filename), a.sheetRoles);
+    kindOfFile.set(fileLabelOf(a.filename), a.kind);
   }
-
-  // ---- 各表の詳細 ----
-  const DETAIL_CAP = 10;
-  const detailRegions = regions
-    .slice()
-    .sort((a, b) => b.dataRowCount - a.dataRowCount)
-    .slice(0, DETAIL_CAP);
-  const detailBlocks = detailRegions.map((r, i) => {
-    const keyCols = new Set((r.keys?.keys ?? []).map(k => k.column));
-    const chips = r.columns.slice(0, 24).map(c => {
-      const cls = keyCols.has(c.name) ? 'colchip key'
-        : c.mixedFormula ? 'colchip manual'
-        : c.hasFormula ? 'colchip formula'
-        : c.manualNumeric > 0 ? 'colchip manual' : 'colchip';
-      const mark = c.mixedFormula ? ' ⚠' : '';
-      return `<span class="${cls}">${esc(c.name)}${mark}</span>`;
-    }).join('');
-    const more = r.columns.length > 24 ? `<span class="colchip">…他${r.columns.length - 24}列</span>` : '';
-    const keyNote = r.keys?.grain
-      ? `<p class="key-note">🔑 セルは <b>${esc(r.keys.grain)}</b> の組合せで決まります（横持ち表。縦持ちに展開すると「行キー・軸・値」の形になります）。</p>`
-      : r.keys?.axisNote
-      ? `<p class="key-note">🔑 ${esc(r.keys.axisNote)}</p>`
-      : keyCols.size > 0
-        ? `<p class="key-note">🔑 <b>${esc(keySummary(r))}</b> が1行を決めるキーと推定しています。</p>`
-        : '';
-    const colAxis = r.keys?.colAxis ? `<p class="rnote">${esc(r.keys.colAxis)}</p>` : '';
-    const mixedCols = r.columns.filter(c => c.mixedFormula).map(c => c.name);
-    const mixedNote = mixedCols.length > 0
-      ? `<p class="rnote">⚠ ${esc(mixedCols.slice(0, 3).join('、'))} 列で数式と手入力の混在があります。</p>` : '';
-    return `<details class="region"${i === 0 ? ' open' : ''}>
-      <summary><b>${esc(labels.get(r.id) ?? r.sheet)}</b><span class="loc">${esc(r.file)} › ${esc(r.sheet)}!${esc(rangeOf(r))}</span><span class="rows">${r.dataRowCount.toLocaleString()}行 × ${r.columns.length}列</span></summary>
-      <div class="rbody"><div class="colchips">${chips}${more}</div>${keyNote}${colAxis}${mixedNote}</div>
+  const REGION_CAP_PER_FILE = 8;
+  const fileBlocks = [...fileStats.values()]
+    .sort((a, b) => b.rowTotal - a.rowTotal)
+    .map((s, i) => {
+      const myRegions = regions.filter(r => r.file === s.label)
+        .sort((a, b) => b.dataRowCount - a.dataRowCount);
+      // シート役割: sheet_roles があればそれ、無ければ kind を全シートへ適用（orchestrator の rolesOf と同じ規則）
+      const roleMap = sheetRoleOf.get(s.label);
+      const kind = kindOfFile.get(s.label);
+      const roleChips = s.sheets.map(name => {
+        const role = roleMap?.[name] ?? (kind && kind !== 'mixed' ? kind : undefined);
+        const label = role ? (SHEET_ROLE_LABELS[role] ?? role) : '未指定';
+        const cls = role === 'final_output' ? 'sr out' : role === 'working_sheet' ? 'sr mid'
+          : role === 'input_data' ? 'sr src' : 'sr unk';
+        return `<span class="${cls}">${esc(name)}<em>${esc(label)}</em></span>`;
+      }).join('');
+      const regionBlocks = myRegions.slice(0, REGION_CAP_PER_FILE).map(r => {
+        const keyCols = new Set((r.keys?.keys ?? []).map(k => k.column));
+        const chips = r.columns.slice(0, 24).map(c => {
+          const cls = keyCols.has(c.name) ? 'colchip key'
+            : c.mixedFormula ? 'colchip manual'
+            : c.hasFormula ? 'colchip formula'
+            : c.manualNumeric > 0 ? 'colchip manual' : 'colchip';
+          const mark = c.mixedFormula ? ' ⚠' : '';
+          return `<span class="${cls}">${esc(c.name)}${mark}</span>`;
+        }).join('');
+        const more = r.columns.length > 24 ? `<span class="colchip">…他${r.columns.length - 24}列</span>` : '';
+        const keyNote = r.keys?.grain
+          ? `<p class="key-note">🔑 セルは <b>${esc(r.keys.grain)}</b> の組合せで決まります（横持ち表。縦持ちに展開すると「行キー・軸・値」の形になります）。</p>`
+          : r.keys?.axisNote
+          ? `<p class="key-note">🔑 ${esc(r.keys.axisNote)}</p>`
+          : keyCols.size > 0
+            ? `<p class="key-note">🔑 <b>${esc(keySummary(r))}</b> が1行を決めるキーと推定しています。</p>`
+            : '';
+        const mixedCols = r.columns.filter(c => c.mixedFormula).map(c => c.name);
+        const mixedNote = mixedCols.length > 0
+          ? `<p class="rnote">⚠ ${esc(mixedCols.slice(0, 3).join('、'))} 列で数式と手入力の混在があります。</p>` : '';
+        return `<div class="rblock">
+          <div class="rhead"><b>${esc(r.sheet)}</b><span class="loc">${esc(rangeOf(r))}</span>` +
+          `<span class="rows">${r.dataRowCount.toLocaleString()}行 × ${r.columns.length}列</span>` +
+          `<span class="rrole">${esc(roles.get(r.id) ?? '')}</span></div>
+          <div class="colchips">${chips}${more}</div>${keyNote}${mixedNote}
+        </div>`;
+      }).join('\n');
+      const moreRegions = myRegions.length > REGION_CAP_PER_FILE
+        ? `<p class="tbl-note">※ 行数の多い上位 ${REGION_CAP_PER_FILE} 表を掲載しています（このファイルの全 ${myRegions.length} 表）。</p>` : '';
+      return `<details class="fileblk"${i === 0 ? ' open' : ''}>
+      <summary><b>${esc(s.filename)}</b><span class="rows">${s.sheets.length}シート ／ ${s.regionCount}表 ／ ${s.rowTotal.toLocaleString()}行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips">${roleChips || '<span class="dl-none">シート情報なし</span>'}</div>
+        <p class="sub-lede">表と列の構成</p>
+        ${regionBlocks || '<p class="dl-none">表を検出できませんでした。</p>'}
+        ${moreRegions}
+      </div>
     </details>`;
-  }).join('\n');
-  const detailNote = regions.length > DETAIL_CAP
-    ? `<p class="tbl-note">※ 行数の多い上位 ${DETAIL_CAP} 表を掲載しています。残り ${regions.length - DETAIL_CAP} 表の詳細はお打ち合わせで画面をご覧いただけます。</p>` : '';
+    }).join('\n');
+
+  // ---- 01 末尾: ご登録の関係と自動検出の突き合わせ ----
+  const AUDIT_LABELS: Record<string, { text: string; cls: string }> = {
+    matched: { text: '一致', cls: 'ok' },
+    declared_not_detected: { text: '自動検出できず', cls: 'ng' },
+    detected_not_declared: { text: 'ご登録なし', cls: 'warn' },
+    direction_conflict: { text: '向きが逆', cls: 'ng' },
+  };
+  const auditRows = audit.map(a => {
+    const m = AUDIT_LABELS[a.verdict];
+    return `<tr>` +
+      `<td>${esc(fileNameOf(a.fromFile))} → ${esc(fileNameOf(a.toFile))}</td>` +
+      `<td>${a.relType ? esc(FILE_REL_LABELS[a.relType]) : '<span class="dl-none">—</span>'}</td>` +
+      `<td><span class="av ${m.cls}">${esc(m.text)}</span></td>` +
+      `<td class="r">${a.detectedTotal > 0 ? a.detectedTotal.toLocaleString() : '—'}</td>` +
+      `<td>${a.note ? esc(shortText(a.note, 46)) : '<span class="dl-none">—</span>'}</td>` +
+      `</tr>`;
+  });
 
   // ---- 質問カード ----
   const qCards = questions.map(q => `
@@ -755,80 +1093,6 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
       </dl>
       <div class="ansbox">ご回答メモ：</div>
     </div>`).join('\n');
-
-  const mapSection = map ? `
-<section class="alt">
-  <div class="wrap">
-    <div class="sec-head">
-      <div class="eyebrow">03 ── RELATIONSHIPS</div>
-      <h2>表どうしの関係</h2>
-      <p class="sec-lede">表が<b>どのキーでつながり</b>、<b>どの向きに流れているか</b>を2つの図で示します。</p>
-    </div>
-    ${er ? `
-    <h3 class="sub-h">キー関係図（ER）</h3>
-    <ul class="graph-guide">
-      <li><b>ボックス＝表</b>。<span class="k">🔑</span>＝主キー（1行を一意に決める列）／<span class="k">◇</span>＝軸</li>
-      <li><b>線＝同じキー列での対応</b>。端の <b>1 / N</b> が1対多（<b>1</b>＝マスタ側／<b>N</b>＝明細側）</li>
-    </ul>
-    <div class="map-scroll er-scroll">${er.svg}</div>
-    ${er.omitted > 0 ? `<p class="tbl-note">※ キーでつながる表を優先表示（ほか ${er.omitted} 表は省略）。</p>` : ''}
-    ` : ''}
-    <h3 class="sub-h">最終アウトプットへの流れ</h3>
-    <ul class="graph-guide">
-      <li><b>ノード＝表</b>。<b>上＝元データ → 下＝最終アウトプット</b>、矢印の向きにデータが流れます</li>
-      <li><b>線の色＝関係の種類</b>／<b>破線＝手作業コピー（要確認）</b></li>
-      <li class="only-screen"><b>クリック</b>すると、その表の関係先と最終アウトプットまでの経路を右パネルに表示します（パンくずで戻れます）</li>
-      <li class="only-screen">右上のボタン：<span class="k">＋ －</span> 拡大縮小／<span class="k">▤</span> レイアウト／<span class="k">☾</span> 配色／<span class="k">⤢</span> 全画面（Escで戻る）／<span class="k">⟳</span> リセット。背景ドラッグで移動</li>
-    </ul>
-    <p class="graph-guide only-print">※ 本紙は静止画です。操作版はブラウザでご覧ください。</p>
-    <div class="map-static map-scroll">${map.svg}</div>
-    <div class="map-interactive relgraph-wrap" id="relgraph-wrap">
-      <figure class="relgraph-stage lightmode" id="relgraph" aria-label="表どうしの関係グラフ（操作可能）"></figure>
-      <aside class="relgraph-panel">
-        <div class="relgraph-crumbs" id="relgraph-crumbs"><span class="cur">表を選択</span></div>
-        <div class="relgraph-pbody" id="relgraph-pbody"><div class="empty">左のグラフで<b>表</b>をクリックすると、関係している表（上流／下流）と<b>最終アウトプットまでの経路</b>がここに出て、そのまま掘り下げられます。</div></div>
-      </aside>
-    </div>
-    <script type="application/json" id="relgraph-data">${JSON.stringify(map.data).replace(/</g, '\\u003c')}</script>
-    <div class="legend">
-      <span class="lg-h">関係の種類</span>
-      ${GROUP_ORDER.map(g => `<span class="li"><span class="sw${GROUP_META[g].dashed ? ' dash' : ''}" style="border-color:${GROUP_META[g].color}"></span>${esc(GROUP_META[g].label)}</span>`).join('\n      ')}
-    </div>
-    <div class="legend">
-      <span class="lg-h">表の役割</span>
-      <span class="li"><span class="nrole src"></span>元データ（明細）</span>
-      <span class="li"><span class="nrole mst"></span>マスタ（参照元）</span>
-      <span class="li"><span class="nrole mid"></span>中間集計</span>
-      <span class="li"><span class="nrole out"></span>最終アウトプット</span>
-      <span class="li"><span class="nrole iso"></span>独立（つながりなし・要確認）</span>
-    </div>
-    <p class="tbl-note">※ 円の大きさ＝つながりの本数。つながりの多い表を優先表示${map.omittedNodes > 0 || map.omittedEdges > 0 ? `（省略: 表 ${map.omittedNodes}・関係 ${map.omittedEdges}）` : ''}。</p>
-    <div class="callout info">
-      <span class="mark">ℹ️</span>
-      <span>ピボットテーブル・INDIRECT関数・ファイル間の数式リンクは自動追跡の対象外です。該当する処理をお使いの場合は、お打ち合わせで補足をお願いします。</span>
-    </div>
-
-    <div class="sec-head" style="margin-top:44px;margin-bottom:18px">
-      <h2 style="font-size:19px">関係の根拠（抜粋）</h2>
-      <p class="sec-lede" style="font-size:13px">各関係の判定根拠となった数式・値一致の一部です。</p>
-    </div>
-    <div style="overflow-x:auto">
-      <table class="ot">
-        <tr><th>参照元 → 参照先</th><th>種別</th><th>根拠（数式・一致の抜粋）</th><th>確度</th></tr>
-        ${evRows.join('\n        ')}
-      </table>
-    </div>
-  </div>
-</section>` : `
-<section class="alt">
-  <div class="wrap">
-    <div class="sec-head">
-      <div class="eyebrow">03 ── DATA FLOW</div>
-      <h2>データの流れ（関係マップ）</h2>
-      <p class="sec-lede">表どうしをつなぐ数式・値一致の関係は検出されませんでした。各表が独立して管理されている可能性があります（05 の確認事項をご覧ください）。</p>
-    </div>
-  </div>
-</section>`;
 
   return `<!DOCTYPE html>
 <html lang="ja">
@@ -849,7 +1113,7 @@ ${REPORT_CSS}
     <div class="hero">
       <div class="brand">kpiee ONBOARDING ── DATA STRUCTURE REVIEW / dataX Inc.</div>
       <h1>ご提供データの<span class="em">構造分析</span>レポート<br>── 読み合わせのお願い</h1>
-      <p class="lede">kpiee導入に先立ち、ご提供いただいたExcel・CSVファイルの構造（表・キー・数式のつながり）を解析しました。本資料は「私たちの理解が合っているか」を確認するためのものです。特に <b style="color:#fff">05. ご確認いただきたい点</b> について、お打ち合わせでご回答をいただけますと幸いです。</p>
+      <p class="lede">kpiee導入に先立ち、ご提供いただいたExcel・CSVファイルの構造を解析しました。<b style="color:#fff">01 受領データ一覧 → 02 全体の流れと詳細ロジック → 03 ご確認いただきたい点 → 04 今後の進め方</b> の順に、私たちの理解を整理しています。「この理解で合っているか」をご確認いただき、特に <b style="color:#fff">03. ご確認いただきたい点</b> についてお打ち合わせでご回答をいただけますと幸いです。</p>
       <div class="hero-meta">
         <span>宛先：<b>${esc(customer)}</b></span>
         <span>分析日：<b>${dateStr}</b></span>
@@ -862,8 +1126,9 @@ ${REPORT_CSS}
 <section class="alt">
   <div class="wrap">
     <div class="sec-head">
-      <div class="eyebrow">01 ── SUMMARY</div>
-      <h2>分析サマリ</h2>
+      <div class="eyebrow">01 ── INVENTORY</div>
+      <h2>受領データ一覧</h2>
+      <p class="sec-lede">いただいたファイル（ブック）と、その中の各シートがどういう役割かの一覧です。1つのシートに複数の表が含まれる場合は、表単位に分割して解析しています。</p>
     </div>
     <div class="tiles">
       <div class="tile"><div class="tl">受領ファイル</div><div class="tv">${input.fileCount}<small>件</small></div></div>
@@ -877,44 +1142,78 @@ ${REPORT_CSS}
         ${bullets.map(b => `<li>${b}</li>`).join('\n        ')}
       </ul>
     </div>
-  </div>
-</section>
 
-<section>
-  <div class="wrap">
-    <div class="sec-head">
-      <div class="eyebrow">02 ── INVENTORY</div>
-      <h2>受領データの内訳</h2>
-      <p class="sec-lede">1つのシートに複数の表が含まれる場合は、表単位に分割して解析しています。「主キー」は<b>1行を一意に決める列</b>の推定です。</p>
-    </div>
+    <h3 class="sub-h">ブック（ファイル）別</h3>
     <div style="overflow-x:auto">
       <table class="ot">
-        <tr><th>ファイル</th><th>シート</th><th>表（位置）</th><th>行数</th><th>主キー／軸（推定）</th><th>役割（推定）</th></tr>
-        ${invRows.join('\n        ')}
+        <tr><th>ファイル</th><th>シート</th><th>表</th><th>行数（合計）</th><th>役割</th><th>流れ込む元ファイル</th><th>ご登録の関係</th></tr>
+        ${fileRows.join('\n        ')}
       </table>
-      ${invNote}
     </div>
+
+    <h3 class="sub-h">ブックの中身（シートの役割と列構成）</h3>
+    <p class="graph-guide">クリックで展開できます。列の色分け：<span class="colchip key">キー列</span> <span class="colchip formula">数式列</span> <span class="colchip manual">手入力の数値</span></p>
+    ${fileBlocks}
+
+    ${auditRows.length > 0 ? `
+    <h3 class="sub-h">ご登録いただいたブック関係と、自動解析の突き合わせ</h3>
+    <p class="graph-guide">ご登録内容と自動解析の結果が一致しているかの確認です。食い違いは 03 でご確認をお願いしています。</p>
+    <div style="overflow-x:auto">
+      <table class="ot">
+        <tr><th>ブック関係</th><th>種類</th><th>判定</th><th>検出した関係数</th><th>ご登録の説明</th></tr>
+        ${auditRows.join('\n        ')}
+      </table>
+    </div>` : ''}
   </div>
 </section>
-
-${mapSection}
 
 <section>
   <div class="wrap">
     <div class="sec-head">
-      <div class="eyebrow">04 ── TABLES</div>
-      <h2>各表の詳細</h2>
-      <p class="sec-lede">クリックで展開できます。列の色分け：<span class="colchip key">キー列</span> <span class="colchip formula">数式列</span> <span class="colchip manual">手入力の数値</span></p>
+      <div class="eyebrow">02 ── FLOW &amp; LOGIC</div>
+      <h2>全体の流れと詳細ロジック</h2>
+      <p class="sec-lede">まずブック単位で<b>全体の流れ</b>をご覧いただき、続けてその流れを<b>段ごとに分けたシート単位の関係</b>を順に説明します。各ブロックは折りたためます。説明が済んだブロックは<b>「確認済」にチェック</b>を入れてお使いください。</p>
     </div>
-    ${detailBlocks}
-    ${detailNote}
+    ${fileFlow ? `
+    <h3 class="sub-h">2-0　全体フロー図（ブック単位）</h3>
+    <ul class="graph-guide">
+      <li><b>ボックス＝ファイル</b>。左が起点、<b style="color:#C24141">右端が最終アウトプット</b>で、矢印の向きにデータが流れます</li>
+      <li><b>線の色＝関係の種類</b>／<b>破線の線＝手作業コピー（要確認）</b>／<b>破線の枠＝つながりが自動検出できなかった最終アウトプット</b></li>
+    </ul>
+    <div class="map-scroll">${fileFlow}</div>
+    <div class="legend">
+      <span class="lg-h">ファイルの役割</span>
+      <span class="li"><span class="nrole src"></span>元データ</span>
+      <span class="li"><span class="nrole mid"></span>中間ファイル</span>
+      <span class="li"><span class="nrole out"></span>最終アウトプット</span>
+      <span class="li"><span class="nrole iso"></span>独立（つながり未検出）</span>
+    </div>` : `<p class="sec-lede">ファイルをまたぐ関係は検出されませんでした。各ファイルが独立して管理されている可能性があります（03 の確認事項をご覧ください）。</p>`}
+
+    ${segBlocks ? `
+    <div class="legend">
+      <span class="lg-h">関係の種類</span>
+      ${GROUP_ORDER.map(g => `<span class="li"><span class="sw${GROUP_META[g].dashed ? ' dash' : ''}" style="border-color:${GROUP_META[g].color}"></span>${esc(GROUP_META[g].label)}</span>`).join('\n      ')}
+    </div>
+    <div class="legend">
+      <span class="lg-h">表の役割</span>
+      <span class="li"><span class="nrole src"></span>元データ（明細）</span>
+      <span class="li"><span class="nrole mst"></span>マスタ（参照元）</span>
+      <span class="li"><span class="nrole mid"></span>中間集計</span>
+      <span class="li"><span class="nrole out"></span>最終アウトプット</span>
+    </div>
+    <div class="segs">${segBlocks}</div>
+    <div class="callout info">
+      <span class="mark">ℹ️</span>
+      <span>ピボットテーブル・INDIRECT関数・ファイル間の数式リンクは自動追跡の対象外です。図に出ていないつながりがあれば、お打ち合わせで補足をお願いします。</span>
+    </div>` : `
+    <p class="sec-lede">表どうしをつなぐ数式・値一致の関係は検出されませんでした。各表が独立して管理されている可能性があります（03 の確認事項をご覧ください）。</p>`}
   </div>
 </section>
 
 <section class="alt">
   <div class="wrap">
     <div class="sec-head">
-      <div class="eyebrow">05 ── QUESTIONS</div>
+      <div class="eyebrow">03 ── QUESTIONS</div>
       <h2>ご確認いただきたい点（${questions.length}件）</h2>
       <p class="sec-lede">自動解析では「推定」までしかできない箇所です。上から順にご回答をいただけますと、kpieeの設定を正確に進められます。<b>回答メモ欄は印刷してそのままお使いいただけます。</b></p>
     </div>
@@ -929,13 +1228,13 @@ ${mapSection}
 <section>
   <div class="wrap">
     <div class="sec-head">
-      <div class="eyebrow">06 ── NEXT STEP</div>
+      <div class="eyebrow">04 ── NEXT STEP</div>
       <h2>今後の進め方</h2>
     </div>
     <div class="steps">
       <div class="step"><div class="no">1</div>
         <h3>本資料の読み合わせ<span class="who">貴社 × 弊社</span></h3>
-        <p>お打ち合わせ（30〜60分）で、05の確認事項にご回答をいただきます。わかる範囲で結構です。</p>
+        <p>お打ち合わせ（30〜60分）で、03の確認事項にご回答をいただきます。わかる範囲で結構です。</p>
       </div>
       <div class="step"><div class="no">2</div>
         <h3>定義の確定・追加データのご提供<span class="who">貴社 × 弊社</span></h3>
@@ -960,7 +1259,7 @@ ${mapSection}
 <footer>
   <div class="wrap">© dataX Inc.　|　kpiee データ構造分析レポート（${dateStr} 生成）　|　本資料は貴社との確認用資料であり、社外への共有はお控えください。</div>
 </footer>
-${map ? `<script>${REPORT_GRAPH_JS}</script>` : ''}
+<script>${REPORT_CHECK_JS}</script>
 </body>
 </html>
 `;
@@ -1030,15 +1329,14 @@ h2{font-family:var(--disp);font-weight:700;font-size:26px;color:var(--ink);line-
 .legend .li{display:inline-flex;align-items:center;gap:7px;color:var(--text)}
 .legend .sw{width:22px;height:0;border-top:3px solid;border-radius:2px}
 .legend .sw.dash{border-top-style:dashed}
-details.region{background:#fff;border:1px solid var(--line);border-radius:14px;margin-bottom:12px;overflow:hidden}
-details.region summary{cursor:pointer;padding:14px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;list-style:none}
-details.region summary::-webkit-details-marker{display:none}
-details.region summary::before{content:'▸';color:var(--blue);transition:transform .2s}
-details.region[open] summary::before{transform:rotate(90deg)}
-details.region summary b{color:var(--ink);font-size:14px}
-details.region summary .loc{font-family:var(--mono);font-size:11px;color:var(--sub)}
-details.region summary .rows{font-family:var(--mono);font-size:11px;color:var(--sub);margin-left:auto}
-details.region .rbody{padding:4px 20px 18px;border-top:1px solid var(--line)}
+/* 折りたたみブロック共通（01 のブック別・02 のセグメント）。三角は自前で描く */
+details.fileblk>summary,details.seg>summary{list-style:none}
+details.fileblk>summary::-webkit-details-marker,details.seg>summary::-webkit-details-marker{display:none}
+details.fileblk>summary::before,details.seg>summary::before{content:'▸';color:var(--blue);transition:transform .2s}
+details.fileblk[open]>summary::before,details.seg[open]>summary::before{transform:rotate(90deg)}
+.loc{font-family:var(--mono);font-size:11px;color:var(--sub)}
+.rows{font-family:var(--mono);font-size:11px;color:var(--sub);margin-left:auto}
+.rbody{padding:14px 20px 18px}
 .colchips{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 4px}
 .colchip{font-size:11.5px;border:1px solid var(--line);border-radius:8px;padding:3px 10px;background:#FCFDFE}
 .colchip.key{border-color:#C9DEF4;background:var(--blue-bg);color:var(--blue);font-weight:700}
@@ -1079,9 +1377,68 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
   .qgrid{grid-template-columns:1fr}
   .qgrid dt{padding-top:6px}
 }
-/* ---- キー関係図（ER）＋最終アウトプット中心の関係グラフ ---- */
+.via{font-family:var(--mono);font-size:10.5px;color:var(--sub);margin-left:8px;white-space:nowrap}
+
+/* ---- 01 ブックの中身（シート役割＋列構成）---- */
+.fileblk{background:#fff;border:1px solid var(--line);border-radius:14px;margin-bottom:10px;overflow:hidden}
+.fileblk>summary{cursor:pointer;padding:13px 18px;display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;font-size:14px}
+.fileblk>summary:hover{background:var(--blue-bg)}
+.fileblk[open]>summary{border-bottom:1px solid var(--line)}
+.fileblk>summary b{word-break:break-all}
+.sub-lede{font-size:12px;font-weight:700;color:var(--sub);letter-spacing:.04em;margin:14px 0 7px}
+.sub-lede:first-child{margin-top:0}
+.srchips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:4px}
+.sr{display:inline-flex;flex-direction:column;gap:1px;border:1px solid var(--line);border-left-width:4px;border-radius:8px;padding:5px 10px;font-size:12px;color:var(--ink);background:#FCFDFE}
+.sr em{font-style:normal;font-size:10.5px;color:var(--sub)}
+.sr.src{border-left-color:var(--green)}
+.sr.mid{border-left-color:var(--violet)}
+.sr.out{border-left-color:var(--red)}
+.sr.unk{border-left-color:#9AA7B4}
+.rblock{border-top:1px dashed var(--line);padding-top:12px;margin-top:12px}
+.rblock:first-of-type{border-top:0;padding-top:0;margin-top:0}
+.rhead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:13px;margin-bottom:7px}
+.rrole{font-size:10.5px;color:var(--sub)}
+/* ---- 01 突き合わせ判定バッジ ---- */
+.av{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700;white-space:nowrap}
+.av.ok{background:var(--green-bg);color:var(--green)}
+.av.warn{background:var(--amber-bg);color:var(--amber)}
+.av.ng{background:var(--red-bg);color:var(--red)}
+
+/* ---- 02 セグメント（流れの段ごとのブロック）---- */
+.segs{display:flex;flex-direction:column;gap:12px;margin-top:18px}
+.seg{background:#fff;border:1px solid var(--line);border-left:5px solid var(--blue);border-radius:14px;overflow:hidden}
+.seg>summary{cursor:pointer;padding:14px 18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.seg>summary:hover{background:var(--blue-bg)}
+.seg[open]>summary{border-bottom:1px solid var(--line)}
+.seg-no{font-family:var(--mono);font-size:12px;font-weight:500;color:var(--blue)}
+.seg-title{font-family:var(--disp);font-weight:700;font-size:17px;color:var(--ink)}
+.seg-meta{font-family:var(--mono);font-size:10.5px;color:var(--sub)}
+/* 「確認済」チェック。summary 内なので開閉を誘発しないよう JS で stopPropagation する */
+.seg-done{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--sub);cursor:pointer;padding:4px 10px;border:1px solid var(--line);border-radius:20px;background:#FCFDFE}
+.seg-done:hover{border-color:var(--green);color:var(--green)}
+.seg-done input{accent-color:#1E9E6A;width:14px;height:14px;cursor:pointer}
+.seg.done{border-left-color:var(--green);background:#FBFDFC}
+.seg.done>summary{opacity:.72}
+.seg.done .seg-title::after{content:' ✓';color:var(--green)}
+.seg.done .seg-done{border-color:var(--green);color:var(--green);font-weight:700}
+.seg-body{padding:16px 18px 20px}
+.seg-files{font-size:13px;color:var(--text);margin-bottom:10px}
+.seg-files b{color:var(--ink);word-break:break-all}
+.seg-note{display:flex;gap:10px;background:var(--blue-bg);border-radius:10px;padding:11px 14px;margin-bottom:14px;font-size:12.5px;line-height:1.8}
+.seg-note p{margin:0}
+.seg-note p+p{margin-top:4px}
+.seg-map{margin-bottom:6px}
+/* ---- 02 詳細ロジック表 ---- */
+.dl-h{font-family:var(--disp);font-weight:700;font-size:14.5px;color:var(--ink);margin:18px 0 8px}
+table.dl{font-size:12px}
+table.dl td{vertical-align:top}
+.dl-col{display:block;font-family:var(--mono);font-size:10.5px;color:var(--blue)}
+.dl-proc{font-size:11px;color:var(--sub);margin-top:3px}
+.dl-ev{font-size:10.5px;color:var(--sub);word-break:break-all}
+.dl-q{font-family:var(--mono);font-size:10.5px;color:var(--red);font-weight:700}
+.dl-none{color:var(--sub)}
+/* ---- 図の凡例・見出し ---- */
 .sub-h{font-family:var(--disp);font-weight:700;font-size:18px;color:var(--ink);margin:30px 0 6px}
-.er-scroll svg{min-width:640px;width:100%;height:auto;display:block;font-family:var(--body)}
 .graph-guide{font-size:12.5px;color:var(--text);line-height:1.7;margin-bottom:12px}
 /* 図の凡例テキスト: 1行1項目で読ませる */
 ul.graph-guide{list-style:none;padding:0;display:flex;flex-direction:column;gap:4px}
@@ -1097,351 +1454,62 @@ ul.graph-guide .k{font-family:var(--mono);font-size:11.5px;color:var(--ink)}
 .nrole.mid{background:var(--violet-bg);border-color:var(--violet)}
 .nrole.out{background:var(--red-bg);border-color:var(--red)}
 .nrole.iso{background:#F2F5F8;border-color:#9AA7B4}
-
-/* 関係グラフ本体（JS 有効時のみ表示。印刷・JS無効は静的SVG .map-static へ） */
-.map-interactive{display:none}
-.relgraph-wrap{grid-template-columns:1fr 300px;gap:14px;align-items:stretch}
-.relgraph-stage{position:relative;border:1px solid var(--line);border-radius:14px;overflow:hidden;min-height:560px;touch-action:none;
-  --gbg:#12141C;--glbl:#C9D1DE;--glbl2:#7F8A9C;
-  --c-src:#3FCF8E;--c-mst:#5AA9FF;--c-mid:#B392F0;--c-out:#FF8B7B;--c-iso:#8B98A5;
-  background:radial-gradient(circle at 50% 38%,#1C1F2A 0%,#12141C 72%)}
-.relgraph-stage.lightmode{--gbg:#FCFDFE;--glbl:#0E2A47;--glbl2:#7A8794;
-  --c-src:#1E9E6A;--c-mst:#1F5FAE;--c-mid:#7B5EA7;--c-out:#C0392B;--c-iso:#9AA7B4;
-  background:#FCFDFE;background-image:radial-gradient(circle at 1px 1px,#E4EBF3 1px,transparent 0);background-size:22px 22px}
-.relgraph-stage svg{width:100%;height:100%;display:block;font-family:var(--body);cursor:grab}
-.relgraph-stage svg.panning{cursor:grabbing}
-.relgraph-ctrl{position:absolute;top:10px;right:10px;display:flex;gap:6px;z-index:3}
-.relgraph-ctrl button{width:32px;height:32px;padding:0;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.09);color:#E3E9F2;border-radius:8px;font-size:14px;line-height:1;cursor:pointer;backdrop-filter:blur(4px)}
-.relgraph-ctrl button:hover{background:rgba(255,255,255,.2);border-color:rgba(255,255,255,.34)}
-.relgraph-stage.lightmode .relgraph-ctrl button{border-color:var(--line);background:#fff;color:var(--ink);box-shadow:0 1px 3px rgba(14,42,71,.1)}
-.relgraph-stage.lightmode .relgraph-ctrl button:hover{background:var(--blue-bg);border-color:var(--blue);color:var(--blue)}
-.relgraph-hint{position:absolute;left:12px;bottom:10px;z-index:3;font-size:10.5px;letter-spacing:.02em;color:var(--glbl2);pointer-events:none}
-/* ノード（Obsidian風の円） */
-.node{cursor:pointer;transition:opacity .18s}
-.node .dot{stroke:var(--gbg);stroke-width:1.5}
-.node .halo{fill:none;stroke:none;transition:.18s}
-.node.role-src .dot{fill:var(--c-src)}
-.node.role-mst .dot{fill:var(--c-mst)}
-.node.role-mid .dot{fill:var(--c-mid)}
-.node.role-out .dot{fill:var(--c-out)}
-.node.role-iso .dot{fill:var(--c-iso)}
-.node.role-out .halo{stroke:var(--c-out);stroke-opacity:.32;stroke-width:2}
-.node .lbl{fill:var(--glbl);font-size:11px;font-weight:600;text-anchor:middle;paint-order:stroke;stroke:var(--gbg);stroke-width:3.4px;stroke-linejoin:round;pointer-events:none}
-.node.hov .lbl,.node.sel .lbl{fill:#fff;font-weight:700}
-.relgraph-stage.lightmode .node.hov .lbl,.relgraph-stage.lightmode .node.sel .lbl{fill:var(--ink)}
-.node.hov .halo,.node.sel .halo{stroke:#fff;stroke-opacity:.55;stroke-width:2.4}
-.relgraph-stage.lightmode .node.hov .halo,.relgraph-stage.lightmode .node.sel .halo{stroke:var(--blue);stroke-opacity:.85}
-.node.role-out .lbl{font-weight:800}
-.edge{fill:none;stroke-width:1.3;opacity:.5;transition:opacity .18s,stroke-width .18s}
-.relgraph-stage svg.focused .node:not(.hl):not(.path){opacity:.14}
-.relgraph-stage svg.focused .edge:not(.epath):not(.ehl){opacity:.05}
-.edge.epath{stroke-width:3;opacity:1}
-.edge.ehl{stroke-width:2.4;opacity:1}
-/* インスペクタ */
-.relgraph-panel{background:#fff;border:1px solid var(--line);border-radius:14px;overflow:hidden;display:flex;flex-direction:column;min-height:480px}
-.relgraph-crumbs{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:10px 13px;border-bottom:1px solid var(--line);font-size:11.5px;min-height:42px}
-.relgraph-crumbs .c{color:var(--blue);cursor:pointer;background:none;border:0;padding:2px 4px;font:inherit;border-radius:6px}
-.relgraph-crumbs .c:hover{background:var(--blue-bg)}
-.relgraph-crumbs .sep{color:var(--sub)}
-.relgraph-crumbs .cur{color:var(--ink);font-weight:700}
-.relgraph-pbody{padding:15px 15px 20px;overflow:auto;font-size:13px}
-.relgraph-pbody .empty{color:var(--sub);font-size:12.5px;line-height:1.9}
-.relgraph-pbody .empty b{color:var(--ink)}
-.pname{font-size:15px;font-weight:800;color:var(--ink);line-height:1.35;margin:0 0 8px}
-.rolechip{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;border-radius:999px;padding:3px 11px;border:1px solid}
-.rolechip.rc-src{color:var(--green);background:var(--green-bg);border-color:var(--green)}
-.rolechip.rc-mst{color:var(--blue);background:var(--blue-bg);border-color:var(--blue)}
-.rolechip.rc-mid{color:var(--violet);background:var(--violet-bg);border-color:var(--violet)}
-.rolechip.rc-out{color:var(--red);background:var(--red-bg);border-color:var(--red)}
-.rolechip.rc-iso{color:var(--sub);background:#F2F5F8;border-color:#9AA7B4}
-.p-meta{font-size:11.5px;color:var(--sub);margin:10px 0 3px}
-.p-keys{font-family:var(--mono);font-size:11.5px;color:var(--text);background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
-.p-route{display:flex;align-items:center;flex-wrap:wrap;gap:4px;background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:12px}
-.p-route .r{cursor:pointer;color:var(--blue);background:none;border:0;font:inherit;padding:1px 3px;border-radius:5px}
-.p-route .r:hover{background:var(--blue-bg)}
-.p-route .r.out{color:var(--red);font-weight:700}
-.p-route .arw{color:var(--sub)}
-.p-grp{margin-top:15px}
-.p-grp h4{margin:0 0 7px;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--sub);font-weight:700}
-.p-chips{display:flex;flex-direction:column;gap:6px}
-.p-chip{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:#fff;border:1px solid var(--line);border-radius:10px;padding:7px 10px;cursor:pointer;font:inherit;font-size:12px;color:var(--ink);transition:.12s}
-.p-chip:hover{border-color:var(--blue);background:var(--blue-bg)}
-.p-chip .dot{width:9px;height:9px;border-radius:50%;flex:none}
-.p-chip .via{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--sub);white-space:nowrap}
-.p-chip.none{cursor:default;color:var(--sub);border-style:dashed}
-.p-chip.none:hover{border-color:var(--line);background:#fff}
-.relgraph-wrap.expanded{position:fixed;inset:0;z-index:9999;margin:0;padding:16px;background:var(--paper);grid-template-columns:1fr 320px}
-.relgraph-wrap.expanded .relgraph-stage,.relgraph-wrap.expanded .relgraph-panel{min-height:0;height:100%}
-body.relgraph-noscroll{overflow:hidden}
-@media (max-width:760px){ .relgraph-wrap{grid-template-columns:1fr} .relgraph-panel{min-height:0} }
 @media print{
   header::after{display:none}
   section{padding:28px 0}
-  details.region{page-break-inside:avoid}
-  details.region:not([open]) summary::before{content:'▸'}
   .qcard{page-break-inside:avoid}
-  .map-interactive{display:none!important}
-  .map-static{display:block!important}
+  /* 印刷時は折りたたみを全て開いて紙に載せる（details[open] は JS で付ける） */
+  .seg,.fileblk{page-break-inside:avoid}
+  .seg>summary,.fileblk>summary{list-style:none}
+  /* チェック状態は紙でも分かるようにする（チェックボックス自体は薄く出るため文字で補う） */
+  .seg.done .seg-done::after{content:'（説明済み）';font-size:10px}
   .only-print{display:inline}
   .only-screen{display:none}
 }
 `;
 
-// 関係グラフ（Obsidian 風の力学配置＋階層レイアウト）。#relgraph-data(JSON) を読み、円ノードで各表を描く。
-// 円の大きさ＝つながりの本数、縦位置＝最終アウトプットまでの距離（上=元データ→下=最終）。ホバーで一時強調、
-// クリックで固定し、右パネル（パンくず＋経路＋上流/下流）から掘り下げる。右上ボタンで拡大・レイアウト切替
-// （階層⇔力学）・配色切替（ライト⇔ダーク）・全画面・リセット。
-// 初期化に失敗したら静的SVG（.map-static）へ戻す。※テンプレートリテラルに埋めるためバッククォート/${ は使わない。
-const REPORT_GRAPH_JS = `
+// 02 の「確認済」チェック。読み合わせでどこまで説明したかを追うためのもので、
+// 状態は localStorage に持つ（レポートは自己完結 HTML なのでサーバーには保存しない）。
+// レポートのタイトルを鍵に混ぜ、別案件のレポートを同じブラウザで開いても混ざらないようにする。
+const REPORT_CHECK_JS = `
 (function(){
-  try{
-    var wrap=document.getElementById('relgraph-wrap');
-    var host=document.getElementById('relgraph');
-    var dataEl=document.getElementById('relgraph-data');
-    var pbody=document.getElementById('relgraph-pbody');
-    var crumbsEl=document.getElementById('relgraph-crumbs');
-    if(!wrap||!host||!dataEl) return;
-    var data=JSON.parse(dataEl.textContent);
-    if(!data||!data.nodes||!data.nodes.length) return;
-    var staticEl=document.querySelector('.map-static'); if(staticEl) staticEl.style.display='none';
-    wrap.style.display='grid';
+  var KEY = 'kpiee-relreport-done:' + (document.title || '');
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { saved = {}; }
 
-    var NS='http://www.w3.org/2000/svg';
-    var nodes=data.nodes, byId={};
-    nodes.forEach(function(n){ byId[n.id]=n; });
-    var links=(data.links||[]).filter(function(l){ return byId[l.s]&&byId[l.t]; });
-    var outAdj={}, inAdj={}; nodes.forEach(function(n){ outAdj[n.id]=[]; inAdj[n.id]=[]; });
-    links.forEach(function(l){ outAdj[l.s].push(l); inAdj[l.t].push(l); });
-
-    function roleClass(role){ if(/最終/.test(role)) return 'out'; if(/マスタ/.test(role)) return 'mst'; if(/中間/.test(role)) return 'mid'; if(/元/.test(role)) return 'src'; return 'iso'; }
-    function ekey(l){ return l.s+'>'+l.t+'#'+(l.label||''); }
-    function fit(s,n){ s=String(s); return s.length<=n? s : s.slice(0,n)+'…'; }
-    function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-
-    /* ---- 最終アウトプット & 階層（経路計算・縦位置のヒントに使用） ---- */
-    var output=null,bestDeg=-1;
-    nodes.forEach(function(n){ if(/最終/.test(n.role)){ var d=inAdj[n.id].length; if(d>bestDeg){bestDeg=d;output=n.id;} } });
-    if(!output){ bestDeg=-1; nodes.forEach(function(n){ if(outAdj[n.id].length===0){ var d=inAdj[n.id].length; if(d>bestDeg){bestDeg=d;output=n.id;} } }); }
-    if(!output){ bestDeg=-1; nodes.forEach(function(n){ if((n.deg||0)>bestDeg){bestDeg=n.deg||0;output=n.id;} }); }
-    var layer={};
-    function dist(id,seen){ if(id===output) return 0; if(layer[id]!=null) return layer[id]; if(seen[id]) return 0; seen[id]=1; var best=0,any=false; outAdj[id].forEach(function(l){ any=true; var d=1+dist(l.t,seen); if(d>best) best=d; }); layer[id]=any?best:1; return layer[id]; }
-    nodes.forEach(function(n){ dist(n.id,{}); }); layer[output]=0;
-    function pathToOutput(id){ var ns=[id],es=[],cur=id,guard=0; while(cur!==output&&guard++<60){ var outs=outAdj[cur]; if(!outs.length) break; var best=outs[0]; for(var i=1;i<outs.length;i++){ if(layer[outs[i].t]<layer[best.t]) best=outs[i]; } es.push(ekey(best)); ns.push(best.t); cur=best.t; } return {ns:ns,es:es}; }
-
-    /* ---- ノード半径＝つながりの多さ ---- */
-    var W=1280,H=780,PAD=64,maxLink=1;
-    nodes.forEach(function(n){ n._d=inAdj[n.id].length+outAdj[n.id].length; if(n._d>maxLink) maxLink=n._d; });
-    nodes.forEach(function(n){ n.r=8+18*Math.sqrt(n._d/maxLink); if(roleClass(n.role)==='out') n.r=Math.max(n.r,13); });
-
-    /* ---- 初期配置（元の階層座標を種にして再現性を確保） ---- */
-    var sw=data.w||1848, sh=data.h||634;
-    function jit(i,k){ var v=Math.sin((i+1)*(k===0?12.9898:78.233))*43758.5453; return (v-Math.floor(v))-0.5; }
-    nodes.forEach(function(n,i){
-      n.px=PAD+((n.x||0)/sw)*(W-2*PAD)+jit(i,0)*70;
-      n.py=PAD+((n.y||0)/sh)*(H-2*PAD)+jit(i,1)*70;
-      n.vx=0; n.vy=0; n.fx=null; n.fy=null;
-    });
-    /* 階層レイアウト時の目標座標（＋力学時の緩やかな縦バイアス） */
-    var byLayer={}; nodes.forEach(function(n){ (byLayer[layer[n.id]]=byLayer[layer[n.id]]||[]).push(n); });
-    var maxL=0; Object.keys(byLayer).forEach(function(k){ maxL=Math.max(maxL,+k); });
-    Object.keys(byLayer).forEach(function(k){
-      var L=+k,row=byLayer[k], y=PAD+((maxL-L)/(maxL||1))*(H-2*PAD-40)+20;
-      var gap=Math.min(210,(W-2*PAD)/Math.max(1,row.length)), x0=W/2-gap*(row.length-1)/2;
-      row.forEach(function(n,i){ n.tx=x0+i*gap; n.ty=y; });
-    });
-
-    /* ---- SVG 生成 ---- */
-    var svg=document.createElementNS(NS,'svg');
-    svg.setAttribute('viewBox','0 0 '+W+' '+H);
-    svg.setAttribute('preserveAspectRatio','xMidYMid meet');
-    host.appendChild(svg);
-    var defs=document.createElementNS(NS,'defs'); svg.appendChild(defs);
-    var gZoom=document.createElementNS(NS,'g'); svg.appendChild(gZoom);
-    var gE=document.createElementNS(NS,'g'); gZoom.appendChild(gE);
-    var gN=document.createElementNS(NS,'g'); gZoom.appendChild(gN);
-
-    var dark=false;
-    var DARKMAP={'#1F5FAE':'#6BB0FF','#1E9E6A':'#43D39E','#7B5EA7':'#B392F0','#B96A00':'#F2A33C'};
-    function ecol(l){ return dark? (DARKMAP[l.color]||l.color) : l.color; }
-    var markers={};
-    function markerFor(col){
-      if(markers[col]) return markers[col];
-      var id='rgar'+Object.keys(markers).length;
-      var m=document.createElementNS(NS,'marker');
-      m.setAttribute('id',id); m.setAttribute('viewBox','0 0 10 10'); m.setAttribute('refX','9'); m.setAttribute('refY','5');
-      m.setAttribute('markerWidth','6'); m.setAttribute('markerHeight','6'); m.setAttribute('orient','auto');
-      var pa=document.createElementNS(NS,'path'); pa.setAttribute('d','M0,0 L10,5 L0,10 z'); pa.setAttribute('fill',col); pa.setAttribute('fill-opacity','.85');
-      m.appendChild(pa); defs.appendChild(m); markers[col]=id; return id;
-    }
-
-    /* 平行エッジのカーブ量 */
-    var cnt={}; links.forEach(function(l){ var k=[l.s,l.t].sort().join('|'); cnt[k]=(cnt[k]||0)+1; });
-    var seen={}; links.forEach(function(l){ var k=[l.s,l.t].sort().join('|'); var i=(seen[k]=(seen[k]||0)); seen[k]++; l._cv=(i-(cnt[k]-1)/2)*38; });
-
-    var edgeEls={};
-    links.forEach(function(l){
-      var p=document.createElementNS(NS,'path'); p.setAttribute('class','edge');
-      if(l.dashed) p.setAttribute('stroke-dasharray','6 5');
-      p.setAttribute('stroke-width', Math.min(3.2,1+Math.log10((l.count||1)+1)*1.1));
-      var tt=document.createElementNS(NS,'title'); tt.textContent=byId[l.s].label+' → '+byId[l.t].label+' ／ '+(l.label||'')+(l.qid?(' ／ '+l.qid):'')+(l.count?(' ／ '+l.count+'件'):''); p.appendChild(tt);
-      gE.appendChild(p); edgeEls[ekey(l)]=p;
-    });
-    function paintEdges(){ links.forEach(function(l){ var c=ecol(l), e=edgeEls[ekey(l)]; e.setAttribute('stroke',c); e.setAttribute('marker-end','url(#'+markerFor(c)+')'); }); }
-    paintEdges();
-
-    var nodeEls={}, lblEls={};
-    nodes.forEach(function(n){
-      var g=document.createElementNS(NS,'g'); g.setAttribute('class','node role-'+roleClass(n.role));
-      var halo=document.createElementNS(NS,'circle'); halo.setAttribute('class','halo'); halo.setAttribute('r',n.r+5); g.appendChild(halo);
-      var c=document.createElementNS(NS,'circle'); c.setAttribute('class','dot'); c.setAttribute('r',n.r); g.appendChild(c);
-      var t=document.createElementNS(NS,'text'); t.setAttribute('class','lbl'); t.setAttribute('y','13');
-      t.textContent=(roleClass(n.role)==='out'?'★ ':'')+fit(n.label,14); g.appendChild(t);
-      var tt=document.createElementNS(NS,'title'); tt.textContent=n.label+' ／ '+n.role+' ／ '+(n.sub||'')+' ／ つながり '+n._d+'本'; g.appendChild(tt);
-      g.addEventListener('pointerdown',function(ev){ startDrag(n,ev); });
-      g.addEventListener('mouseenter',function(){ hoverId=n.id; paintFocus(); });
-      g.addEventListener('mouseleave',function(){ if(hoverId===n.id){ hoverId=null; paintFocus(); } });
-      g.addEventListener('click',function(ev){ ev.stopPropagation(); if(lastDragDist<5) jumpTo(n.id,true); });
-      gN.appendChild(g); nodeEls[n.id]=g; lblEls[n.id]=t;
-    });
-
-    /* ---- 力学シミュレーション ---- */
-    var REP=20000, SPRING=0.006, GRAV=0.003, FLOW=0.014, DAMP=0.86;
-    var alpha=1, mode='layer', raf=null;
-    function step(){
-      var i,j,a,b,dx,dy,d,d2,f,ux,uy;
-      if(mode==='layer'){
-        var moving=false;
-        for(i=0;i<nodes.length;i++){ a=nodes[i];
-          if(a.fx!=null){ a.px=a.fx; a.py=a.fy; continue; }
-          dx=a.tx-a.px; dy=a.ty-a.py; if(Math.abs(dx)+Math.abs(dy)>0.4) moving=true;
-          a.px+=dx*0.16; a.py+=dy*0.16; }
-        return moving||!!dragN;
-      }
-      if(alpha<0.005 && !dragN) return false;
-      for(i=0;i<nodes.length;i++){ a=nodes[i];
-        for(j=i+1;j<nodes.length;j++){ b=nodes[j];
-          dx=b.px-a.px; dy=b.py-a.py; d2=dx*dx+dy*dy;
-          if(d2<1){ dx=(i-j)||1; dy=1; d2=2; }
-          d=Math.sqrt(d2); ux=dx/d; uy=dy/d;
-          f=REP/d2; if(f>3) f=3;
-          a.vx-=ux*f; a.vy-=uy*f; b.vx+=ux*f; b.vy+=uy*f;
-          var mn=a.r+b.r+40;
-          if(d<mn){ var ps=(mn-d)*0.22; a.vx-=ux*ps; a.vy-=uy*ps; b.vx+=ux*ps; b.vy+=uy*ps; }
-        }
-      }
-      for(i=0;i<links.length;i++){ var l=links[i]; a=byId[l.s]; b=byId[l.t];
-        dx=b.px-a.px; dy=b.py-a.py; d=Math.sqrt(dx*dx+dy*dy)||1; ux=dx/d; uy=dy/d;
-        var s=(d-(a.r+b.r+120))*SPRING;
-        a.vx+=ux*s; a.vy+=uy*s; b.vx-=ux*s; b.vy-=uy*s;
-      }
-      for(i=0;i<nodes.length;i++){ a=nodes[i];
-        a.vx+=(W/2-a.px)*GRAV; a.vy+=(H/2-a.py)*GRAV;
-        a.vy+=(a.ty-a.py)*FLOW;              /* 上流→下流の縦の流れを緩く維持 */
-        if(a.fx!=null){ a.px=a.fx; a.py=a.fy; a.vx=0; a.vy=0; continue; }
-        a.vx*=DAMP; a.vy*=DAMP;
-        var sp=Math.sqrt(a.vx*a.vx+a.vy*a.vy); if(sp>14){ a.vx*=14/sp; a.vy*=14/sp; }
-        a.px+=a.vx*alpha; a.py+=a.vy*alpha;
-        a.px=Math.max(a.r+44,Math.min(W-a.r-44,a.px));
-        a.py=Math.max(a.r+22,Math.min(H-a.r-36,a.py));
-      }
-      alpha*=0.985;
-      return true;
-    }
-    function draw(){
-      for(var i=0;i<links.length;i++){ var l=links[i], a=byId[l.s], b=byId[l.t];
-        var dx=b.px-a.px, dy=b.py-a.py, d=Math.sqrt(dx*dx+dy*dy)||1, ux=dx/d, uy=dy/d;
-        var mx=(a.px+b.px)/2-uy*l._cv, my=(a.py+b.py)/2+ux*l._cv;
-        var sx=a.px+ux*(a.r+2), sy=a.py+uy*(a.r+2);
-        var ex=b.px-ux*(b.r+7), ey=b.py-uy*(b.r+7);
-        edgeEls[ekey(l)].setAttribute('d','M'+sx.toFixed(1)+','+sy.toFixed(1)+' Q'+mx.toFixed(1)+','+my.toFixed(1)+' '+ex.toFixed(1)+','+ey.toFixed(1));
-      }
-      for(i=0;i<nodes.length;i++){ var n=nodes[i]; nodeEls[n.id].setAttribute('transform','translate('+n.px.toFixed(1)+','+n.py.toFixed(1)+')'); }
-    }
-    function loop(){ raf=null; var more=step(); draw(); if(more) raf=requestAnimationFrame(loop); }
-    function kick(a){ if(a!=null&&a>alpha) alpha=a; if(!raf) raf=requestAnimationFrame(loop); }
-    for(var w=0;w<60;w++) step();   /* 初期は少し落ち着かせてから描画 */
-
-    /* ---- ハイライト（ホバー＝一時／クリック＝固定） ---- */
-    var trail=[], selId=null, hoverId=null;
-    function paintFocus(){
-      var act=hoverId||selId;
-      svg.classList.toggle('focused',!!act);
-      var hl={},pN={},pE={},eH={};
-      if(act){ hl[act]=1;
-        inAdj[act].forEach(function(l){ hl[l.s]=1; eH[ekey(l)]=1; });
-        outAdj[act].forEach(function(l){ hl[l.t]=1; eH[ekey(l)]=1; });
-        var p=pathToOutput(act); p.ns.forEach(function(x){ pN[x]=1; }); p.es.forEach(function(x){ pE[x]=1; });
-      }
-      nodes.forEach(function(n){ var c='node role-'+roleClass(n.role);
-        if(n.id===selId) c+=' sel'; if(n.id===hoverId) c+=' hov';
-        if(hl[n.id]) c+=' hl'; if(pN[n.id]) c+=' path';
-        nodeEls[n.id].setAttribute('class',c); });
-      links.forEach(function(l){ var k=ekey(l),c='edge'; if(pE[k]) c+=' epath'; else if(eH[k]) c+=' ehl'; edgeEls[k].setAttribute('class',c); });
-    }
-    function render(){ paintFocus(); renderPanel(); renderCrumbs(); }
-    function jumpTo(id,push){ if(push){ var ix=trail.indexOf(id); if(ix>=0) trail=trail.slice(0,ix+1); else trail.push(id); } selId=id; render(); }
-    function crumbJump(i){ trail=trail.slice(0,i+1); selId=trail[i]; render(); }
-    function clearFocus(){ trail=[]; selId=null; hoverId=null; render(); }
-
-    function renderCrumbs(){ if(!selId){ crumbsEl.innerHTML='<span class="cur">表を選択</span>'; return; } var h=''; trail.forEach(function(id,i){ if(i>0) h+='<span class="sep">›</span>'; if(i===trail.length-1) h+='<span class="cur">'+esc(byId[id].label)+'</span>'; else h+='<button class="c" data-i="'+i+'">'+esc(byId[id].label)+'</button>'; }); crumbsEl.innerHTML=h; Array.prototype.forEach.call(crumbsEl.querySelectorAll('.c'),function(b){ b.addEventListener('click',function(){ crumbJump(+b.getAttribute('data-i')); }); }); }
-    function chip(l,dir){ var other=dir==='in'?l.s:l.t; var b=document.createElement('button'); b.className='p-chip'; b.innerHTML='<span class="dot" style="background:'+l.color+'"></span><span>'+esc(byId[other].label)+'</span><span class="via">'+esc(l.label||'')+(l.qid?(' '+l.qid):'')+'</span>'; b.addEventListener('click',function(){ jumpTo(other,true); }); b.addEventListener('mouseenter',function(){ hoverId=other; paintFocus(); }); b.addEventListener('mouseleave',function(){ if(hoverId===other){ hoverId=null; paintFocus(); } }); return b; }
-    function renderPanel(){ if(!selId){ pbody.innerHTML='<div class="empty">左のグラフで<b>表</b>をクリックすると、関係している表（上流／下流）と<b>最終アウトプットまでの経路</b>がここに出て、そのまま掘り下げられます。</div>'; return; } var n=byId[selId]; pbody.innerHTML=''; var nm=document.createElement('div'); nm.className='pname'; nm.textContent=n.label; pbody.appendChild(nm); var rc=document.createElement('span'); rc.className='rolechip rc-'+roleClass(n.role); rc.textContent=n.role; pbody.appendChild(rc); if(n.sub){ var mt=document.createElement('div'); mt.className='p-meta'; mt.textContent='規模 / キー'; pbody.appendChild(mt); var kb=document.createElement('div'); kb.className='p-keys'; kb.textContent=n.sub; pbody.appendChild(kb); }
-      var mt2=document.createElement('div'); mt2.className='p-meta'; mt2.textContent='つながりの数'; pbody.appendChild(mt2); var kb2=document.createElement('div'); kb2.className='p-keys'; kb2.textContent='上流 '+inAdj[selId].length+' ／ 下流 '+outAdj[selId].length+'（計 '+n._d+'）'; pbody.appendChild(kb2);
-      var rt=document.createElement('div'); rt.className='p-grp'; rt.innerHTML='<h4>最終アウトプットまでの経路</h4>'; var route=document.createElement('div'); route.className='p-route'; if(roleClass(n.role)==='out'){ route.innerHTML='<span>この表が最終アウトプットです。</span>'; } else { var p=pathToOutput(selId); if(p.ns.length<=1){ route.innerHTML='<span>最終アウトプットへの経路は見つかりませんでした。</span>'; } else { p.ns.forEach(function(id,i){ if(i>0){ var a=document.createElement('span'); a.className='arw'; a.textContent='▸'; route.appendChild(a); } var b=document.createElement('button'); b.className='r'+(id===output?' out':''); b.textContent=byId[id].label; b.addEventListener('click',function(){ jumpTo(id,true); }); route.appendChild(b); }); } } rt.appendChild(route); pbody.appendChild(rt);
-      var g1=document.createElement('div'); g1.className='p-grp'; g1.innerHTML='<h4>← この表に入ってくる（上流）</h4>'; var c1=document.createElement('div'); c1.className='p-chips'; if(inAdj[selId].length) inAdj[selId].forEach(function(l){ c1.appendChild(chip(l,'in')); }); else { var e=document.createElement('div'); e.className='p-chip none'; e.textContent='上流なし（起点データ）'; c1.appendChild(e); } g1.appendChild(c1); pbody.appendChild(g1);
-      var g2=document.createElement('div'); g2.className='p-grp'; g2.innerHTML='<h4>→ この表から出ていく（下流）</h4>'; var c2=document.createElement('div'); c2.className='p-chips'; if(outAdj[selId].length) outAdj[selId].forEach(function(l){ c2.appendChild(chip(l,'out')); }); else { var e2=document.createElement('div'); e2.className='p-chip none'; e2.textContent='下流なし（最終アウトプット）'; c2.appendChild(e2); } g2.appendChild(c2); pbody.appendChild(g2);
-    }
-
-    /* ---- 座標変換 / ズーム / パン ---- */
-    var scale=1,ox=0,oy=0,pan=null,moved=false;
-    function apply(){
-      gZoom.setAttribute('transform','translate('+ox+','+oy+') scale('+scale+')');
-      var k=1/scale;
-      nodes.forEach(function(n){ lblEls[n.id].setAttribute('transform','translate(0,'+n.r+') scale('+k+')'); });
-    }
-    function toVB(cx,cy){ var m=svg.getScreenCTM(); if(!m) return {x:0,y:0,k:1}; var p=svg.createSVGPoint(); p.x=cx; p.y=cy; var q=p.matrixTransform(m.inverse()); q.k=m.a||1; return q; }
-    function toWorld(ev){ var v=toVB(ev.clientX,ev.clientY); return {x:(v.x-ox)/scale, y:(v.y-oy)/scale}; }
-    function zoomAt(vx,vy,f){ var ns=Math.max(0.35,Math.min(5,scale*f)); ox=vx-(vx-ox)*(ns/scale); oy=vy-(vy-oy)*(ns/scale); scale=ns; apply(); }
-
-    var dragN=null, lastDragDist=0, dragStart=null;
-    function startDrag(n,ev){
-      ev.stopPropagation();
-      dragN=n; lastDragDist=0; dragStart={x:ev.clientX,y:ev.clientY};
-      var p=toWorld(ev); n._ox=p.x-n.px; n._oy=p.y-n.py; n.fx=n.px; n.fy=n.py;
-      kick(0.4);
-    }
-    window.addEventListener('pointermove',function(ev){
-      if(dragN){ var p=toWorld(ev); dragN.fx=p.x-dragN._ox; dragN.fy=p.y-dragN._oy;
-        lastDragDist=Math.abs(ev.clientX-dragStart.x)+Math.abs(ev.clientY-dragStart.y); kick(0.35); return; }
-      if(pan){ moved=true; var v=toVB(ev.clientX,ev.clientY); ox=pan.ox+(ev.clientX-pan.x)/v.k; oy=pan.oy+(ev.clientY-pan.y)/v.k; apply(); }
-    });
-    window.addEventListener('pointerup',function(){
-      if(dragN){ dragN.fx=null; dragN.fy=null; dragN=null; kick(0.2); }
-      if(pan){ pan=null; svg.classList.remove('panning'); }
-    });
-    svg.addEventListener('pointerdown',function(ev){ if(ev.target.closest&&ev.target.closest('.node')) return; pan={x:ev.clientX,y:ev.clientY,ox:ox,oy:oy}; moved=false; svg.classList.add('panning'); });
-    svg.addEventListener('click',function(ev){ if(!(ev.target.closest&&ev.target.closest('.node'))&&!moved) clearFocus(); });
-    svg.addEventListener('wheel',function(ev){ ev.preventDefault(); var v=toVB(ev.clientX,ev.clientY); zoomAt(v.x,v.y, ev.deltaY<0?1.12:0.9); },{passive:false});
-
-    /* ---- コントロール ---- */
-    var bar=document.createElement('div'); bar.className='relgraph-ctrl';
-    function ctl(txt,title,fn){ var b=document.createElement('button'); b.type='button'; b.textContent=txt; b.title=title; b.setAttribute('aria-label',title); b.addEventListener('click',function(ev){ ev.stopPropagation(); fn(b); }); bar.appendChild(b); return b; }
-    ctl('＋','拡大',function(){ zoomAt(W/2,H/2,1.25); });
-    ctl('－','縮小',function(){ zoomAt(W/2,H/2,0.8); });
-    ctl('▤','レイアウト切替（階層 → 力学）',function(b){ mode=(mode==='force'?'layer':'force'); b.textContent=(mode==='force'?'⚛':'▤'); b.title=(mode==='force'?'レイアウト切替（力学 → 階層）':'レイアウト切替（階層 → 力学）'); alpha=1; kick(1); });
-    ctl('☾','配色切替（ライト ⇔ ダーク）',function(b){ dark=!dark; host.classList.toggle('lightmode',!dark); b.textContent=dark?'☀':'☾'; paintEdges(); });
-    var expanded=false; function toggleExpand(){ expanded=!expanded; wrap.classList.toggle('expanded',expanded); document.body.classList.toggle('relgraph-noscroll',expanded); }
-    ctl('⤢','全画面で見る（Escで戻る）',function(){ toggleExpand(); });
-    ctl('⟳','配置と表示をリセット',function(){ scale=1; ox=0; oy=0; apply(); nodes.forEach(function(n,i){ n.px=PAD+((n.x||0)/sw)*(W-2*PAD)+jit(i,0)*70; n.py=PAD+((n.y||0)/sh)*(H-2*PAD)+jit(i,1)*70; n.vx=0; n.vy=0; n.fx=null; n.fy=null; }); alpha=1; kick(1); });
-    host.appendChild(bar);
-    var hint=document.createElement('div'); hint.className='relgraph-hint'; hint.textContent='ドラッグで移動 ／ ホイールで拡大縮小 ／ ノードをドラッグして並べ替え';
-    host.appendChild(hint);
-    document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ if(expanded) toggleExpand(); else clearFocus(); } });
-
-    apply(); draw(); render(); kick(1);
-  }catch(e){
-    var w=document.getElementById('relgraph-wrap'); if(w) w.style.display='none';
-    var s=document.querySelector('.map-static'); if(s) s.style.display='';
+  function persist() {
+    try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (e) { /* プライベートモード等では諦める */ }
   }
+
+  var boxes = document.querySelectorAll('.doneck');
+  for (var i = 0; i < boxes.length; i++) {
+    (function(box){
+      var seg = box.getAttribute('data-seg');
+      var block = box.closest('details.seg');
+      if (saved[seg]) { box.checked = true; if (block) block.classList.add('done'); }
+      // summary 内のクリックは details の開閉を誘発するので、チェックボックス側で止める
+      box.addEventListener('click', function(ev){ ev.stopPropagation(); });
+      box.parentNode.addEventListener('click', function(ev){ ev.stopPropagation(); });
+      box.addEventListener('change', function(){
+        if (box.checked) { saved[seg] = 1; if (block) block.classList.add('done'); }
+        else { delete saved[seg]; if (block) block.classList.remove('done'); }
+        persist();
+      });
+    })(boxes[i]);
+  }
+
+  // 印刷時は全ブロックを開く（閉じた details は中身が紙に出ない）
+  var opened = [];
+  window.addEventListener('beforeprint', function(){
+    opened = [];
+    var ds = document.querySelectorAll('details.seg, details.fileblk');
+    for (var i = 0; i < ds.length; i++) {
+      if (!ds[i].open) { ds[i].open = true; opened.push(ds[i]); }
+    }
+  });
+  window.addEventListener('afterprint', function(){
+    for (var i = 0; i < opened.length; i++) opened[i].open = false;
+    opened = [];
+  });
 })();
 `;

@@ -311,6 +311,80 @@ export function getProjectRelations(projectId: number): Promise<RelationGraph> {
   return get<RelationGraph>(`/projects/${projectId}/relations`)
 }
 
+// ---- ブック（ファイル）関係 ----
+// シート単位の自動解析より上位の入力。自動検出を初期案として提示し、担当者が確定する。
+export type FileRelType = 'aggregate' | 'reference' | 'transcribe' | 'manual_copy' | 'unknown'
+
+/** 関係登録の対象ファイル（解析対象の xlsx/csv のみ） */
+export interface FileRelFile {
+  id: number
+  filename: string
+  label: string            // 拡張子なし。関係グラフ側のファイルラベルと一致する
+  kind: string
+  sheetRoles: Record<string, string> | null
+}
+
+export interface FileRelation {
+  id: number
+  fromFile: string
+  toFile: string
+  relType: FileRelType
+  note: string
+  origin: 'auto' | 'manual'
+}
+
+/** 自動検出されたが未登録のファイル対（初期案） */
+export interface ProposedFileRelation {
+  fromFile: string
+  toFile: string
+  relType: FileRelType
+  total: number
+  reason: string
+  fromArtifactId: number
+  toArtifactId: number
+}
+
+export type FileRelVerdict = 'matched' | 'declared_not_detected' | 'detected_not_declared' | 'direction_conflict'
+
+export interface FileRelAudit {
+  fromFile: string
+  toFile: string
+  verdict: FileRelVerdict
+  relType?: FileRelType
+  note?: string
+  detectedTotal: number
+}
+
+export interface FileRelationsData {
+  files: FileRelFile[]
+  declared: FileRelation[]
+  proposed: ProposedFileRelation[]
+  audit: FileRelAudit[]
+  relTypes: Record<FileRelType, string>
+}
+
+export function getFileRelations(projectId: number): Promise<FileRelationsData> {
+  return get<FileRelationsData>(`/projects/${projectId}/file-relations`)
+}
+
+export function addFileRelation(projectId: number, body: {
+  fromArtifactId: number; toArtifactId: number; relType: FileRelType; note?: string; origin?: 'auto' | 'manual'
+}): Promise<{ ok: boolean; id: number }> {
+  return post(`/projects/${projectId}/file-relations`, body)
+}
+
+export function acceptAllFileRelations(projectId: number): Promise<{ ok: boolean; added: number }> {
+  return post(`/projects/${projectId}/file-relations/accept-all`)
+}
+
+export function updateFileRelation(id: number, body: { relType?: FileRelType; note?: string }): Promise<{ ok: boolean }> {
+  return patch(`/file-relations/${id}`, body)
+}
+
+export function deleteFileRelation(id: number): Promise<{ ok: boolean }> {
+  return del(`/file-relations/${id}`)
+}
+
 /** Blob/File を任意 kind でアップロード（Google Drive 取得ファイルの投入にも使う） */
 export function uploadBlob<T>(path: string, blob: Blob, filename: string, kind: string): Promise<T> {
   const form = new FormData()

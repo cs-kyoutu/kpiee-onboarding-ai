@@ -21,6 +21,10 @@ import { runDecode, runGenerate, runMatch, tableNameOf } from './pipeline/orches
 import { buildKpieePreview, buildImplReport } from './match/kpieePreview.js';
 import { gatherSummary, buildSummaryDocx, buildSummaryMarkdown } from './summaryDoc.js';
 import { buildRelationsReportHtml } from './relationsReport.js';
+import {
+  applyDeclaredFileRelations, proposeFileRelations, FILE_REL_TYPES, FILE_REL_LABELS,
+  type DeclaredFileRel, type FileRelType,
+} from './relations/declared.js';
 import { startAsk as qaStartAsk, isAskPending as qaIsPending, getHistory as qaHistory } from './qa/agent.js';
 import { invalidateBooks } from './qa/tools.js';
 import { aiAvailable, MODEL, estimateCostUsd } from './ai/client.js';
@@ -112,6 +116,8 @@ app.delete('/api/projects/:id', async (req, res) => {
     await t.prepare(`DELETE FROM match_results WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM deliverables WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM project_scripts WHERE project_id = ?`).run(projectId);
+    // file_relations は artifacts を参照するので artifacts より先に消す
+    await t.prepare(`DELETE FROM file_relations WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM artifacts WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM projects WHERE id = ?`).run(projectId);
   });
@@ -309,6 +315,9 @@ app.patch('/api/artifacts/:id/roles', async (req, res) => {
 
 app.delete('/api/artifacts/:id', async (req, res) => {
   const row = await db.prepare(`SELECT project_id FROM artifacts WHERE id = ?`).get(req.params.id) as { project_id: number } | undefined;
+  // このファイルを端点に持つブック関係も一緒に消す（残すと FK 違反になり、宙に浮いた関係も無意味）
+  await db.prepare(`DELETE FROM file_relations WHERE from_artifact_id = ? OR to_artifact_id = ?`)
+    .run(req.params.id, req.params.id);
   await db.prepare(`DELETE FROM artifacts WHERE id = ?`).run(req.params.id);
   // 取消は「やり直す」意思表示なので、Drive ストリーミング読みの短期キャッシュも捨てて
   // 再取り込みが必ず最新のシートを読むようにする。
@@ -505,12 +514,74 @@ async function loadProjectRelationGraphUncached(projectId: number): Promise<{ gr
   return { graph, fileCount: supported.length };
 }
 
+// ---- ブック（ファイル）関係: 担当者が確定した業務知識の層 ----
+// 解析結果（キャッシュ）とは独立に持ち、読み出しのたびに重ねる。
+// 宣言を編集しても CPU 重量級の再解析は起きない（relationsCache の署名には含めない）。
+interface FileRelRow {
+  id: number; from_artifact_id: number; to_artifact_id: number;
+  rel_type: string; note: string; origin: string;
+}
+
+/** 解析対象になるアーティファクト（関係グラフの file ラベルと対応づくもの）を返す */
+async function relationArtifacts(projectId: number): Promise<{ id: number; original_filename: string; kind: string; sheet_roles: string | null }[]> {
+  const rows = await db.prepare(
+    `SELECT id, original_filename, kind, sheet_roles FROM artifacts WHERE project_id = ? ORDER BY id`,
+  ).all(projectId) as { id: number; original_filename: string; kind: string; sheet_roles: string | null }[];
+  return rows.filter(r => /\.(xlsx|xlsm|csv)$/i.test(r.original_filename));
+}
+
+/**
+ * artifacts.sheet_roles（`{シート名: {role}}` の JSON）を `{シート名: role}` へ平す。
+ * 未設定（kind を全シートへ適用する従来動作）は undefined を返し、呼び出し側で kind を使わせる。
+ * pipeline/orchestrator.ts の rolesOf() と同じ規則。
+ */
+function parseSheetRoles(raw: string | null): Record<string, string> | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, { role: string }>;
+    return Object.fromEntries(Object.entries(parsed).map(([name, c]) => [name, c.role]));
+  } catch {
+    return undefined;
+  }
+}
+
+/** 登録済みブック関係を、関係グラフ側のキー（fileLabelOf ラベル）へ解決して返す */
+async function loadDeclaredFileRels(projectId: number): Promise<DeclaredFileRel[]> {
+  const [rows, arts] = await Promise.all([
+    db.prepare(
+      `SELECT id, from_artifact_id, to_artifact_id, rel_type, note, origin FROM file_relations WHERE project_id = ? ORDER BY id`,
+    ).all(projectId) as Promise<FileRelRow[]>,
+    relationArtifacts(projectId),
+  ]);
+  const labelOf = new Map(arts.map(a => [a.id, fileLabelOf(a.original_filename)]));
+  const out: DeclaredFileRel[] = [];
+  for (const r of rows) {
+    const fromFile = labelOf.get(r.from_artifact_id);
+    const toFile = labelOf.get(r.to_artifact_id);
+    if (!fromFile || !toFile) continue; // 参照先が削除済み・解析対象外なら無視する
+    out.push({
+      id: r.id, fromFile, toFile,
+      relType: (FILE_REL_TYPES as string[]).includes(r.rel_type) ? r.rel_type as FileRelType : 'unknown',
+      note: r.note ?? '', origin: r.origin === 'auto' ? 'auto' : 'manual',
+    });
+  }
+  return out;
+}
+
+/** 関係グラフに確定済みブック関係を重ねて返す。関係表示・要確認・レポートの共通入口 */
+async function loadRelationGraphWithDeclarations(projectId: number) {
+  const loaded = await loadProjectRelationGraph(projectId);
+  if (!loaded) return null;
+  const declared = await loadDeclaredFileRels(projectId);
+  return { ...loaded, graph: applyDeclaredFileRelations(loaded.graph, declared) };
+}
+
 // プロジェクト全体のシート関係性グラフ。アップロード済みの全ファイル(xlsx/csv)を1パスで解析し、
 // ファイルをまたぐ手コピー関係も検出する。ファイルが1つなら自然にそのファイル単体の解析になる。
 app.get('/api/projects/:id/relations', async (req, res) => {
   const projectId = Number(req.params.id);
   try {
-    const loaded = await loadProjectRelationGraph(projectId);
+    const loaded = await loadRelationGraphWithDeclarations(projectId);
     if (!loaded) return res.json({ regions: [], edges: [], warnings: [], fileCount: 0 });
     const base: LocalGraph = { ...loaded.graph, fileCount: loaded.fileCount };
     // 骨格グラフに AI解読（findings）を融合し、巨大グラフは転送前に集約する。findings は独立に変わりうるため毎回融合する。
@@ -526,7 +597,7 @@ app.get('/api/projects/:id/relations', async (req, res) => {
 app.get('/api/projects/:id/attention', async (req, res) => {
   const projectId = Number(req.params.id);
   try {
-    const loaded = await loadProjectRelationGraph(projectId);
+    const loaded = await loadRelationGraphWithDeclarations(projectId);
     if (!loaded) return res.json({ total: 0, kinds: [], groups: [] });
     const warnings = loaded.graph.warnings ?? [];
     // ref は `ファイル／シート#n:列`。region id は ':' を含まないので最初の ':' で列名を分離できる
@@ -567,16 +638,27 @@ app.get('/api/projects/:id/attention', async (req, res) => {
 app.get('/api/projects/:id/relations/report', async (req, res) => {
   const projectId = Number(req.params.id);
   try {
-    const loaded = await loadProjectRelationGraph(projectId);
+    const loaded = await loadRelationGraphWithDeclarations(projectId);
     if (!loaded) return res.status(404).json({ error: '関係分析できるファイル（.xlsx/.csv）がまだありません' });
     const project = await db.prepare(`SELECT customer_name FROM projects WHERE id = ?`)
       .get(projectId) as { customer_name: string } | undefined;
     const customerName = project?.customer_name ?? '';
+    // 取込時の種別指定（kind）とシート役割（sheet_roles）を渡す。「どれが最終アウトプットか」
+    // 「各シートが raw / 中間 / 帳票 のどれか」は業務知識であり自動推定で当てるものではないため、
+    // 入力された内容をレポート 01 の正解として使う。
+    const arts = await relationArtifacts(projectId);
     const html = buildRelationsReportHtml({
       customerName,
       generatedAt: new Date(),
       fileCount: loaded.fileCount,
       graph: loaded.graph,
+      artifacts: arts.map(a => ({
+        filename: a.original_filename,
+        kind: a.kind,
+        sheetRoles: parseSheetRoles(a.sheet_roles),
+      })),
+      declaredFileRels: loaded.graph.declaredFileRels,
+      fileRelAudit: loaded.graph.fileRelAudit,
     });
     const date = new Date().toISOString().slice(0, 10);
     // ファイル名に使えない文字を除去。ASCII フォールバック + RFC5987 の両方を付ける
@@ -587,6 +669,123 @@ app.get('/api/projects/:id/relations/report', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
+});
+
+// ---- ブック（ファイル）関係の登録 ----
+// シート単位の自動解析より上位の入力段階。自動検出は初期案として提示するだけで、確定するのは人。
+// 確定した関係は loadRelationGraphWithDeclarations で毎回グラフへ重ねられる（キャッシュは触らない）。
+
+/** 一覧: 対象ファイル・登録済み関係・初期案・突き合わせ結果 */
+app.get('/api/projects/:id/file-relations', async (req, res) => {
+  const projectId = Number(req.params.id);
+  try {
+    const arts = await relationArtifacts(projectId);
+    const files = arts.map(a => ({
+      id: a.id,
+      filename: a.original_filename,
+      label: fileLabelOf(a.original_filename),
+      kind: a.kind,
+      sheetRoles: parseSheetRoles(a.sheet_roles) ?? null,
+    }));
+    const declared = await loadDeclaredFileRels(projectId);
+    // ラベル → artifact id（画面から「確定」する時に id で投げ返せるようにする）
+    const idOfLabel = new Map(files.map(f => [f.label, f.id]));
+    const loaded = await loadProjectRelationGraph(projectId);
+    const proposed = loaded
+      ? proposeFileRelations(loaded.graph, declared).map(p => ({
+          ...p,
+          fromArtifactId: idOfLabel.get(p.fromFile) ?? null,
+          toArtifactId: idOfLabel.get(p.toFile) ?? null,
+        })).filter(p => p.fromArtifactId !== null && p.toArtifactId !== null)
+      : [];
+    const audit = loaded ? applyDeclaredFileRelations(loaded.graph, declared).fileRelAudit : [];
+    res.json({ files, declared, proposed, audit, relTypes: FILE_REL_LABELS });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+/** 1件の登録内容を検証する。問題があればメッセージ、無ければ null */
+async function validateFileRel(projectId: number, fromId: number, toId: number, relType: string): Promise<string | null> {
+  if (!Number.isFinite(fromId) || !Number.isFinite(toId)) return 'from / to のファイルを指定してください';
+  if (fromId === toId) return '同じファイルどうしは登録できません（ファイル内の流れはシート関係で表示されます）';
+  if (!(FILE_REL_TYPES as string[]).includes(relType)) {
+    return `種別は ${FILE_REL_TYPES.join(' / ')} のいずれかです`;
+  }
+  const ids = (await relationArtifacts(projectId)).map(a => a.id);
+  if (!ids.includes(fromId) || !ids.includes(toId)) return '指定されたファイルがこのプロジェクトにありません';
+  return null;
+}
+
+app.post('/api/projects/:id/file-relations', async (req, res) => {
+  const projectId = Number(req.params.id);
+  const { fromArtifactId, toArtifactId, relType, note, origin } = req.body as {
+    fromArtifactId?: number; toArtifactId?: number; relType?: string; note?: string; origin?: string;
+  };
+  const fromId = Number(fromArtifactId); const toId = Number(toArtifactId);
+  const type = relType ?? 'unknown';
+  const err = await validateFileRel(projectId, fromId, toId, type);
+  if (err) return res.status(400).json({ error: err });
+  // 同じ向きの重複登録は作らない（初期案の「確定」を二度押しても増えない）
+  const dup = await db.prepare(
+    `SELECT id FROM file_relations WHERE project_id = ? AND from_artifact_id = ? AND to_artifact_id = ?`,
+  ).get(projectId, fromId, toId) as { id: number } | undefined;
+  if (dup) {
+    await db.prepare(`UPDATE file_relations SET rel_type = ?, note = ? WHERE id = ?`).run(type, note ?? '', dup.id);
+    return res.json({ ok: true, id: dup.id, updated: true });
+  }
+  const result = await db.prepare(
+    `INSERT INTO file_relations (project_id, from_artifact_id, to_artifact_id, rel_type, note, origin) VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(projectId, fromId, toId, type, note ?? '', origin === 'auto' ? 'auto' : 'manual');
+  res.json({ ok: true, id: Number(result.lastInsertRowid) });
+});
+
+/** 初期案の一括確定（ファイルが多い案件で1件ずつ押させないため） */
+app.post('/api/projects/:id/file-relations/accept-all', async (req, res) => {
+  const projectId = Number(req.params.id);
+  try {
+    const loaded = await loadProjectRelationGraph(projectId);
+    if (!loaded) return res.json({ ok: true, added: 0 });
+    const arts = await relationArtifacts(projectId);
+    const idOfLabel = new Map(arts.map(a => [fileLabelOf(a.original_filename), a.id]));
+    const declared = await loadDeclaredFileRels(projectId);
+    const proposals = proposeFileRelations(loaded.graph, declared);
+    let added = 0;
+    await db.tx(async t => {
+      const insert = t.prepare(
+        `INSERT INTO file_relations (project_id, from_artifact_id, to_artifact_id, rel_type, note, origin) VALUES (?, ?, ?, ?, ?, 'auto')`,
+      );
+      for (const p of proposals) {
+        const fromId = idOfLabel.get(p.fromFile); const toId = idOfLabel.get(p.toFile);
+        if (fromId === undefined || toId === undefined) continue;
+        await insert.run(projectId, fromId, toId, p.relType, p.reason);
+        added++;
+      }
+    });
+    res.json({ ok: true, added });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.patch('/api/file-relations/:id', async (req, res) => {
+  const { relType, note } = req.body as { relType?: string; note?: string };
+  const row = await db.prepare(`SELECT project_id, rel_type, note FROM file_relations WHERE id = ?`)
+    .get(req.params.id) as { project_id: number; rel_type: string; note: string } | undefined;
+  if (!row) return res.status(404).json({ error: 'file relation not found' });
+  const type = relType ?? row.rel_type;
+  if (!(FILE_REL_TYPES as string[]).includes(type)) {
+    return res.status(400).json({ error: `種別は ${FILE_REL_TYPES.join(' / ')} のいずれかです` });
+  }
+  // 修正した時点で「人が確認したもの」になるので origin を manual に上げる
+  await db.prepare(`UPDATE file_relations SET rel_type = ?, note = ?, origin = 'manual' WHERE id = ?`)
+    .run(type, note ?? row.note, req.params.id);
+  res.json({ ok: true });
+});
+
+app.delete('/api/file-relations/:id', async (req, res) => {
+  await db.prepare(`DELETE FROM file_relations WHERE id = ?`).run(req.params.id);
+  res.json({ ok: true });
 });
 
 // （単一ファイル版。デバッグ・互換用。通常は上のプロジェクト全体版を使う）xlsx のみ
