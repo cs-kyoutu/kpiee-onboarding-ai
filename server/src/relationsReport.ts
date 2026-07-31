@@ -8,15 +8,16 @@
 //
 // 構成は4節。読み合わせの打ち合わせで上から順に説明していける並びにしてある:
 //   01 受領データ一覧 … どのブックが何で、各シートがどういう役割か（取込時に入力された情報）
-//   02 全体の流れと詳細ロジック … ブック単位の全体フロー図 → 流れの段ごとに分けたシート関係ブロック
+//   02 全体の流れと詳細ロジック … 全体関係図（ブック間）→ 詳細関係図（シート・表間）→ 詳細ロジック表
 //   03 ご確認いただきたい点 … 自動解析が「推定」に留まる箇所
 //   04 今後の進め方
-// 02 の各ブロックは折りたたみ＋「確認済」チェックを持ち、読み合わせでどこまで説明したかを追える。
+// 02 は必ず「全体 → 詳細」の順に降りる。1ブックの案件ではブック間の図が1箱になって意味を持たないため、
+// 全体の段を省いて詳細関係図から入る（従来の構成と同じ）。
 import type { RelationGraph, Region, Edge, RelationWarning, KeyLink } from './preprocess/relations.js';
 import { colLetter, fileLabelOf } from './preprocess/relations.js';
 import {
   regionIdOf, colNameOf, regionPairKey, filePairKey,
-  groupOf, GROUP_META, GROUP_ORDER, aggregatePairs, dominantGroup, computeLayers,
+  GROUP_META, GROUP_ORDER, aggregatePairs, dominantGroup, computeLayers,
   aggregateFilePairs, dominantFileGroup, computeFileLayers,
   type Group, type PairAgg, type FilePair,
 } from './relations/fileGraph.js';
@@ -489,6 +490,149 @@ function fitText(s: string, maxPx: number, fontPx: number): string {
 }
 
 // ============================================================
+// キー関係図（ER 図）— キー列でつながる表どうしを、主キー/軸と 1:N で示す
+//
+// 関係マップ（ノード図）は「どの向きに流れているか」しか示せない。顧客が取込設定で
+// 必ず聞かれるのは「どのキーで結合するのか」なので、キーの対応は別図として出す。
+// ============================================================
+const ER = { W: 226, HEAD: 30, ROW: 22, GX: 148, GY: 26, PAD: 16, CAP: 20 };
+
+interface ErResult { svg: string; omitted: number }
+
+function buildErDiagram(regions: Region[], keyLinks: KeyLink[], labels: Map<string, string>): ErResult | null {
+  const links = [...keyLinks].sort((a, b) => b.count - a.count);
+  if (links.length === 0) return null; // 表間のキー対応が無ければ ER は描かない（01 の列構成でキーは確認できる）
+  const byId = new Map(regions.map(r => [r.id, r]));
+  const withKeys = regions.filter(r => (r.keys?.keys?.length ?? 0) > 0);
+  const linkedIds = new Set(links.flatMap(l => [regionIdOf(l.a), regionIdOf(l.b)]));
+  const pool = withKeys.filter(r => linkedIds.has(r.id));
+  if (pool.length === 0) return null;
+  const show = [...pool].sort((a, b) => {
+    const pa = a.keys!.keys.some(k => k.role === 'primary') ? 1 : 0;
+    const pb = b.keys!.keys.some(k => k.role === 'primary') ? 1 : 0;
+    return pb - pa;
+  }).slice(0, ER.CAP);
+  const showIds = new Set(show.map(r => r.id));
+  const shownLinks = links.filter(l => showIds.has(regionIdOf(l.a)) && showIds.has(regionIdOf(l.b)));
+  if (shownLinks.length === 0) return null;
+
+  // データは b（参照される側=マスタ）→ a（数式側）へ流れる。b を左の層へ置く（最長経路レイヤ）。
+  const layer = new Map<string, number>(show.map(r => [r.id, 0]));
+  const lp = shownLinks.map(l => ({ from: regionIdOf(l.b), to: regionIdOf(l.a) }));
+  const cap = Math.min(show.length + 2, 12);
+  for (let pass = 0; pass < cap; pass++) {
+    let changed = false;
+    for (const e of lp) {
+      const lf = layer.get(e.from), lt = layer.get(e.to);
+      if (lf === undefined || lt === undefined) continue;
+      if (lt < lf + 1 && lf + 1 < cap) { layer.set(e.to, lf + 1); changed = true; }
+    }
+    if (!changed) break;
+  }
+  const byLayer = new Map<number, Region[]>();
+  for (const r of show) {
+    const l = layer.get(r.id) ?? 0;
+    if (!byLayer.has(l)) byLayer.set(l, []);
+    byLayer.get(l)!.push(r);
+  }
+  const layersSorted = [...byLayer.entries()].sort((a, b) => a[0] - b[0]);
+
+  // 交差を減らす簡易バリセンタ: 前の層の接続相手の平均位置で並べ替える
+  const partners = new Map<string, string[]>();
+  for (const l of shownLinks) {
+    const a = regionIdOf(l.a), b = regionIdOf(l.b);
+    (partners.get(a) ?? partners.set(a, []).get(a)!).push(b);
+    (partners.get(b) ?? partners.set(b, []).get(b)!).push(a);
+  }
+  const orderIndex = new Map<string, number>();
+  for (const [l, regs] of layersSorted) {
+    if (l > 0) {
+      const score = (id: string) => {
+        const ps = (partners.get(id) ?? []).filter(p => (layer.get(p) ?? 0) < l && orderIndex.has(p));
+        return ps.length === 0 ? 1e9 : ps.reduce((s, p) => s + orderIndex.get(p)!, 0) / ps.length;
+      };
+      regs.sort((x, y) => score(x.id) - score(y.id));
+    }
+    regs.forEach((r, i) => orderIndex.set(r.id, i));
+  }
+
+  const connectedKeys = new Set(shownLinks.flatMap(l => [l.a, l.b]));
+  const keysOf = (r: Region) => {
+    const conn = r.keys!.keys.filter(k => connectedKeys.has(`${r.id}:${k.column}`));
+    return conn.length > 0 ? conn : r.keys!.keys;
+  };
+  // カーディナリティ: 列の値が全行一意なら 1（マスタ側）、繰り返しがあれば N（明細側）
+  const cardOf = (key: string): string => {
+    const st = byId.get(regionIdOf(key))?.columns.find(c => c.name === colNameOf(key))?.stats;
+    return st ? (st.uniq === st.filled ? '1' : 'N') : '';
+  };
+
+  const heightOf = (r: Region) => ER.HEAD + keysOf(r).length * ER.ROW + 6;
+  const layerHeights = layersSorted.map(([, regs]) => regs.reduce((s, r) => s + heightOf(r), 0) + (regs.length - 1) * ER.GY);
+  const maxLayerH = Math.max(...layerHeights, 90);
+
+  interface Node { id: string; x: number; y: number; w: number; h: number; title: string; rows: { cy: number; mark: string; label: string; primary: boolean; connected: boolean }[] }
+  const nodes: Node[] = [];
+  const rowY = new Map<string, number>();
+  layersSorted.forEach(([l, regs], li) => {
+    let y = ER.PAD + (maxLayerH - layerHeights[li]) / 2;
+    for (const r of regs) {
+      const ks = keysOf(r);
+      const rows = ks.map((k, i) => {
+        const cy = y + ER.HEAD + i * ER.ROW + ER.ROW / 2;
+        const key = `${r.id}:${k.column}`;
+        rowY.set(key, cy);
+        return { cy, mark: k.role === 'primary' ? '🔑' : '◇', label: k.column, primary: k.role === 'primary', connected: connectedKeys.has(key) };
+      });
+      nodes.push({ id: r.id, x: ER.PAD + l * (ER.W + ER.GX), y, w: ER.W, h: heightOf(r), title: labels.get(r.id) ?? r.sheet, rows });
+      y += heightOf(r) + ER.GY;
+    }
+  });
+  const nodeById = new Map(nodes.map(n => [n.id, n]));
+
+  // 同じキー列ペアは関数違いでも1本にまとめる
+  const pairMap = new Map<string, { a: string; b: string }>();
+  for (const l of shownLinks) pairMap.set(`${l.a}|${l.b}`, { a: l.a, b: l.b });
+
+  const maxLayer = Math.max(0, ...layersSorted.map(([l]) => l));
+  const width = ER.PAD * 2 + (maxLayer + 1) * (ER.W + ER.GX) - ER.GX;
+  const height = ER.PAD * 2 + maxLayerH;
+
+  const parts: string[] = [];
+  parts.push(`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="キー関係図（ER）">`);
+  // コネクタ（エルボ）＋端点のカーディナリティ
+  for (const p of pairMap.values()) {
+    const na = nodeById.get(regionIdOf(p.a))!, nb = nodeById.get(regionIdOf(p.b))!;
+    const ya = rowY.get(p.a) ?? na.y + ER.HEAD / 2;
+    const yb = rowY.get(p.b) ?? nb.y + ER.HEAD / 2;
+    const bLeft = nb.x + nb.w <= na.x;
+    const x1 = bLeft ? nb.x + nb.w : nb.x;
+    const x2 = bLeft ? na.x : na.x + na.w;
+    const midX = (x1 + x2) / 2;
+    parts.push(`<path d="M${x1},${yb} L${midX},${yb} L${midX},${ya} L${x2},${ya}" fill="none" stroke="#7A8794" stroke-width="1.6"/>`);
+    const bc = cardOf(p.b), ac = cardOf(p.a);
+    if (bc) parts.push(`<text x="${x1 + (bLeft ? 6 : -6)}" y="${yb - 5}" font-size="11" font-weight="700" fill="#1F5FAE" text-anchor="${bLeft ? 'start' : 'end'}">${bc}</text>`);
+    if (ac) parts.push(`<text x="${x2 + (bLeft ? -6 : 6)}" y="${ya - 5}" font-size="11" font-weight="700" fill="#B96A00" text-anchor="${bLeft ? 'end' : 'start'}">${ac}</text>`);
+  }
+  // エンティティ（表）ボックス
+  for (const n of nodes) {
+    parts.push(`<g>`);
+    parts.push(`<rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="9" fill="#fff" stroke="#C9D4E0" stroke-width="1.2"/>`);
+    parts.push(`<rect x="${n.x}" y="${n.y}" width="${n.w}" height="${ER.HEAD}" rx="9" fill="#0E2A47"/>`);
+    parts.push(`<rect x="${n.x}" y="${n.y + ER.HEAD - 9}" width="${n.w}" height="9" fill="#0E2A47"/>`);
+    parts.push(`<text x="${n.x + 12}" y="${n.y + 20}" font-size="12.5" font-weight="700" fill="#fff">${esc(fitText(n.title, n.w - 24, 12.5))}</text>`);
+    n.rows.forEach((row) => {
+      const ty = row.cy + 4;
+      if (row.connected) parts.push(`<rect x="${n.x + 3}" y="${row.cy - ER.ROW / 2}" width="${n.w - 6}" height="${ER.ROW}" fill="#EDF4FC"/>`);
+      parts.push(`<text x="${n.x + 12}" y="${ty}" font-size="11.5" fill="${row.primary ? '#0E2A47' : '#4b5563'}" font-weight="${row.primary ? 700 : 400}">${row.mark} ${esc(fitText(row.label, n.w - 34, 11.5))}</text>`);
+    });
+    parts.push(`</g>`);
+  }
+  parts.push('</svg>');
+  return { svg: parts.join('\n'), omitted: withKeys.length - show.length };
+}
+
+// ============================================================
 // ファイル単位の集約 — 「受領データ一覧」と「全体の流れ図」の土台
 //
 // 表領域（region）単位の関係は細かすぎて全体像が見えないため、ファイル単位へ畳んだ層を別に持つ。
@@ -675,128 +819,13 @@ function buildFileFlow(stats: Map<string, FileStat>, filePairs: FilePair[], outp
 }
 
 // ============================================================
-// 02 のセグメント — 全体の流れを「段」で切り、段ごとにシート関係を見せる
+// 02 の「詳細ロジック」表
 //
-// 全表の関係を1枚にすると読めないので、読み合わせで説明できる単位へ機械的に切る。
-// 切り方は決定論的（AI 呼び出しなし）で、ファイルのレイヤ＝流れの段をそのまま使う:
-//   取込（元データ）▶ 集計（中間） / 集計 ▶ 最終アウトプット …
-// 1ファイル案件のようにファイルの段が付かない場合は、表(region)のレイヤでサブ分割する。
-// これが無いと 02 が1個の巨大ブロックになり、分けた意味が無くなる。
-// ============================================================
-
-/** 段のラベル。左端=元データ、右端=最終アウトプット、間は中間 */
-function layerLabel(layer: number, maxLayer: number, hasOutputs: boolean): string {
-  if (layer === 0) return '元データ（受領データ）';
-  if (hasOutputs && layer >= maxLayer) return '最終アウトプット';
-  return '中間ファイル';
-}
-
-interface Segment {
-  no: string;          // 「2-1」等
-  title: string;       // 「元データ ▶ 中間ファイル」
-  pairs: PairAgg[];    // この段に属する表ペア
-  fileNote: string;    // 「仕訳データ.xlsx、マスタ.xlsx → 月次報告.xlsx」
-  declared: DeclaredFileRel[]; // この段に関係する登録済みブック関係（担当者の説明を出す）
-  mainFrom: string;    // 主な送り元ファイル名（見出しが重なったときの区別用）
-}
-
-/** ファイル段が付かない（＝実質1段）ときに、表のレイヤでサブ分割するかの閾値 */
-const SUBSPLIT_MIN_PAIRS = 8;
-
-function buildSegments(
-  regions: Region[], pairs: PairAgg[], fileStats: Map<string, FileStat>,
-  filePairs: FilePair[], outputs: Set<string>, declared: DeclaredFileRel[],
-): Segment[] {
-  if (pairs.length === 0) return [];
-  const fileOfRegion = new Map(regions.map(r => [r.id, r.file]));
-  const fileLabels = [...fileStats.keys()];
-  const fileLayer = computeFileLayers(fileLabels, filePairs, outputs);
-  const filenameOf = (label: string) => fileStats.get(label)?.filename ?? label;
-
-  // 送り元ファイルの段でグループ化する。ファイル内で完結する流れも、そのファイルの段に属する。
-  const byLayer = new Map<number, PairAgg[]>();
-  for (const p of pairs) {
-    const fromFile = fileOfRegion.get(p.from);
-    const l = fromFile !== undefined ? (fileLayer.get(fromFile) ?? 0) : 0;
-    if (!byLayer.has(l)) byLayer.set(l, []);
-    byLayer.get(l)!.push(p);
-  }
-
-  // ファイルの段が実質1つしか無い（1ファイル案件など）のに関係が多い場合は、
-  // 表のレイヤで切り直す。「入力 ▶ 計算 ▶ 帳票」がシート内で完結している形に対応する。
-  if (byLayer.size <= 1 && pairs.length > SUBSPLIT_MIN_PAIRS) {
-    const regionLayer = computeLayers(regions.map(r => r.id), pairs);
-    byLayer.clear();
-    for (const p of pairs) {
-      const l = regionLayer.get(p.from) ?? 0;
-      if (!byLayer.has(l)) byLayer.set(l, []);
-      byLayer.get(l)!.push(p);
-    }
-  }
-
-  const layerNos = [...byLayer.keys()].sort((a, b) => a - b);
-  const maxLayer = Math.max(...layerNos, ...fileLabels.map(l => fileLayer.get(l) ?? 0));
-  const hasOutputs = outputs.size > 0;
-  const declaredByPair = new Map(declared.map(d => [filePairKey(d.fromFile, d.toFile), d]));
-
-  const segs = layerNos.map((l, i) => {
-    const segPairs = byLayer.get(l)!.sort((a, b) => b.total - a.total);
-    // この段に登場するファイルの組み合わせ（見出し下の「対象」行）
-    const froms = new Set<string>(); const tos = new Set<string>();
-    const segDeclared = new Map<string, DeclaredFileRel>();
-    let crossFile = 0;
-    for (const p of segPairs) {
-      const f = fileOfRegion.get(p.from); const t = fileOfRegion.get(p.to);
-      if (f) froms.add(f);
-      if (t) tos.add(t);
-      if (f && t && f !== t) {
-        crossFile++;
-        const d = declaredByPair.get(filePairKey(f, t));
-        if (d) segDeclared.set(filePairKey(f, t), d);
-      }
-    }
-    const fromNames = [...froms].map(filenameOf);
-    const toNames = [...tos].filter(t => !froms.has(t) || tos.size === 1).map(filenameOf);
-    const fileNote = toNames.length > 0 && fromNames.join() !== toNames.join()
-      ? `${shortText(fromNames.join('、'), 60)} → ${shortText(toNames.join('、'), 40)}`
-      : shortText(fromNames.join('、'), 90);
-
-    // 見出しは「送り元の段 ▶ 送り先の段」。送り先の段は実際の宛先ファイルから決める
-    // （layerNos の次の要素で決めると、最後の段が「最終アウトプット ▶ 最終アウトプット」になる）。
-    const dstLayers = [...tos].map(t => fileLayer.get(t) ?? l);
-    const dstLayer = dstLayers.length > 0 ? Math.max(...dstLayers) : l;
-    const srcName = layerLabel(l, maxLayer, hasOutputs);
-    const title = crossFile === 0 || dstLayer === l
-      ? `${srcName}（ブック内のロジック）`
-      : `${srcName} ▶ ${layerLabel(dstLayer, maxLayer, hasOutputs)}`;
-    // 主な送り元ファイル（見出しが重なったときの区別に使う）
-    const mainFrom = fromNames.length > 0 ? fromNames[0] : '';
-    return {
-      no: `2-${i + 1}`,
-      title,
-      pairs: segPairs,
-      fileNote,
-      declared: [...segDeclared.values()],
-      mainFrom,
-    };
-  });
-
-  // 「中間ファイル ▶ 最終アウトプット」が複数段に出ることがある（中間が2段以上あるとき）。
-  // 折りたたんだ状態では見出ししか見えないので、重複したら主な送り元ファイル名で区別する。
-  const titleCount = new Map<string, number>();
-  for (const s of segs) titleCount.set(s.title, (titleCount.get(s.title) ?? 0) + 1);
-  for (const s of segs) {
-    if ((titleCount.get(s.title) ?? 0) > 1 && s.mainFrom) {
-      s.title = `${s.title}：${shortText(s.mainFrom, 28)}`;
-    }
-  }
-  return segs;
-}
-
-// ---- セグメントの「詳細ロジック」表 ----
 // 「どのシートのどの列が、どのキーで、どんな処理で、どこへつながっているか」を1行1関係で出す。
+// 図（ノード）は向きしか示せないので、キー・処理・根拠はこの表が受け持つ。
 // キーは keyLinks（VLOOKUP/SUMIFS 等の引数位置から抽出した表間キー対応）から引く。
-const DETAIL_ROWS_PER_SEGMENT = 14;
+// ============================================================
+const DETAIL_ROWS_CAP = 30;
 
 /** 表ペア → 「照合に使っているキー列」の要約。無ければ空文字 */
 function buildPairKeyIndex(keyLinks: KeyLink[]): Map<string, string> {
@@ -834,8 +863,12 @@ function processLabel(g: Group, evidence: string): string {
   return fn ? `${fn} で${GROUP_META[g].label.split('（')[0]}` : '';
 }
 
+/**
+ * 掲載順は「流れの順」。関係の本数で並べると帳票→元データが混ざって読み合わせに使えないため、
+ * 送り元表のレイヤ（元データ=0 …）で昇順に並べ、同じレイヤ内は本数の多い順にする。
+ */
 function buildDetailRows(
-  seg: Segment, labels: Map<string, string>, pairKeys: Map<string, string>,
+  pairs: PairAgg[], labels: Map<string, string>, pairKeys: Map<string, string>,
   copyQuestionByPair: Map<string, string>,
 ): { rows: string[]; omitted: number } {
   const endLabel = (key: string) => {
@@ -843,8 +876,14 @@ function buildDetailRows(
     const l = labels.get(rid) ?? rid;
     return col ? `${esc(l)}<span class="dl-col">${esc(col)}</span>` : esc(l);
   };
+  const ids = [...new Set(pairs.flatMap(p => [p.from, p.to]))];
+  const layer = computeLayers(ids, pairs);
+  const ordered = [...pairs].sort((a, b) => {
+    const la = layer.get(a.from) ?? 0, lb = layer.get(b.from) ?? 0;
+    return la !== lb ? la - lb : b.total - a.total;
+  });
   const rows: string[] = [];
-  const shown = seg.pairs.slice(0, DETAIL_ROWS_PER_SEGMENT);
+  const shown = ordered.slice(0, DETAIL_ROWS_CAP);
   for (const p of shown) {
     const g = dominantGroup(p);
     const e = p.best[g] ?? p.best.copy;
@@ -862,7 +901,7 @@ function buildDetailRows(
       `<td class="conf"><b>${confLabel(e.confidence ?? 0)}</b>${qid ? `<div class="dl-q">${qid}</div>` : ''}</td>` +
       `</tr>`);
   }
-  return { rows, omitted: seg.pairs.length - shown.length };
+  return { rows, omitted: pairs.length - shown.length };
 }
 
 // ============================================================
@@ -903,51 +942,26 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   for (const q of questions) if (q.refPair) copyQuestionByPair.set(q.refPair, q.id);
   const fileFlow = buildFileFlow(fileStats, filePairs, outputFiles);
 
-  // ---- 02 のセグメント（流れの段ごとのシート関係ブロック）----
-  const segments = buildSegments(regions, pairs, fileStats, filePairs, outputFiles, declaredRels);
+  // ---- 02 全体（ブック間）→ 詳細（シート・表間）の2段構え ----
+  // 全体はファイル単位のフロー図、詳細は表単位のノード図（ER＋関係マップ＋操作版）。
+  // 複数ファイルのときだけ「全体」を挟む。1ファイル案件ではブック間の図が1箱で意味を持たないので、
+  // 従来どおり表単位の関係図から入る。
+  const multiFile = fileStats.size > 1;
+  const map = buildMap('r', regions, pairs, labels, copyQuestionByPair, roles);
+  const er = buildErDiagram(regions, graph.keyLinks ?? [], labels);
   const pairKeys = buildPairKeyIndex(graph.keyLinks ?? []);
-  const regionById = new Map(regions.map(r => [r.id, r]));
-  const segBlocks = segments.map((seg, i) => {
-    // この段に登場する表だけで関係図を描く（全表を1枚にすると読めない）
-    const segRegionIds = new Set<string>();
-    for (const p of seg.pairs) { segRegionIds.add(p.from); segRegionIds.add(p.to); }
-    const segRegions = [...segRegionIds].map(id => regionById.get(id)).filter((r): r is Region => !!r);
-    const map = buildMap(`s${i + 1}`, segRegions, seg.pairs, labels, copyQuestionByPair, roles);
-    const { rows, omitted } = buildDetailRows(seg, labels, pairKeys, copyQuestionByPair);
-    const notes = seg.declared.filter(d => d.note.trim() !== '');
-    return `
-    <details class="seg" id="seg-${i + 1}"${i === 0 ? ' open' : ''}>
-      <summary>
-        <span class="seg-no">${seg.no}</span>
-        <span class="seg-title">${esc(seg.title)}</span>
-        <span class="seg-meta">${seg.pairs.length} 関係</span>
-        <label class="seg-done" title="説明が済んだらチェックしてください">
-          <input type="checkbox" class="doneck" data-seg="${i + 1}"><span>確認済</span>
-        </label>
-      </summary>
-      <div class="seg-body">
-        <p class="seg-files">対象：<b>${esc(seg.fileNote)}</b></p>
-        ${notes.length > 0 ? `<div class="seg-note"><span class="mark">📝</span><div>${notes.map(d =>
-          `<p><b>${esc(fileNameOf(d.fromFile))} → ${esc(fileNameOf(d.toFile))}（${esc(FILE_REL_LABELS[d.relType])}）</b>：${esc(d.note)}</p>`).join('')}</div></div>` : ''}
-        ${map ? `<div class="map-scroll seg-map">${map.svg}</div>
-        ${map.omittedNodes > 0 || map.omittedEdges > 0 ? `<p class="tbl-note">※ つながりの多い表を優先表示（省略: 表 ${map.omittedNodes}・関係 ${map.omittedEdges}）。</p>` : ''}` : ''}
-        <h4 class="dl-h">詳細ロジック — どのシートが、どのキーで、どうつながっているか</h4>
-        <div style="overflow-x:auto">
-          <table class="ot dl">
-            <tr><th>元（表・列）</th><th>キー</th><th>処理</th><th>先（表・列）</th><th>根拠（数式・一致）</th><th>確度</th></tr>
-            ${rows.join('\n            ')}
-          </table>
-          ${omitted > 0 ? `<p class="tbl-note">※ 関係が多いため上位 ${DETAIL_ROWS_PER_SEGMENT} 件を掲載しています（この段の全 ${seg.pairs.length} 件）。</p>` : ''}
-        </div>
-      </div>
-    </details>`;
-  }).join('\n');
+  const { rows: detailRows, omitted: detailOmitted } = buildDetailRows(pairs, labels, pairKeys, copyQuestionByPair);
+  // 担当者が登録したブック関係の説明。セグメントを廃したので、全体図の直下にまとめて出す。
+  const declaredNotes = declaredRels.filter(d => d.note.trim() !== '');
+  // 02 の小見出しは連番。1ファイル案件では「全体（ブック間）」が無い分だけ番号が繰り上がる。
+  let subNo = 0;
+  const subH = (title: string) => `<h3 class="sub-h">2-${++subNo}　${esc(title)}</h3>`;
 
   const edgeTotal = graph.edgeTotal ?? edges.length;
   const dateStr = input.generatedAt.toISOString().slice(0, 10);
   const customer = input.customerName ? `${input.customerName}様` : 'ご担当者様';
 
-  const sheetTotal = new Set(regions.map(r => `${r.file} ${r.sheet}`)).size;
+  const sheetTotal = new Set(regions.map(r => `${r.file}\u0000${r.sheet}`)).size;
   const outStats = outputLabels.map(l => fileStats.get(l)!).filter(Boolean);
 
   // ---- サマリ文（決定的に組み立てる） ----
@@ -1172,10 +1186,12 @@ ${REPORT_CSS}
     <div class="sec-head">
       <div class="eyebrow">02 ── FLOW &amp; LOGIC</div>
       <h2>全体の流れと詳細ロジック</h2>
-      <p class="sec-lede">まずブック単位で<b>全体の流れ</b>をご覧いただき、続けてその流れを<b>段ごとに分けたシート単位の関係</b>を順に説明します。各ブロックは折りたためます。説明が済んだブロックは<b>「確認済」にチェック</b>を入れてお使いください。</p>
+      <p class="sec-lede">${multiFile
+        ? 'まず<b>ブックどうしの全体関係図</b>で流れをご覧いただき、続けて<b>シート・表単位の詳細関係図</b>と、その処理内容（キー・数式）へ降りていきます。'
+        : 'ご提供は1ブックのため、<b>シート・表単位の関係</b>で流れをご覧いただき、続けてその処理内容（キー・数式）を説明します。'}</p>
     </div>
-    ${fileFlow ? `
-    <h3 class="sub-h">2-0　全体フロー図（ブック単位）</h3>
+    ${multiFile ? (fileFlow ? `
+    ${subH('全体関係図（ブックどうしの流れ）')}
     <ul class="graph-guide">
       <li><b>ボックス＝ファイル</b>。左が起点、<b style="color:#C24141">右端が最終アウトプット</b>で、矢印の向きにデータが流れます</li>
       <li><b>線の色＝関係の種類</b>／<b>破線の線＝手作業コピー（要確認）</b>／<b>破線の枠＝つながりが自動検出できなかった最終アウトプット</b></li>
@@ -1187,9 +1203,38 @@ ${REPORT_CSS}
       <span class="li"><span class="nrole mid"></span>中間ファイル</span>
       <span class="li"><span class="nrole out"></span>最終アウトプット</span>
       <span class="li"><span class="nrole iso"></span>独立（つながり未検出）</span>
-    </div>` : `<p class="sec-lede">ファイルをまたぐ関係は検出されませんでした。各ファイルが独立して管理されている可能性があります（03 の確認事項をご覧ください）。</p>`}
+    </div>
+    ${declaredNotes.length > 0 ? `<div class="seg-note"><span class="mark">📝</span><div>${declaredNotes.map(d =>
+      `<p><b>${esc(fileNameOf(d.fromFile))} → ${esc(fileNameOf(d.toFile))}（${esc(FILE_REL_LABELS[d.relType])}）</b>：${esc(d.note)}</p>`).join('')}</div></div>` : ''}` : `
+    <p class="sec-lede">ファイルをまたぐ関係は検出されませんでした。各ファイルが独立して管理されている可能性があります（03 の確認事項をご覧ください）。</p>`) : ''}
 
-    ${segBlocks ? `
+    ${map ? `
+    ${er ? `
+    ${subH('詳細関係図①　キー関係図（ER）')}
+    <ul class="graph-guide">
+      <li><b>ボックス＝表</b>。<span class="k">🔑</span>＝主キー（1行を一意に決める列）／<span class="k">◇</span>＝軸</li>
+      <li><b>線＝同じキー列での対応</b>。端の <b>1 / N</b> が1対多（<b>1</b>＝マスタ側／<b>N</b>＝明細側）</li>
+    </ul>
+    <div class="map-scroll er-scroll">${er.svg}</div>
+    ${er.omitted > 0 ? `<p class="tbl-note">※ キーでつながる表を優先表示（ほか ${er.omitted} 表は省略）。</p>` : ''}` : ''}
+
+    ${subH(er ? '詳細関係図②　最終アウトプットへの流れ（シート・表単位）' : '詳細関係図　最終アウトプットへの流れ（シート・表単位）')}
+    <ul class="graph-guide">
+      <li><b>ノード＝表</b>。<b>上＝元データ → 下＝最終アウトプット</b>、矢印の向きにデータが流れます</li>
+      <li><b>線の色＝関係の種類</b>／<b>破線＝手作業コピー（要確認）</b></li>
+      <li class="only-screen"><b>クリック</b>すると、その表の関係先と最終アウトプットまでの経路を右パネルに表示します（パンくずで戻れます）</li>
+      <li class="only-screen">右上のボタン：<span class="k">＋ －</span> 拡大縮小／<span class="k">▤</span> レイアウト／<span class="k">☾</span> 配色／<span class="k">⤢</span> 全画面（Escで戻る）／<span class="k">⟳</span> リセット。背景ドラッグで移動</li>
+    </ul>
+    <p class="graph-guide only-print">※ 本紙は静止画です。操作版はブラウザでご覧ください。</p>
+    <div class="map-static map-scroll">${map.svg}</div>
+    <div class="map-interactive relgraph-wrap" id="relgraph-wrap">
+      <figure class="relgraph-stage lightmode" id="relgraph" aria-label="表どうしの関係グラフ（操作可能）"></figure>
+      <aside class="relgraph-panel">
+        <div class="relgraph-crumbs" id="relgraph-crumbs"><span class="cur">表を選択</span></div>
+        <div class="relgraph-pbody" id="relgraph-pbody"><div class="empty">左のグラフで<b>表</b>をクリックすると、関係している表（上流／下流）と<b>最終アウトプットまでの経路</b>がここに出て、そのまま掘り下げられます。</div></div>
+      </aside>
+    </div>
+    <script type="application/json" id="relgraph-data">${JSON.stringify(map.data).replace(/</g, '\\u003c')}</script>
     <div class="legend">
       <span class="lg-h">関係の種類</span>
       ${GROUP_ORDER.map(g => `<span class="li"><span class="sw${GROUP_META[g].dashed ? ' dash' : ''}" style="border-color:${GROUP_META[g].color}"></span>${esc(GROUP_META[g].label)}</span>`).join('\n      ')}
@@ -1200,8 +1245,20 @@ ${REPORT_CSS}
       <span class="li"><span class="nrole mst"></span>マスタ（参照元）</span>
       <span class="li"><span class="nrole mid"></span>中間集計</span>
       <span class="li"><span class="nrole out"></span>最終アウトプット</span>
+      <span class="li"><span class="nrole iso"></span>独立（つながりなし・要確認）</span>
     </div>
-    <div class="segs">${segBlocks}</div>
+    ${map.omittedNodes > 0 || map.omittedEdges > 0
+      ? `<p class="tbl-note">※ 円の大きさ＝つながりの本数。つながりの多い表を優先表示（省略: 表 ${map.omittedNodes}・関係 ${map.omittedEdges}）。</p>`
+      : '<p class="tbl-note">※ 円の大きさ＝つながりの本数。</p>'}
+
+    ${subH('詳細ロジック — どのシートが、どのキーで、どうつながっているか')}
+    <div style="overflow-x:auto">
+      <table class="ot dl">
+        <tr><th>元（表・列）</th><th>キー</th><th>処理</th><th>先（表・列）</th><th>根拠（数式・一致）</th><th>確度</th></tr>
+        ${detailRows.join('\n        ')}
+      </table>
+      ${detailOmitted > 0 ? `<p class="tbl-note">※ 関係が多いため流れの順に上位 ${DETAIL_ROWS_CAP} 件を掲載しています（全 ${pairs.length} 件）。残りはお打ち合わせで画面をご覧いただけます。</p>` : ''}
+    </div>
     <div class="callout info">
       <span class="mark">ℹ️</span>
       <span>ピボットテーブル・INDIRECT関数・ファイル間の数式リンクは自動追跡の対象外です。図に出ていないつながりがあれば、お打ち合わせで補足をお願いします。</span>
@@ -1259,7 +1316,8 @@ ${REPORT_CSS}
 <footer>
   <div class="wrap">© dataX Inc.　|　kpiee データ構造分析レポート（${dateStr} 生成）　|　本資料は貴社との確認用資料であり、社外への共有はお控えください。</div>
 </footer>
-<script>${REPORT_CHECK_JS}</script>
+<script>${REPORT_PRINT_JS}</script>
+${map ? `<script>${REPORT_GRAPH_JS}</script>` : ''}
 </body>
 </html>
 `;
@@ -1325,15 +1383,16 @@ h2{font-family:var(--disp);font-weight:700;font-size:26px;color:var(--ink);line-
 .conf b{color:var(--ink);font-weight:500}
 .map-scroll{overflow-x:auto;background:#FCFDFE;border:1px solid var(--line);border-radius:16px;padding:18px}
 .map-scroll svg{min-width:760px;width:100%;height:auto;display:block;font-family:var(--body)}
+.er-scroll svg{min-width:640px;width:100%;height:auto;display:block;font-family:var(--body)}
 .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:14px;font-size:12px}
 .legend .li{display:inline-flex;align-items:center;gap:7px;color:var(--text)}
 .legend .sw{width:22px;height:0;border-top:3px solid;border-radius:2px}
 .legend .sw.dash{border-top-style:dashed}
-/* 折りたたみブロック共通（01 のブック別・02 のセグメント）。三角は自前で描く */
-details.fileblk>summary,details.seg>summary{list-style:none}
-details.fileblk>summary::-webkit-details-marker,details.seg>summary::-webkit-details-marker{display:none}
-details.fileblk>summary::before,details.seg>summary::before{content:'▸';color:var(--blue);transition:transform .2s}
-details.fileblk[open]>summary::before,details.seg[open]>summary::before{transform:rotate(90deg)}
+/* 折りたたみブロック（01 のブック別）。三角は自前で描く */
+details.fileblk>summary{list-style:none}
+details.fileblk>summary::-webkit-details-marker{display:none}
+details.fileblk>summary::before{content:'▸';color:var(--blue);transition:transform .2s}
+details.fileblk[open]>summary::before{transform:rotate(90deg)}
 .loc{font-family:var(--mono);font-size:11px;color:var(--sub)}
 .rows{font-family:var(--mono);font-size:11px;color:var(--sub);margin-left:auto}
 .rbody{padding:14px 20px 18px}
@@ -1404,32 +1463,11 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
 .av.warn{background:var(--amber-bg);color:var(--amber)}
 .av.ng{background:var(--red-bg);color:var(--red)}
 
-/* ---- 02 セグメント（流れの段ごとのブロック）---- */
-.segs{display:flex;flex-direction:column;gap:12px;margin-top:18px}
-.seg{background:#fff;border:1px solid var(--line);border-left:5px solid var(--blue);border-radius:14px;overflow:hidden}
-.seg>summary{cursor:pointer;padding:14px 18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.seg>summary:hover{background:var(--blue-bg)}
-.seg[open]>summary{border-bottom:1px solid var(--line)}
-.seg-no{font-family:var(--mono);font-size:12px;font-weight:500;color:var(--blue)}
-.seg-title{font-family:var(--disp);font-weight:700;font-size:17px;color:var(--ink)}
-.seg-meta{font-family:var(--mono);font-size:10.5px;color:var(--sub)}
-/* 「確認済」チェック。summary 内なので開閉を誘発しないよう JS で stopPropagation する */
-.seg-done{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--sub);cursor:pointer;padding:4px 10px;border:1px solid var(--line);border-radius:20px;background:#FCFDFE}
-.seg-done:hover{border-color:var(--green);color:var(--green)}
-.seg-done input{accent-color:#1E9E6A;width:14px;height:14px;cursor:pointer}
-.seg.done{border-left-color:var(--green);background:#FBFDFC}
-.seg.done>summary{opacity:.72}
-.seg.done .seg-title::after{content:' ✓';color:var(--green)}
-.seg.done .seg-done{border-color:var(--green);color:var(--green);font-weight:700}
-.seg-body{padding:16px 18px 20px}
-.seg-files{font-size:13px;color:var(--text);margin-bottom:10px}
-.seg-files b{color:var(--ink);word-break:break-all}
-.seg-note{display:flex;gap:10px;background:var(--blue-bg);border-radius:10px;padding:11px 14px;margin-bottom:14px;font-size:12.5px;line-height:1.8}
+/* ---- 02 ご登録いただいたブック関係の説明（全体関係図の直下）---- */
+.seg-note{display:flex;gap:10px;background:var(--blue-bg);border-radius:10px;padding:11px 14px;margin-top:14px;font-size:12.5px;line-height:1.8}
 .seg-note p{margin:0}
 .seg-note p+p{margin-top:4px}
-.seg-map{margin-bottom:6px}
 /* ---- 02 詳細ロジック表 ---- */
-.dl-h{font-family:var(--disp);font-weight:700;font-size:14.5px;color:var(--ink);margin:18px 0 8px}
 table.dl{font-size:12px}
 table.dl td{vertical-align:top}
 .dl-col{display:block;font-family:var(--mono);font-size:10.5px;color:var(--blue)}
@@ -1454,55 +1492,105 @@ ul.graph-guide .k{font-family:var(--mono);font-size:11.5px;color:var(--ink)}
 .nrole.mid{background:var(--violet-bg);border-color:var(--violet)}
 .nrole.out{background:var(--red-bg);border-color:var(--red)}
 .nrole.iso{background:#F2F5F8;border-color:#9AA7B4}
+
+/* 関係グラフ本体（JS 有効時のみ表示。印刷・JS無効は静的SVG .map-static へ） */
+.map-interactive{display:none}
+.relgraph-wrap{grid-template-columns:1fr 300px;gap:14px;align-items:stretch}
+.relgraph-stage{position:relative;border:1px solid var(--line);border-radius:14px;overflow:hidden;min-height:560px;touch-action:none;
+  --gbg:#12141C;--glbl:#C9D1DE;--glbl2:#7F8A9C;
+  --c-src:#3FCF8E;--c-mst:#5AA9FF;--c-mid:#B392F0;--c-out:#FF8B7B;--c-iso:#8B98A5;
+  background:radial-gradient(circle at 50% 38%,#1C1F2A 0%,#12141C 72%)}
+.relgraph-stage.lightmode{--gbg:#FCFDFE;--glbl:#0E2A47;--glbl2:#7A8794;
+  --c-src:#1E9E6A;--c-mst:#1F5FAE;--c-mid:#7B5EA7;--c-out:#C0392B;--c-iso:#9AA7B4;
+  background:#FCFDFE;background-image:radial-gradient(circle at 1px 1px,#E4EBF3 1px,transparent 0);background-size:22px 22px}
+.relgraph-stage svg{width:100%;height:100%;display:block;font-family:var(--body);cursor:grab}
+.relgraph-stage svg.panning{cursor:grabbing}
+.relgraph-ctrl{position:absolute;top:10px;right:10px;display:flex;gap:6px;z-index:3}
+.relgraph-ctrl button{width:32px;height:32px;padding:0;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.09);color:#E3E9F2;border-radius:8px;font-size:14px;line-height:1;cursor:pointer;backdrop-filter:blur(4px)}
+.relgraph-ctrl button:hover{background:rgba(255,255,255,.2);border-color:rgba(255,255,255,.34)}
+.relgraph-stage.lightmode .relgraph-ctrl button{border-color:var(--line);background:#fff;color:var(--ink);box-shadow:0 1px 3px rgba(14,42,71,.1)}
+.relgraph-stage.lightmode .relgraph-ctrl button:hover{background:var(--blue-bg);border-color:var(--blue);color:var(--blue)}
+.relgraph-hint{position:absolute;left:12px;bottom:10px;z-index:3;font-size:10.5px;letter-spacing:.02em;color:var(--glbl2);pointer-events:none}
+/* ノード（Obsidian風の円） */
+.node{cursor:pointer;transition:opacity .18s}
+.node .dot{stroke:var(--gbg);stroke-width:1.5}
+.node .halo{fill:none;stroke:none;transition:.18s}
+.node.role-src .dot{fill:var(--c-src)}
+.node.role-mst .dot{fill:var(--c-mst)}
+.node.role-mid .dot{fill:var(--c-mid)}
+.node.role-out .dot{fill:var(--c-out)}
+.node.role-iso .dot{fill:var(--c-iso)}
+.node.role-out .halo{stroke:var(--c-out);stroke-opacity:.32;stroke-width:2}
+.node .lbl{fill:var(--glbl);font-size:11px;font-weight:600;text-anchor:middle;paint-order:stroke;stroke:var(--gbg);stroke-width:3.4px;stroke-linejoin:round;pointer-events:none}
+.node.hov .lbl,.node.sel .lbl{fill:#fff;font-weight:700}
+.relgraph-stage.lightmode .node.hov .lbl,.relgraph-stage.lightmode .node.sel .lbl{fill:var(--ink)}
+.node.hov .halo,.node.sel .halo{stroke:#fff;stroke-opacity:.55;stroke-width:2.4}
+.relgraph-stage.lightmode .node.hov .halo,.relgraph-stage.lightmode .node.sel .halo{stroke:var(--blue);stroke-opacity:.85}
+.node.role-out .lbl{font-weight:800}
+.edge{fill:none;stroke-width:1.3;opacity:.5;transition:opacity .18s,stroke-width .18s}
+.relgraph-stage svg.focused .node:not(.hl):not(.path){opacity:.14}
+.relgraph-stage svg.focused .edge:not(.epath):not(.ehl){opacity:.05}
+.edge.epath{stroke-width:3;opacity:1}
+.edge.ehl{stroke-width:2.4;opacity:1}
+/* インスペクタ（クリックした表の上流・下流と最終アウトプットまでの経路） */
+.relgraph-panel{background:#fff;border:1px solid var(--line);border-radius:14px;overflow:hidden;display:flex;flex-direction:column;min-height:480px}
+.relgraph-crumbs{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:10px 13px;border-bottom:1px solid var(--line);font-size:11.5px;min-height:42px}
+.relgraph-crumbs .c{color:var(--blue);cursor:pointer;background:none;border:0;padding:2px 4px;font:inherit;border-radius:6px}
+.relgraph-crumbs .c:hover{background:var(--blue-bg)}
+.relgraph-crumbs .sep{color:var(--sub)}
+.relgraph-crumbs .cur{color:var(--ink);font-weight:700}
+.relgraph-pbody{padding:15px 15px 20px;overflow:auto;font-size:13px}
+.relgraph-pbody .empty{color:var(--sub);font-size:12.5px;line-height:1.9}
+.relgraph-pbody .empty b{color:var(--ink)}
+.pname{font-size:15px;font-weight:800;color:var(--ink);line-height:1.35;margin:0 0 8px}
+.rolechip{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;border-radius:999px;padding:3px 11px;border:1px solid}
+.rolechip.rc-src{color:var(--green);background:var(--green-bg);border-color:var(--green)}
+.rolechip.rc-mst{color:var(--blue);background:var(--blue-bg);border-color:var(--blue)}
+.rolechip.rc-mid{color:var(--violet);background:var(--violet-bg);border-color:var(--violet)}
+.rolechip.rc-out{color:var(--red);background:var(--red-bg);border-color:var(--red)}
+.rolechip.rc-iso{color:var(--sub);background:#F2F5F8;border-color:#9AA7B4}
+.p-meta{font-size:11.5px;color:var(--sub);margin:10px 0 3px}
+.p-keys{font-family:var(--mono);font-size:11.5px;color:var(--text);background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+.p-route{display:flex;align-items:center;flex-wrap:wrap;gap:4px;background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:12px}
+.p-route .r{cursor:pointer;color:var(--blue);background:none;border:0;font:inherit;padding:1px 3px;border-radius:5px}
+.p-route .r:hover{background:var(--blue-bg)}
+.p-route .r.out{color:var(--red);font-weight:700}
+.p-route .arw{color:var(--sub)}
+.p-grp{margin-top:15px}
+.p-grp h4{margin:0 0 7px;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--sub);font-weight:700}
+.p-chips{display:flex;flex-direction:column;gap:6px}
+.p-chip{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:#fff;border:1px solid var(--line);border-radius:10px;padding:7px 10px;cursor:pointer;font:inherit;font-size:12px;color:var(--ink);transition:.12s}
+.p-chip:hover{border-color:var(--blue);background:var(--blue-bg)}
+.p-chip .dot{width:9px;height:9px;border-radius:50%;flex:none}
+.p-chip .via{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--sub);white-space:nowrap}
+.p-chip.none{cursor:default;color:var(--sub);border-style:dashed}
+.p-chip.none:hover{border-color:var(--line);background:#fff}
+.relgraph-wrap.expanded{position:fixed;inset:0;z-index:9999;margin:0;padding:16px;background:var(--paper);grid-template-columns:1fr 320px}
+.relgraph-wrap.expanded .relgraph-stage,.relgraph-wrap.expanded .relgraph-panel{min-height:0;height:100%}
+body.relgraph-noscroll{overflow:hidden}
+@media (max-width:760px){ .relgraph-wrap{grid-template-columns:1fr} .relgraph-panel{min-height:0} }
 @media print{
   header::after{display:none}
   section{padding:28px 0}
   .qcard{page-break-inside:avoid}
   /* 印刷時は折りたたみを全て開いて紙に載せる（details[open] は JS で付ける） */
-  .seg,.fileblk{page-break-inside:avoid}
-  .seg>summary,.fileblk>summary{list-style:none}
-  /* チェック状態は紙でも分かるようにする（チェックボックス自体は薄く出るため文字で補う） */
-  .seg.done .seg-done::after{content:'（説明済み）';font-size:10px}
+  .fileblk{page-break-inside:avoid}
+  .fileblk>summary{list-style:none}
+  /* 操作版は紙に出せないので静的SVGへ差し替える */
+  .map-interactive{display:none!important}
+  .map-static{display:block!important}
   .only-print{display:inline}
   .only-screen{display:none}
 }
 `;
 
-// 02 の「確認済」チェック。読み合わせでどこまで説明したかを追うためのもので、
-// 状態は localStorage に持つ（レポートは自己完結 HTML なのでサーバーには保存しない）。
-// レポートのタイトルを鍵に混ぜ、別案件のレポートを同じブラウザで開いても混ざらないようにする。
-const REPORT_CHECK_JS = `
+// 01 の折りたたみ（ブックの中身）を印刷時だけ開く。閉じた details は中身が紙に出ないため。
+const REPORT_PRINT_JS = `
 (function(){
-  var KEY = 'kpiee-relreport-done:' + (document.title || '');
-  var saved = {};
-  try { saved = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { saved = {}; }
-
-  function persist() {
-    try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (e) { /* プライベートモード等では諦める */ }
-  }
-
-  var boxes = document.querySelectorAll('.doneck');
-  for (var i = 0; i < boxes.length; i++) {
-    (function(box){
-      var seg = box.getAttribute('data-seg');
-      var block = box.closest('details.seg');
-      if (saved[seg]) { box.checked = true; if (block) block.classList.add('done'); }
-      // summary 内のクリックは details の開閉を誘発するので、チェックボックス側で止める
-      box.addEventListener('click', function(ev){ ev.stopPropagation(); });
-      box.parentNode.addEventListener('click', function(ev){ ev.stopPropagation(); });
-      box.addEventListener('change', function(){
-        if (box.checked) { saved[seg] = 1; if (block) block.classList.add('done'); }
-        else { delete saved[seg]; if (block) block.classList.remove('done'); }
-        persist();
-      });
-    })(boxes[i]);
-  }
-
-  // 印刷時は全ブロックを開く（閉じた details は中身が紙に出ない）
   var opened = [];
   window.addEventListener('beforeprint', function(){
     opened = [];
-    var ds = document.querySelectorAll('details.seg, details.fileblk');
+    var ds = document.querySelectorAll('details.fileblk');
     for (var i = 0; i < ds.length; i++) {
       if (!ds[i].open) { ds[i].open = true; opened.push(ds[i]); }
     }
@@ -1511,5 +1599,264 @@ const REPORT_CHECK_JS = `
     for (var i = 0; i < opened.length; i++) opened[i].open = false;
     opened = [];
   });
+})();
+`;
+
+// 関係グラフ（Obsidian 風の力学配置＋階層レイアウト）。#relgraph-data(JSON) を読み、円ノードで各表を描く。
+// 円の大きさ＝つながりの本数、縦位置＝最終アウトプットまでの距離（上=元データ→下=最終）。ホバーで一時強調、
+// クリックで固定し、右パネル（パンくず＋経路＋上流/下流）から掘り下げる。右上ボタンで拡大・レイアウト切替
+// （階層⇔力学）・配色切替（ライト⇔ダーク）・全画面・リセット。
+// 初期化に失敗したら静的SVG（.map-static）へ戻す。※テンプレートリテラルに埋めるためバッククォート/${ は使わない。
+const REPORT_GRAPH_JS = `
+(function(){
+  try{
+    var wrap=document.getElementById('relgraph-wrap');
+    var host=document.getElementById('relgraph');
+    var dataEl=document.getElementById('relgraph-data');
+    var pbody=document.getElementById('relgraph-pbody');
+    var crumbsEl=document.getElementById('relgraph-crumbs');
+    if(!wrap||!host||!dataEl) return;
+    var data=JSON.parse(dataEl.textContent);
+    if(!data||!data.nodes||!data.nodes.length) return;
+    var staticEl=document.querySelector('.map-static'); if(staticEl) staticEl.style.display='none';
+    wrap.style.display='grid';
+
+    var NS='http://www.w3.org/2000/svg';
+    var nodes=data.nodes, byId={};
+    nodes.forEach(function(n){ byId[n.id]=n; });
+    var links=(data.links||[]).filter(function(l){ return byId[l.s]&&byId[l.t]; });
+    var outAdj={}, inAdj={}; nodes.forEach(function(n){ outAdj[n.id]=[]; inAdj[n.id]=[]; });
+    links.forEach(function(l){ outAdj[l.s].push(l); inAdj[l.t].push(l); });
+
+    function roleClass(role){ if(/最終/.test(role)) return 'out'; if(/マスタ/.test(role)) return 'mst'; if(/中間/.test(role)) return 'mid'; if(/元/.test(role)) return 'src'; return 'iso'; }
+    function ekey(l){ return l.s+'>'+l.t+'#'+(l.label||''); }
+    function fit(s,n){ s=String(s); return s.length<=n? s : s.slice(0,n)+'…'; }
+    function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+    /* ---- 最終アウトプット & 階層（経路計算・縦位置のヒントに使用） ---- */
+    var output=null,bestDeg=-1;
+    nodes.forEach(function(n){ if(/最終/.test(n.role)){ var d=inAdj[n.id].length; if(d>bestDeg){bestDeg=d;output=n.id;} } });
+    if(!output){ bestDeg=-1; nodes.forEach(function(n){ if(outAdj[n.id].length===0){ var d=inAdj[n.id].length; if(d>bestDeg){bestDeg=d;output=n.id;} } }); }
+    if(!output){ bestDeg=-1; nodes.forEach(function(n){ if((n.deg||0)>bestDeg){bestDeg=n.deg||0;output=n.id;} }); }
+    var layer={};
+    function dist(id,seen){ if(id===output) return 0; if(layer[id]!=null) return layer[id]; if(seen[id]) return 0; seen[id]=1; var best=0,any=false; outAdj[id].forEach(function(l){ any=true; var d=1+dist(l.t,seen); if(d>best) best=d; }); layer[id]=any?best:1; return layer[id]; }
+    nodes.forEach(function(n){ dist(n.id,{}); }); layer[output]=0;
+    function pathToOutput(id){ var ns=[id],es=[],cur=id,guard=0; while(cur!==output&&guard++<60){ var outs=outAdj[cur]; if(!outs.length) break; var best=outs[0]; for(var i=1;i<outs.length;i++){ if(layer[outs[i].t]<layer[best.t]) best=outs[i]; } es.push(ekey(best)); ns.push(best.t); cur=best.t; } return {ns:ns,es:es}; }
+
+    /* ---- ノード半径＝つながりの多さ ---- */
+    var W=1280,H=780,PAD=64,maxLink=1;
+    nodes.forEach(function(n){ n._d=inAdj[n.id].length+outAdj[n.id].length; if(n._d>maxLink) maxLink=n._d; });
+    nodes.forEach(function(n){ n.r=8+18*Math.sqrt(n._d/maxLink); if(roleClass(n.role)==='out') n.r=Math.max(n.r,13); });
+
+    /* ---- 初期配置（元の階層座標を種にして再現性を確保） ---- */
+    var sw=data.w||1848, sh=data.h||634;
+    function jit(i,k){ var v=Math.sin((i+1)*(k===0?12.9898:78.233))*43758.5453; return (v-Math.floor(v))-0.5; }
+    nodes.forEach(function(n,i){
+      n.px=PAD+((n.x||0)/sw)*(W-2*PAD)+jit(i,0)*70;
+      n.py=PAD+((n.y||0)/sh)*(H-2*PAD)+jit(i,1)*70;
+      n.vx=0; n.vy=0; n.fx=null; n.fy=null;
+    });
+    /* 階層レイアウト時の目標座標（＋力学時の緩やかな縦バイアス） */
+    var byLayer={}; nodes.forEach(function(n){ (byLayer[layer[n.id]]=byLayer[layer[n.id]]||[]).push(n); });
+    var maxL=0; Object.keys(byLayer).forEach(function(k){ maxL=Math.max(maxL,+k); });
+    Object.keys(byLayer).forEach(function(k){
+      var L=+k,row=byLayer[k], y=PAD+((maxL-L)/(maxL||1))*(H-2*PAD-40)+20;
+      var gap=Math.min(210,(W-2*PAD)/Math.max(1,row.length)), x0=W/2-gap*(row.length-1)/2;
+      row.forEach(function(n,i){ n.tx=x0+i*gap; n.ty=y; });
+    });
+
+    /* ---- SVG 生成 ---- */
+    var svg=document.createElementNS(NS,'svg');
+    svg.setAttribute('viewBox','0 0 '+W+' '+H);
+    svg.setAttribute('preserveAspectRatio','xMidYMid meet');
+    host.appendChild(svg);
+    var defs=document.createElementNS(NS,'defs'); svg.appendChild(defs);
+    var gZoom=document.createElementNS(NS,'g'); svg.appendChild(gZoom);
+    var gE=document.createElementNS(NS,'g'); gZoom.appendChild(gE);
+    var gN=document.createElementNS(NS,'g'); gZoom.appendChild(gN);
+
+    var dark=false;
+    var DARKMAP={'#1F5FAE':'#6BB0FF','#1E9E6A':'#43D39E','#7B5EA7':'#B392F0','#B96A00':'#F2A33C'};
+    function ecol(l){ return dark? (DARKMAP[l.color]||l.color) : l.color; }
+    var markers={};
+    function markerFor(col){
+      if(markers[col]) return markers[col];
+      var id='rgar'+Object.keys(markers).length;
+      var m=document.createElementNS(NS,'marker');
+      m.setAttribute('id',id); m.setAttribute('viewBox','0 0 10 10'); m.setAttribute('refX','9'); m.setAttribute('refY','5');
+      m.setAttribute('markerWidth','6'); m.setAttribute('markerHeight','6'); m.setAttribute('orient','auto');
+      var pa=document.createElementNS(NS,'path'); pa.setAttribute('d','M0,0 L10,5 L0,10 z'); pa.setAttribute('fill',col); pa.setAttribute('fill-opacity','.85');
+      m.appendChild(pa); defs.appendChild(m); markers[col]=id; return id;
+    }
+
+    /* 平行エッジのカーブ量 */
+    var cnt={}; links.forEach(function(l){ var k=[l.s,l.t].sort().join('|'); cnt[k]=(cnt[k]||0)+1; });
+    var seen={}; links.forEach(function(l){ var k=[l.s,l.t].sort().join('|'); var i=(seen[k]=(seen[k]||0)); seen[k]++; l._cv=(i-(cnt[k]-1)/2)*38; });
+
+    var edgeEls={};
+    links.forEach(function(l){
+      var p=document.createElementNS(NS,'path'); p.setAttribute('class','edge');
+      if(l.dashed) p.setAttribute('stroke-dasharray','6 5');
+      p.setAttribute('stroke-width', Math.min(3.2,1+Math.log10((l.count||1)+1)*1.1));
+      var tt=document.createElementNS(NS,'title'); tt.textContent=byId[l.s].label+' → '+byId[l.t].label+' ／ '+(l.label||'')+(l.qid?(' ／ '+l.qid):'')+(l.count?(' ／ '+l.count+'件'):''); p.appendChild(tt);
+      gE.appendChild(p); edgeEls[ekey(l)]=p;
+    });
+    function paintEdges(){ links.forEach(function(l){ var c=ecol(l), e=edgeEls[ekey(l)]; e.setAttribute('stroke',c); e.setAttribute('marker-end','url(#'+markerFor(c)+')'); }); }
+    paintEdges();
+
+    var nodeEls={}, lblEls={};
+    nodes.forEach(function(n){
+      var g=document.createElementNS(NS,'g'); g.setAttribute('class','node role-'+roleClass(n.role));
+      var halo=document.createElementNS(NS,'circle'); halo.setAttribute('class','halo'); halo.setAttribute('r',n.r+5); g.appendChild(halo);
+      var c=document.createElementNS(NS,'circle'); c.setAttribute('class','dot'); c.setAttribute('r',n.r); g.appendChild(c);
+      var t=document.createElementNS(NS,'text'); t.setAttribute('class','lbl'); t.setAttribute('y','13');
+      t.textContent=(roleClass(n.role)==='out'?'★ ':'')+fit(n.label,14); g.appendChild(t);
+      var tt=document.createElementNS(NS,'title'); tt.textContent=n.label+' ／ '+n.role+' ／ '+(n.sub||'')+' ／ つながり '+n._d+'本'; g.appendChild(tt);
+      g.addEventListener('pointerdown',function(ev){ startDrag(n,ev); });
+      g.addEventListener('mouseenter',function(){ hoverId=n.id; paintFocus(); });
+      g.addEventListener('mouseleave',function(){ if(hoverId===n.id){ hoverId=null; paintFocus(); } });
+      g.addEventListener('click',function(ev){ ev.stopPropagation(); if(lastDragDist<5) jumpTo(n.id,true); });
+      gN.appendChild(g); nodeEls[n.id]=g; lblEls[n.id]=t;
+    });
+
+    /* ---- 力学シミュレーション ---- */
+    var REP=20000, SPRING=0.006, GRAV=0.003, FLOW=0.014, DAMP=0.86;
+    var alpha=1, mode='layer', raf=null;
+    function step(){
+      var i,j,a,b,dx,dy,d,d2,f,ux,uy;
+      if(mode==='layer'){
+        var moving=false;
+        for(i=0;i<nodes.length;i++){ a=nodes[i];
+          if(a.fx!=null){ a.px=a.fx; a.py=a.fy; continue; }
+          dx=a.tx-a.px; dy=a.ty-a.py; if(Math.abs(dx)+Math.abs(dy)>0.4) moving=true;
+          a.px+=dx*0.16; a.py+=dy*0.16; }
+        return moving||!!dragN;
+      }
+      if(alpha<0.005 && !dragN) return false;
+      for(i=0;i<nodes.length;i++){ a=nodes[i];
+        for(j=i+1;j<nodes.length;j++){ b=nodes[j];
+          dx=b.px-a.px; dy=b.py-a.py; d2=dx*dx+dy*dy;
+          if(d2<1){ dx=(i-j)||1; dy=1; d2=2; }
+          d=Math.sqrt(d2); ux=dx/d; uy=dy/d;
+          f=REP/d2; if(f>3) f=3;
+          a.vx-=ux*f; a.vy-=uy*f; b.vx+=ux*f; b.vy+=uy*f;
+          var mn=a.r+b.r+40;
+          if(d<mn){ var ps=(mn-d)*0.22; a.vx-=ux*ps; a.vy-=uy*ps; b.vx+=ux*ps; b.vy+=uy*ps; }
+        }
+      }
+      for(i=0;i<links.length;i++){ var l=links[i]; a=byId[l.s]; b=byId[l.t];
+        dx=b.px-a.px; dy=b.py-a.py; d=Math.sqrt(dx*dx+dy*dy)||1; ux=dx/d; uy=dy/d;
+        var s=(d-(a.r+b.r+120))*SPRING;
+        a.vx+=ux*s; a.vy+=uy*s; b.vx-=ux*s; b.vy-=uy*s;
+      }
+      for(i=0;i<nodes.length;i++){ a=nodes[i];
+        a.vx+=(W/2-a.px)*GRAV; a.vy+=(H/2-a.py)*GRAV;
+        a.vy+=(a.ty-a.py)*FLOW;              /* 上流→下流の縦の流れを緩く維持 */
+        if(a.fx!=null){ a.px=a.fx; a.py=a.fy; a.vx=0; a.vy=0; continue; }
+        a.vx*=DAMP; a.vy*=DAMP;
+        var sp=Math.sqrt(a.vx*a.vx+a.vy*a.vy); if(sp>14){ a.vx*=14/sp; a.vy*=14/sp; }
+        a.px+=a.vx*alpha; a.py+=a.vy*alpha;
+        a.px=Math.max(a.r+44,Math.min(W-a.r-44,a.px));
+        a.py=Math.max(a.r+22,Math.min(H-a.r-36,a.py));
+      }
+      alpha*=0.985;
+      return true;
+    }
+    function draw(){
+      for(var i=0;i<links.length;i++){ var l=links[i], a=byId[l.s], b=byId[l.t];
+        var dx=b.px-a.px, dy=b.py-a.py, d=Math.sqrt(dx*dx+dy*dy)||1, ux=dx/d, uy=dy/d;
+        var mx=(a.px+b.px)/2-uy*l._cv, my=(a.py+b.py)/2+ux*l._cv;
+        var sx=a.px+ux*(a.r+2), sy=a.py+uy*(a.r+2);
+        var ex=b.px-ux*(b.r+7), ey=b.py-uy*(b.r+7);
+        edgeEls[ekey(l)].setAttribute('d','M'+sx.toFixed(1)+','+sy.toFixed(1)+' Q'+mx.toFixed(1)+','+my.toFixed(1)+' '+ex.toFixed(1)+','+ey.toFixed(1));
+      }
+      for(i=0;i<nodes.length;i++){ var n=nodes[i]; nodeEls[n.id].setAttribute('transform','translate('+n.px.toFixed(1)+','+n.py.toFixed(1)+')'); }
+    }
+    function loop(){ raf=null; var more=step(); draw(); if(more) raf=requestAnimationFrame(loop); }
+    function kick(a){ if(a!=null&&a>alpha) alpha=a; if(!raf) raf=requestAnimationFrame(loop); }
+    for(var w=0;w<60;w++) step();   /* 初期は少し落ち着かせてから描画 */
+
+    /* ---- ハイライト（ホバー＝一時／クリック＝固定） ---- */
+    var trail=[], selId=null, hoverId=null;
+    function paintFocus(){
+      var act=hoverId||selId;
+      svg.classList.toggle('focused',!!act);
+      var hl={},pN={},pE={},eH={};
+      if(act){ hl[act]=1;
+        inAdj[act].forEach(function(l){ hl[l.s]=1; eH[ekey(l)]=1; });
+        outAdj[act].forEach(function(l){ hl[l.t]=1; eH[ekey(l)]=1; });
+        var p=pathToOutput(act); p.ns.forEach(function(x){ pN[x]=1; }); p.es.forEach(function(x){ pE[x]=1; });
+      }
+      nodes.forEach(function(n){ var c='node role-'+roleClass(n.role);
+        if(n.id===selId) c+=' sel'; if(n.id===hoverId) c+=' hov';
+        if(hl[n.id]) c+=' hl'; if(pN[n.id]) c+=' path';
+        nodeEls[n.id].setAttribute('class',c); });
+      links.forEach(function(l){ var k=ekey(l),c='edge'; if(pE[k]) c+=' epath'; else if(eH[k]) c+=' ehl'; edgeEls[k].setAttribute('class',c); });
+    }
+    function render(){ paintFocus(); renderPanel(); renderCrumbs(); }
+    function jumpTo(id,push){ if(push){ var ix=trail.indexOf(id); if(ix>=0) trail=trail.slice(0,ix+1); else trail.push(id); } selId=id; render(); }
+    function crumbJump(i){ trail=trail.slice(0,i+1); selId=trail[i]; render(); }
+    function clearFocus(){ trail=[]; selId=null; hoverId=null; render(); }
+
+    function renderCrumbs(){ if(!selId){ crumbsEl.innerHTML='<span class="cur">表を選択</span>'; return; } var h=''; trail.forEach(function(id,i){ if(i>0) h+='<span class="sep">›</span>'; if(i===trail.length-1) h+='<span class="cur">'+esc(byId[id].label)+'</span>'; else h+='<button class="c" data-i="'+i+'">'+esc(byId[id].label)+'</button>'; }); crumbsEl.innerHTML=h; Array.prototype.forEach.call(crumbsEl.querySelectorAll('.c'),function(b){ b.addEventListener('click',function(){ crumbJump(+b.getAttribute('data-i')); }); }); }
+    function chip(l,dir){ var other=dir==='in'?l.s:l.t; var b=document.createElement('button'); b.className='p-chip'; b.innerHTML='<span class="dot" style="background:'+l.color+'"></span><span>'+esc(byId[other].label)+'</span><span class="via">'+esc(l.label||'')+(l.qid?(' '+l.qid):'')+'</span>'; b.addEventListener('click',function(){ jumpTo(other,true); }); b.addEventListener('mouseenter',function(){ hoverId=other; paintFocus(); }); b.addEventListener('mouseleave',function(){ if(hoverId===other){ hoverId=null; paintFocus(); } }); return b; }
+    function renderPanel(){ if(!selId){ pbody.innerHTML='<div class="empty">左のグラフで<b>表</b>をクリックすると、関係している表（上流／下流）と<b>最終アウトプットまでの経路</b>がここに出て、そのまま掘り下げられます。</div>'; return; } var n=byId[selId]; pbody.innerHTML=''; var nm=document.createElement('div'); nm.className='pname'; nm.textContent=n.label; pbody.appendChild(nm); var rc=document.createElement('span'); rc.className='rolechip rc-'+roleClass(n.role); rc.textContent=n.role; pbody.appendChild(rc); if(n.sub){ var mt=document.createElement('div'); mt.className='p-meta'; mt.textContent='規模 / キー'; pbody.appendChild(mt); var kb=document.createElement('div'); kb.className='p-keys'; kb.textContent=n.sub; pbody.appendChild(kb); }
+      var mt2=document.createElement('div'); mt2.className='p-meta'; mt2.textContent='つながりの数'; pbody.appendChild(mt2); var kb2=document.createElement('div'); kb2.className='p-keys'; kb2.textContent='上流 '+inAdj[selId].length+' ／ 下流 '+outAdj[selId].length+'（計 '+n._d+'）'; pbody.appendChild(kb2);
+      var rt=document.createElement('div'); rt.className='p-grp'; rt.innerHTML='<h4>最終アウトプットまでの経路</h4>'; var route=document.createElement('div'); route.className='p-route'; if(roleClass(n.role)==='out'){ route.innerHTML='<span>この表が最終アウトプットです。</span>'; } else { var p=pathToOutput(selId); if(p.ns.length<=1){ route.innerHTML='<span>最終アウトプットへの経路は見つかりませんでした。</span>'; } else { p.ns.forEach(function(id,i){ if(i>0){ var a=document.createElement('span'); a.className='arw'; a.textContent='▸'; route.appendChild(a); } var b=document.createElement('button'); b.className='r'+(id===output?' out':''); b.textContent=byId[id].label; b.addEventListener('click',function(){ jumpTo(id,true); }); route.appendChild(b); }); } } rt.appendChild(route); pbody.appendChild(rt);
+      var g1=document.createElement('div'); g1.className='p-grp'; g1.innerHTML='<h4>← この表に入ってくる（上流）</h4>'; var c1=document.createElement('div'); c1.className='p-chips'; if(inAdj[selId].length) inAdj[selId].forEach(function(l){ c1.appendChild(chip(l,'in')); }); else { var e=document.createElement('div'); e.className='p-chip none'; e.textContent='上流なし（起点データ）'; c1.appendChild(e); } g1.appendChild(c1); pbody.appendChild(g1);
+      var g2=document.createElement('div'); g2.className='p-grp'; g2.innerHTML='<h4>→ この表から出ていく（下流）</h4>'; var c2=document.createElement('div'); c2.className='p-chips'; if(outAdj[selId].length) outAdj[selId].forEach(function(l){ c2.appendChild(chip(l,'out')); }); else { var e2=document.createElement('div'); e2.className='p-chip none'; e2.textContent='下流なし（最終アウトプット）'; c2.appendChild(e2); } g2.appendChild(c2); pbody.appendChild(g2);
+    }
+
+    /* ---- 座標変換 / ズーム / パン ---- */
+    var scale=1,ox=0,oy=0,pan=null,moved=false;
+    function apply(){
+      gZoom.setAttribute('transform','translate('+ox+','+oy+') scale('+scale+')');
+      var k=1/scale;
+      nodes.forEach(function(n){ lblEls[n.id].setAttribute('transform','translate(0,'+n.r+') scale('+k+')'); });
+    }
+    function toVB(cx,cy){ var m=svg.getScreenCTM(); if(!m) return {x:0,y:0,k:1}; var p=svg.createSVGPoint(); p.x=cx; p.y=cy; var q=p.matrixTransform(m.inverse()); q.k=m.a||1; return q; }
+    function toWorld(ev){ var v=toVB(ev.clientX,ev.clientY); return {x:(v.x-ox)/scale, y:(v.y-oy)/scale}; }
+    function zoomAt(vx,vy,f){ var ns=Math.max(0.35,Math.min(5,scale*f)); ox=vx-(vx-ox)*(ns/scale); oy=vy-(vy-oy)*(ns/scale); scale=ns; apply(); }
+
+    var dragN=null, lastDragDist=0, dragStart=null;
+    function startDrag(n,ev){
+      ev.stopPropagation();
+      dragN=n; lastDragDist=0; dragStart={x:ev.clientX,y:ev.clientY};
+      var p=toWorld(ev); n._ox=p.x-n.px; n._oy=p.y-n.py; n.fx=n.px; n.fy=n.py;
+      kick(0.4);
+    }
+    window.addEventListener('pointermove',function(ev){
+      if(dragN){ var p=toWorld(ev); dragN.fx=p.x-dragN._ox; dragN.fy=p.y-dragN._oy;
+        lastDragDist=Math.abs(ev.clientX-dragStart.x)+Math.abs(ev.clientY-dragStart.y); kick(0.35); return; }
+      if(pan){ moved=true; var v=toVB(ev.clientX,ev.clientY); ox=pan.ox+(ev.clientX-pan.x)/v.k; oy=pan.oy+(ev.clientY-pan.y)/v.k; apply(); }
+    });
+    window.addEventListener('pointerup',function(){
+      if(dragN){ dragN.fx=null; dragN.fy=null; dragN=null; kick(0.2); }
+      if(pan){ pan=null; svg.classList.remove('panning'); }
+    });
+    svg.addEventListener('pointerdown',function(ev){ if(ev.target.closest&&ev.target.closest('.node')) return; pan={x:ev.clientX,y:ev.clientY,ox:ox,oy:oy}; moved=false; svg.classList.add('panning'); });
+    svg.addEventListener('click',function(ev){ if(!(ev.target.closest&&ev.target.closest('.node'))&&!moved) clearFocus(); });
+    svg.addEventListener('wheel',function(ev){ ev.preventDefault(); var v=toVB(ev.clientX,ev.clientY); zoomAt(v.x,v.y, ev.deltaY<0?1.12:0.9); },{passive:false});
+
+    /* ---- コントロール ---- */
+    var bar=document.createElement('div'); bar.className='relgraph-ctrl';
+    function ctl(txt,title,fn){ var b=document.createElement('button'); b.type='button'; b.textContent=txt; b.title=title; b.setAttribute('aria-label',title); b.addEventListener('click',function(ev){ ev.stopPropagation(); fn(b); }); bar.appendChild(b); return b; }
+    ctl('＋','拡大',function(){ zoomAt(W/2,H/2,1.25); });
+    ctl('－','縮小',function(){ zoomAt(W/2,H/2,0.8); });
+    ctl('▤','レイアウト切替（階層 → 力学）',function(b){ mode=(mode==='force'?'layer':'force'); b.textContent=(mode==='force'?'⚛':'▤'); b.title=(mode==='force'?'レイアウト切替（力学 → 階層）':'レイアウト切替（階層 → 力学）'); alpha=1; kick(1); });
+    ctl('☾','配色切替（ライト ⇔ ダーク）',function(b){ dark=!dark; host.classList.toggle('lightmode',!dark); b.textContent=dark?'☀':'☾'; paintEdges(); });
+    var expanded=false; function toggleExpand(){ expanded=!expanded; wrap.classList.toggle('expanded',expanded); document.body.classList.toggle('relgraph-noscroll',expanded); }
+    ctl('⤢','全画面で見る（Escで戻る）',function(){ toggleExpand(); });
+    ctl('⟳','配置と表示をリセット',function(){ scale=1; ox=0; oy=0; apply(); nodes.forEach(function(n,i){ n.px=PAD+((n.x||0)/sw)*(W-2*PAD)+jit(i,0)*70; n.py=PAD+((n.y||0)/sh)*(H-2*PAD)+jit(i,1)*70; n.vx=0; n.vy=0; n.fx=null; n.fy=null; }); alpha=1; kick(1); });
+    host.appendChild(bar);
+    var hint=document.createElement('div'); hint.className='relgraph-hint'; hint.textContent='ドラッグで移動 ／ ホイールで拡大縮小 ／ ノードをドラッグして並べ替え';
+    host.appendChild(hint);
+    document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ if(expanded) toggleExpand(); else clearFocus(); } });
+
+    apply(); draw(); render(); kick(1);
+  }catch(e){
+    var w=document.getElementById('relgraph-wrap'); if(w) w.style.display='none';
+    var s=document.querySelector('.map-static'); if(s) s.style.display='';
+  }
 })();
 `;
