@@ -323,15 +323,21 @@ function buildQuestions(
 // 同じ見え方（円・大きさ＝つながりの本数・色＝表の役割・縦が流れ）に揃えてある。
 // ============================================================
 
-// 縦が流れ（上＝元データ → 下＝最終アウトプット）。ガイド文もこの向きで説明している。
-const NODE_GAP_X = 176;   // 同じ段のノード間隔
-const LAYER_GAP_Y = 152;  // 段の間隔（円＋ラベル2行＋辺ラベルが重ならない高さ）
-const MAP_PAD = 46;
-const R_MIN = 10, R_MAX = 26;
-const PER_ROW = 7;        // 1段に並べる上限。超えたら段内で折り返す（横に伸びすぎるのを防ぐ）
+// 静的SVG は「操作版グラフ（REPORT_GRAPH_JS）の階層レイアウトを、そのまま止め絵にしたもの」。
+// 参照レポート（顧客と合意済みの見た目）と同じ図にするため、下の値・式は操作版と一致させてある。
+// 変えるときは必ず両方を同時に直すこと。片方だけ変えると印刷・JS無効時の図が別物になる。
+//   キャンバス: W=1280 / H=780 / PAD=64
+//   半径:       r = 8 + 18*√(つながり本数 / 最大本数)、最終アウトプットは最低 13
+//   段:         最終アウトプットまでの距離。段0（最終）を下端に置き、上へ遡る
+//   段内の並び: 中央寄せ、間隔 = min(210, (W-2PAD)/件数)
+//   辺:         二次ベジエ（同じ対の複数辺は 38px ずつ左右へ振る）、円の縁で止める
+//   ラベル:     円の下（y = r + 13）、中央揃え、白フチ付き
+const MAP_W = 1280, MAP_H = 780, MAP_PAD = 64;
+const R_BASE = 8, R_SPAN = 18, R_OUT_MIN = 13;
+const LAYER_GAP_MAX = 210, EDGE_BOW = 38;
 const MAX_NODES = 28, MAX_EDGES = 60;
 
-/** 表の役割 → 円の色。CSS の .relgraph-stage.lightmode（操作版）と同じ配色 */
+/** 表の役割 → 円の色。操作版 CSS（.relgraph-stage.lightmode の --c-*）と同じ値 */
 const ROLE_FILL: Record<Role, string> = {
   '元データ（明細）': '#1E9E6A',
   'マスタ（参照元）': '#1F5FAE',
@@ -347,7 +353,7 @@ interface GraphData { nodes: GNode[]; links: GLink[]; w: number; h: number }
 interface MapResult { svg: string; omittedNodes: number; omittedEdges: number; data: GraphData }
 
 /**
- * 表どうしの関係図（ノード形式）。
+ * 表どうしの関係図（ノード形式）。静的SVGと操作版の両方をこの1か所から作る。
  * uid は同一ページに複数の SVG が並ぶための識別子（矢印マーカーの id が衝突すると
  * 後から定義されたものに全部の矢印が引きずられ、色が全て同じになる）。
  */
@@ -358,118 +364,164 @@ function buildMap(
 ): MapResult | null {
   if (pairs.length === 0) return null;
 
-  // つながりのある表だけを、次数の大きい順に上限まで採用
-  const degree = new Map<string, number>();
+  // つながりのある表だけを、関係の重み順に上限まで採用
+  const weight = new Map<string, number>();
   for (const p of pairs) {
-    degree.set(p.from, (degree.get(p.from) ?? 0) + p.total);
-    degree.set(p.to, (degree.get(p.to) ?? 0) + p.total);
+    weight.set(p.from, (weight.get(p.from) ?? 0) + p.total);
+    weight.set(p.to, (weight.get(p.to) ?? 0) + p.total);
   }
-  const connected = regions.filter(r => degree.has(r.id));
+  const connected = regions.filter(r => weight.has(r.id));
   const kept = connected
     .slice()
-    .sort((a, b) => (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0))
+    .sort((a, b) => (weight.get(b.id) ?? 0) - (weight.get(a.id) ?? 0))
     .slice(0, MAX_NODES);
   const keptIds = new Set(kept.map(r => r.id));
   const drawPairs = pairs.filter(p => keptIds.has(p.from) && keptIds.has(p.to)).slice(0, MAX_EDGES);
   if (drawPairs.length === 0) return null;
 
-  // 段（流れの深さ）ごとに分ける。段内が多いときは折り返して横幅を抑える
-  const layers = computeLayers([...keptIds], drawPairs);
+  // 隣接（操作版と同じく「辺の本数」で数える。重みではない）
+  const outAdj = new Map<string, PairAgg[]>();
+  const inAdj = new Map<string, PairAgg[]>();
+  for (const id of keptIds) { outAdj.set(id, []); inAdj.set(id, []); }
+  for (const p of drawPairs) { outAdj.get(p.from)!.push(p); inAdj.get(p.to)!.push(p); }
+  const degOf = (id: string) => (inAdj.get(id)?.length ?? 0) + (outAdj.get(id)?.length ?? 0);
+  const maxDeg = Math.max(1, ...[...keptIds].map(degOf));
+
+  // 最終アウトプット（操作版の output 決定と同じ順序で選ぶ）
+  let output: string | null = null;
+  let best = -1;
+  for (const r of kept) {
+    if ((roles.get(r.id) ?? '') !== '最終アウトプット') continue;
+    const d = inAdj.get(r.id)!.length;
+    if (d > best) { best = d; output = r.id; }
+  }
+  if (!output) {
+    best = -1;
+    for (const r of kept) {
+      if (outAdj.get(r.id)!.length > 0) continue;
+      const d = inAdj.get(r.id)!.length;
+      if (d > best) { best = d; output = r.id; }
+    }
+  }
+  if (!output) {
+    best = -1;
+    for (const r of kept) { const d = degOf(r.id); if (d > best) { best = d; output = r.id; } }
+  }
+
+  // 段＝最終アウトプットまでの距離（操作版 dist と同じ考え方。最長経路で取る）
+  const layer = new Map<string, number>();
+  const dist = (id: string, seen: Set<string>): number => {
+    if (id === output) return 0;
+    const memo = layer.get(id);
+    if (memo !== undefined) return memo;
+    if (seen.has(id)) return 0; // 循環参照は打ち切る
+    seen.add(id);
+    let far = 0, any = false;
+    for (const l of outAdj.get(id) ?? []) { any = true; far = Math.max(far, 1 + dist(l.to, seen)); }
+    const v = any ? far : 1; // どこへも流れない表は1段目に置く
+    layer.set(id, v);
+    return v;
+  };
+  for (const r of kept) dist(r.id, new Set());
+  if (output) layer.set(output, 0);
+
+  // 段ごとに中央寄せで配置。段0（最終アウトプット）が下端
   const byLayer = new Map<number, Region[]>();
   for (const r of kept) {
-    const l = layers.get(r.id) ?? 0;
-    let arr = byLayer.get(l);
-    if (!arr) { arr = []; byLayer.set(l, arr); }
-    arr.push(r);
+    const l = layer.get(r.id) ?? 0;
+    if (!byLayer.has(l)) byLayer.set(l, []);
+    byLayer.get(l)!.push(r);
   }
-  const layerNos = [...byLayer.keys()].sort((a, b) => a - b);
-  for (const arr of byLayer.values()) arr.sort((a, b) => (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0));
-
-  // 円の半径＝つながりの本数（操作版と同じ規則）
-  const maxDeg = Math.max(1, ...[...degree.values()]);
-  const radiusOf = (id: string) =>
-    Math.round(R_MIN + (R_MAX - R_MIN) * Math.sqrt((degree.get(id) ?? 1) / maxDeg));
-
-  // 段ごとに行を作り、行内は中央寄せで並べる
-  const rows: Region[][] = [];
-  for (const l of layerNos) {
-    const arr = byLayer.get(l)!;
-    for (let i = 0; i < arr.length; i += PER_ROW) rows.push(arr.slice(i, i + PER_ROW));
-  }
-  const widest = Math.max(...rows.map(r => r.length), 1);
-  const width = MAP_PAD * 2 + (widest - 1) * NODE_GAP_X + NODE_GAP_X; // 端のラベルが切れないよう1枠分の余白
-  const height = MAP_PAD * 2 + (rows.length - 1) * LAYER_GAP_Y + 40;
+  for (const arr of byLayer.values()) arr.sort((a, b) => (weight.get(b.id) ?? 0) - (weight.get(a.id) ?? 0));
+  const maxLayer = Math.max(...byLayer.keys(), 0);
 
   const pos = new Map<string, { x: number; y: number; r: number }>();
-  rows.forEach((row, ri) => {
-    const y = MAP_PAD + ri * LAYER_GAP_Y;
-    const rowWidth = (row.length - 1) * NODE_GAP_X;
-    const startX = (width - rowWidth) / 2;
-    row.forEach((r, i) => pos.set(r.id, { x: startX + i * NODE_GAP_X, y, r: radiusOf(r.id) }));
-  });
+  for (const [l, row] of byLayer) {
+    const y = MAP_PAD + ((maxLayer - l) / (maxLayer || 1)) * (MAP_H - 2 * MAP_PAD - 40) + 20;
+    const gap = Math.min(LAYER_GAP_MAX, (MAP_W - 2 * MAP_PAD) / Math.max(1, row.length));
+    const x0 = MAP_W / 2 - (gap * (row.length - 1)) / 2;
+    row.forEach((r, i) => {
+      const isOut = (roles.get(r.id) ?? '') === '最終アウトプット';
+      let rad = R_BASE + R_SPAN * Math.sqrt(degOf(r.id) / maxDeg);
+      if (isOut) rad = Math.max(rad, R_OUT_MIN);
+      pos.set(r.id, { x: x0 + i * gap, y, r: Math.round(rad * 10) / 10 });
+    });
+  }
+
+  // 同じ対に複数の辺があるときは左右へ振り分ける（操作版 _cv と同じ 38px 刻み）
+  const pairCount = new Map<string, number>();
+  for (const p of drawPairs) {
+    const k = [p.from, p.to].sort().join('|');
+    pairCount.set(k, (pairCount.get(k) ?? 0) + 1);
+  }
+  const seenPair = new Map<string, number>();
 
   const showEdgeLabels = drawPairs.length <= 10;
   const parts: string[] = [];
-  parts.push(`<svg viewBox="0 0 ${Math.round(width)} ${Math.round(height)}" role="img" aria-label="表どうしの関係図（ノード形式）">`);
+  parts.push(`<svg viewBox="0 0 ${MAP_W} ${MAP_H}" role="img" aria-label="表どうしの関係図（ノード形式）">`);
   parts.push('<defs>');
   for (const g of GROUP_ORDER) {
-    parts.push(`<marker id="arr-${uid}-${g}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${GROUP_META[g].color}"/></marker>`);
+    parts.push(`<marker id="arr-${uid}-${g}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${GROUP_META[g].color}" fill-opacity="0.85"/></marker>`);
   }
   parts.push('</defs>');
+  // 背景の点（操作版 lightmode の dotted background と同じ見え方にする）
+  parts.push(`<rect x="0" y="0" width="${MAP_W}" height="${MAP_H}" fill="#FCFDFE"/>`);
+  parts.push(`<pattern id="dot-${uid}" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#E4EBF3"/></pattern>`);
+  parts.push(`<rect x="0" y="0" width="${MAP_W}" height="${MAP_H}" fill="url(#dot-${uid})"/>`);
 
-  // 辺（ノードより先に描いて下に敷く）。円の縁で始点・終点を止め、矢印が円に重ならないようにする
+  // 辺（ノードより先に描いて下に敷く）
   const edgeLabels: string[] = [];
   for (const p of drawPairs) {
     const a = pos.get(p.from)!; const b = pos.get(p.to)!;
     const g = dominantGroup(p);
     const meta = GROUP_META[g];
+    const k = [p.from, p.to].sort().join('|');
+    const idx = seenPair.get(k) ?? 0;
+    seenPair.set(k, idx + 1);
+    const cv = (idx - ((pairCount.get(k) ?? 1) - 1) / 2) * EDGE_BOW;
     const dx = b.x - a.x, dy = b.y - a.y;
     const len = Math.max(1, Math.hypot(dx, dy));
     const ux = dx / len, uy = dy / len;
-    const x1 = a.x + ux * (a.r + 2), y1 = a.y + uy * (a.r + 2);
-    const x2 = b.x - ux * (b.r + 8), y2 = b.y - uy * (b.r + 8); // +8 は矢印の頭の分
-    // 同じ段どうし（ほぼ水平）は弧を描いて他のノードを避ける。段をまたぐ辺は緩い縦カーブ
-    const horizontal = Math.abs(dy) < 4;
-    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-    const bow = horizontal ? Math.min(46, 14 + len * 0.12) : 0;
-    const d = horizontal
-      ? `M${x1.toFixed(1)},${y1.toFixed(1)} Q${mx.toFixed(1)},${(my - bow).toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`
-      : `M${x1.toFixed(1)},${y1.toFixed(1)} C${x1.toFixed(1)},${(y1 + dy * 0.4).toFixed(1)} ${x2.toFixed(1)},${(y2 - dy * 0.4).toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`;
-    const dash = meta.dashed ? ' stroke-dasharray="7 5"' : '';
-    parts.push(`<path d="${d}" fill="none" stroke="${meta.color}" stroke-width="${p.total > 3 ? 2.4 : 1.8}"${dash} marker-end="url(#arr-${uid}-${g})" opacity="0.85"/>`);
+    const mx = (a.x + b.x) / 2 - uy * cv, my = (a.y + b.y) / 2 + ux * cv;
+    const sx = a.x + ux * (a.r + 2), sy = a.y + uy * (a.r + 2);
+    const ex = b.x - ux * (b.r + 7), ey = b.y - uy * (b.r + 7);
+    const dash = meta.dashed ? ' stroke-dasharray="6 5"' : '';
+    parts.push(`<path d="M${sx.toFixed(1)},${sy.toFixed(1)} Q${mx.toFixed(1)},${my.toFixed(1)} ${ex.toFixed(1)},${ey.toFixed(1)}" fill="none" stroke="${meta.color}" stroke-width="1.3" stroke-opacity="0.5"${dash} marker-end="url(#arr-${uid}-${g})"/>`);
     const qid = g === 'copy' ? copyQuestionByPair.get(`${p.from}\u0000${p.to}`) : undefined;
     if (showEdgeLabels || qid) {
       const text = qid ? `手コピー推定 → ${qid}` : `${meta.label.split('（')[0]}${p.total > 1 ? ` ×${p.total}` : ''}`;
-      // 縦の辺はラベルを「線の横・少し手前」へ置く。中点だと矢印の先＝下のノードの円やラベルに重なる
-      const lx = horizontal ? mx : x1 + (x2 - x1) * 0.45 + 12;
-      const ly = horizontal ? my - bow - 5 : y1 + (y2 - y1) * 0.45;
-      const anchor = horizontal ? 'middle' : 'start';
-      // 白フチ（paint-order）でノード・他の辺に重なっても読めるようにする
+      // 線に対して垂直へ逃がす。線の上や中点に置くと円とラベルに重なって読めない
+      // （操作版はラベルを持たず右パネルで見せるが、静止画では Q 番号を図に出したい）。
+      const side = cv >= 0 ? 1 : -1;
+      const off = R_BASE + R_SPAN + 12 + Math.abs(cv) / 2; // 最大半径＋余白
+      // 線の法線 (-uy, ux) 方向へ逃がす
+      const nx = -uy * off * side, ny = ux * off * side;
+      const lx = (a.x + b.x) / 2 + nx;
+      const ly = (a.y + b.y) / 2 + ny + 3;
+      // 文字は「線から離れる向き」へ伸ばす。左へ逃がしたら右揃え、右へ逃がしたら左揃え。
+      // ここを取り違えると、逃がした分だけ文字が線側へ戻ってきて円に重なる。
+      const anchor = Math.abs(nx) < 6 ? 'middle' : nx < 0 ? 'end' : 'start';
       edgeLabels.push(`<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" font-size="10" fill="${meta.color}" text-anchor="${anchor}"${qid ? ' font-weight="bold"' : ''} style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.5px">${esc(text)}</text>`);
     }
   }
 
-  // ノード（円＋ラベル）。最終アウトプットは輪を足して終着点だと分かるようにする
+  // ノード（円＋下にラベル）。操作版と同じく最終アウトプットには輪を足す
   for (const r of kept) {
     const p = pos.get(r.id)!;
     const role = roles.get(r.id) ?? '中間集計';
     const fill = ROLE_FILL[role] ?? '#7B5EA7';
-    const label = labels.get(r.id) ?? r.sheet;
-    const key = keySummaryShort(r);
-    const sub = key === '' ? `${r.dataRowCount.toLocaleString()}行` : `${r.dataRowCount.toLocaleString()}行 ／ ${key}`;
     const isOut = role === '最終アウトプット';
+    const label = labels.get(r.id) ?? r.sheet;
     parts.push('<g>'
-      + (isOut ? `<circle cx="${p.x.toFixed(1)}" cy="${p.y}" r="${p.r + 5}" fill="none" stroke="${fill}" stroke-opacity="0.35" stroke-width="2"/>` : '')
-      + `<circle cx="${p.x.toFixed(1)}" cy="${p.y}" r="${p.r}" fill="${fill}" stroke="#FCFDFE" stroke-width="1.5"/>`
-      + `<text x="${p.x.toFixed(1)}" y="${p.y + p.r + 15}" font-size="11" font-weight="${isOut ? 800 : 700}" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">${esc(fitText(label, NODE_GAP_X - 10, 11))}</text>`
-      + `<text x="${p.x.toFixed(1)}" y="${p.y + p.r + 28}" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">${esc(fitText(sub, NODE_GAP_X - 10, 9.5))}</text>`
+      + (isOut ? `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${(p.r + 5).toFixed(1)}" fill="none" stroke="${fill}" stroke-opacity="0.32" stroke-width="2"/>` : '')
+      + `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${p.r}" fill="${fill}" stroke="#FCFDFE" stroke-width="1.5"/>`
+      + `<text x="${p.x.toFixed(1)}" y="${(p.y + p.r + 13).toFixed(1)}" font-size="11" font-weight="${isOut ? 800 : 600}" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">${esc(fitText((isOut ? '★ ' : '') + label, LAYER_GAP_MAX - 16, 11))}</text>`
       + '</g>');
   }
   parts.push(...edgeLabels);
   parts.push('</svg>');
 
-  // インタラクティブ・グラフ用データ。初期座標は上の階層レイアウト（pos）を種にして
-  // ブラウザ側の力学シミュレーションが素早く収束するようにする（決定的な初期配置）。
+  // 操作版へ渡すデータ。初期座標は上の階層配置をそのまま種にする（同じ図から始まる）
   const gnodes: GNode[] = kept.map(r => {
     const p = pos.get(r.id)!;
     const key = keySummaryShort(r);
@@ -478,7 +530,7 @@ function buildMap(
       label: labels.get(r.id) ?? r.sheet,
       sub: key === '' ? `${r.dataRowCount.toLocaleString()}行` : `${r.dataRowCount.toLocaleString()}行 ／ ${key}`,
       role: roles.get(r.id) ?? '',
-      deg: degree.get(r.id) ?? 1,
+      deg: weight.get(r.id) ?? 1,
       x: p.x, y: p.y,
     };
   });
@@ -495,7 +547,7 @@ function buildMap(
     svg: parts.join('\n'),
     omittedNodes: connected.length - kept.length,
     omittedEdges: pairs.filter(p => keptIds.has(p.from) && keptIds.has(p.to)).length - drawPairs.length,
-    data: { nodes: gnodes, links: glinks, w: Math.round(width), h: Math.round(height) },
+    data: { nodes: gnodes, links: glinks, w: MAP_W, h: MAP_H },
   };
 }
 
@@ -739,27 +791,29 @@ function assignFileRoles(stats: Map<string, FileStat>, outputs: Set<string>): vo
   }
 }
 
-// ---- 全体の流れ図（ファイル単位）----
-const FF = { W: 232, H: 74, GX: 116, GY: 26, PAD: 30, HEAD: 26 };
-const FILE_ROLE_STYLE: Record<FileRole, { fill: string; stroke: string; text: string }> = {
-  '元データ':        { fill: '#E9F7F0', stroke: '#1E9E6A', text: '#0E2A47' },
-  '中間ファイル':    { fill: '#F1EDF8', stroke: '#7B5EA7', text: '#0E2A47' },
-  '最終アウトプット': { fill: '#FBEFEF', stroke: '#C24141', text: '#0E2A47' },
-  '独立':            { fill: '#F2F5F8', stroke: '#9AA7B4', text: '#3A4552' },
+// ---- 全体関係図（ファイル単位）----
+// 表単位の関係図（buildMap）と同じノード形式で描く。図の種類ごとに見た目が変わると、
+// 「全体 → 詳細」で降りていくときに同じものを見ている感覚が切れるため、円・色・線の規則を揃える。
+// 違いは粒度だけ（円＝ファイル、円の大きさ＝そのファイルが持つ関係の本数）。
+const FF = { W: 1280, PAD: 64, HEAD: 26, ROW: 150 };
+const FILE_ROLE_FILL: Record<FileRole, string> = {
+  '元データ': '#1E9E6A',
+  '中間ファイル': '#7B5EA7',
+  '最終アウトプット': '#C0392B',
+  '独立': '#9AA7B4',
 };
 
 /**
- * 受領ファイル → 最終アウトプットの流れ図。
- * 最終アウトプットは指定どおり必ず最右列に置く（自動検出でつながりが出なかった場合も、
- * 「つながり未検出」として最右に置いたまま示す — 図から消すと確認したい論点が消えてしまう）。
+ * 受領ファイル → 最終アウトプットの流れ図（ノード形式）。
+ * 最終アウトプットは指定どおり必ず最下段に置く（自動検出でつながりが出なかった場合も、
+ * 「つながり未検出」として置いたまま示す — 図から消すと確認したい論点が消えてしまう）。
  */
 function buildFileFlow(stats: Map<string, FileStat>, filePairs: FilePair[], outputs: Set<string>): string | null {
   const all = [...stats.values()];
   if (all.length === 0) return null;
 
-  // 最長経路でレイヤを決め、最終アウトプットは最右へ寄せる（02 のセグメント分割と同じ計算）
+  // 最長経路で段を決める。段が大きいほど下流（最終アウトプットが最大）
   const layer = computeFileLayers(all.map(s => s.label), filePairs, outputs);
-
   const byLayer = new Map<number, FileStat[]>();
   for (const s of all) {
     const l = layer.get(s.label) ?? 0;
@@ -767,73 +821,86 @@ function buildFileFlow(stats: Map<string, FileStat>, filePairs: FilePair[], outp
     byLayer.get(l)!.push(s);
   }
   const layerNos = [...byLayer.keys()].sort((a, b) => a - b);
-  const layerIndex = new Map<number, number>(layerNos.map((l, i) => [l, i]));
   for (const arr of byLayer.values()) arr.sort((a, b) => b.rowTotal - a.rowTotal);
+  // 出てきた段だけを詰める（0,1,3 → 0,1,2）。飛んだ段の分だけ空白が空くのを防ぐ
+  const layerIndex = new Map<number, number>(layerNos.map((l, i) => [l, i]));
+  const maxLayer = layerNos.length - 1;
 
-  const pos = new Map<string, { x: number; y: number }>();
-  let maxRows = 0;
-  for (const l of layerNos) {
-    const arr = byLayer.get(l)!;
-    maxRows = Math.max(maxRows, arr.length);
-    arr.forEach((s, i) => {
-      pos.set(s.label, { x: FF.PAD + layerIndex.get(l)! * (FF.W + FF.GX), y: FF.PAD + FF.HEAD + i * (FF.H + FF.GY) });
+  // 円の大きさ＝そのファイルが持つ関係の本数（表単位の図と同じ考え方）
+  const linkCount = new Map<string, number>();
+  for (const p of filePairs) {
+    linkCount.set(p.from, (linkCount.get(p.from) ?? 0) + 1);
+    linkCount.set(p.to, (linkCount.get(p.to) ?? 0) + 1);
+  }
+  const maxLinks = Math.max(1, ...[...linkCount.values()]);
+
+  const height = FF.PAD * 2 + FF.HEAD + Math.max(1, layerNos.length - 1) * FF.ROW;
+  const pos = new Map<string, { x: number; y: number; r: number }>();
+  for (const [l, row] of byLayer) {
+    const y = FF.PAD + FF.HEAD + (layerIndex.get(l)! / (maxLayer || 1)) * (height - 2 * FF.PAD - FF.HEAD - 40);
+    const gap = Math.min(260, (FF.W - 2 * FF.PAD) / Math.max(1, row.length));
+    const x0 = FF.W / 2 - (gap * (row.length - 1)) / 2;
+    row.forEach((s, i) => {
+      const isOut = outputs.has(s.label);
+      let rad = 11 + 17 * Math.sqrt((linkCount.get(s.label) ?? 0) / maxLinks);
+      if (isOut) rad = Math.max(rad, 16);
+      pos.set(s.label, { x: x0 + i * gap, y, r: Math.round(rad * 10) / 10 });
     });
   }
-  const width = FF.PAD * 2 + layerNos.length * FF.W + Math.max(0, layerNos.length - 1) * FF.GX;
-  const height = FF.PAD * 2 + FF.HEAD + maxRows * FF.H + Math.max(0, maxRows - 1) * FF.GY;
 
+  const h = Math.round(height);
   const parts: string[] = [];
-  parts.push(`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="受領ファイルから最終アウトプットまでの流れ">`);
+  parts.push(`<svg viewBox="0 0 ${FF.W} ${h}" role="img" aria-label="ブックどうしの関係図（ノード形式）">`);
   parts.push('<defs>');
   for (const g of GROUP_ORDER) {
-    parts.push(`<marker id="ff-${g}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${GROUP_META[g].color}"/></marker>`);
+    parts.push(`<marker id="ff-${g}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${GROUP_META[g].color}" fill-opacity="0.85"/></marker>`);
   }
   parts.push('</defs>');
+  parts.push(`<rect x="0" y="0" width="${FF.W}" height="${h}" fill="#FCFDFE"/>`);
+  parts.push('<pattern id="dot-ff" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#E4EBF3"/></pattern>');
+  parts.push(`<rect x="0" y="0" width="${FF.W}" height="${h}" fill="url(#dot-ff)"/>`);
 
-  // 列見出し（元データ／中間／最終アウトプット）
+  // 段の見出し（上＝受領データ、下＝最終アウトプット）
   for (const l of layerNos) {
-    const i = layerIndex.get(l)!;
-    const arr = byLayer.get(l)!;
-    const isOut = arr.every(s => outputs.has(s.label)) && arr.length > 0;
-    const cap2 = isOut ? '最終アウトプット' : i === 0 ? '受領データ（起点）' : '経由ファイル';
-    parts.push(`<text x="${FF.PAD + i * (FF.W + FF.GX)}" y="${FF.PAD + 8}" font-size="11" font-weight="700" fill="${isOut ? '#C24141' : '#7A8794'}" letter-spacing=".04em">${esc(cap2)}</text>`);
+    const row = byLayer.get(l)!;
+    const y = pos.get(row[0].label)!.y;
+    const isOut = row.every(s => outputs.has(s.label));
+    const cap = isOut ? '最終アウトプット' : l === 0 ? '受領データ（起点）' : '経由ファイル';
+    parts.push(`<text x="${FF.PAD}" y="${(y - 34).toFixed(1)}" font-size="11" font-weight="700" fill="${isOut ? '#C24141' : '#7A8794'}" letter-spacing=".04em">${esc(cap)}</text>`);
   }
 
-  // 辺
+  // 辺（円の縁で止め、同じ段どうしは弧で逃がす）
   for (const p of filePairs) {
     const a = pos.get(p.from); const b = pos.get(p.to);
     if (!a || !b) continue;
-    const meta = GROUP_META[dominantFileGroup(p)];
     const g = dominantFileGroup(p);
-    let d: string;
-    if (Math.abs(a.x - b.x) < 1) {
-      const x = a.x + FF.W / 2;
-      d = a.y < b.y ? `M${x},${a.y + FF.H} L${x},${b.y}` : `M${x},${a.y} L${x},${b.y + FF.H}`;
-    } else {
-      const rev = a.x > b.x;
-      const src = rev ? b : a; const dst = rev ? a : b;
-      const x1 = src.x + FF.W, y1 = src.y + FF.H / 2, x2 = dst.x, y2 = dst.y + FF.H / 2;
-      d = rev
-        ? `M${x2},${y2} C${x2 - 50},${y2} ${x1 + 50},${y1} ${x1},${y1}`
-        : `M${x1},${y1} C${x1 + 50},${y1} ${x2 - 50},${y2} ${x2},${y2}`;
-    }
-    const dash = meta.dashed ? ' stroke-dasharray="7 5"' : '';
-    parts.push(`<path d="${d}" fill="none" stroke="${meta.color}" stroke-width="2"${dash} marker-end="url(#ff-${g})"/>`);
+    const meta = GROUP_META[g];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len = Math.max(1, Math.hypot(dx, dy));
+    const ux = dx / len, uy = dy / len;
+    const bow = Math.abs(dy) < 4 ? 26 : 0;
+    const sx = a.x + ux * (a.r + 2), sy = a.y + uy * (a.r + 2);
+    const ex = b.x - ux * (b.r + 7), ey = b.y - uy * (b.r + 7);
+    const mx = (a.x + b.x) / 2 - uy * bow, my = (a.y + b.y) / 2 + ux * bow;
+    const dash = meta.dashed ? ' stroke-dasharray="6 5"' : '';
+    parts.push(`<path d="M${sx.toFixed(1)},${sy.toFixed(1)} Q${mx.toFixed(1)},${my.toFixed(1)} ${ex.toFixed(1)},${ey.toFixed(1)}" fill="none" stroke="${meta.color}" stroke-width="1.6" stroke-opacity="0.55"${dash} marker-end="url(#ff-${g})"/>`);
   }
 
   // ノード（ファイル）
   for (const s of all) {
     const p = pos.get(s.label)!;
-    const st = FILE_ROLE_STYLE[s.role];
+    const fill = FILE_ROLE_FILL[s.role];
     const isOut = outputs.has(s.label);
-    const sub = `${s.sheets.length}シート ／ ${s.regionCount}表 ／ ${s.rowTotal.toLocaleString()}行`;
     const orphanOut = isOut && s.inFiles.size === 0;
-    parts.push(`<g>` +
-      `<rect x="${p.x}" y="${p.y}" width="${FF.W}" height="${FF.H}" rx="11" fill="${st.fill}" stroke="${st.stroke}" stroke-width="${isOut ? 2 : 1.3}"${orphanOut ? ' stroke-dasharray="6 4"' : ''}/>` +
-      `<text x="${p.x + 14}" y="${p.y + 25}" font-size="12" font-weight="700" fill="${st.text}">${esc(fitText(s.filename, FF.W - 28, 12))}</text>` +
-      `<text x="${p.x + 14}" y="${p.y + 44}" font-size="10" fill="#7A8794">${esc(sub)}</text>` +
-      `<text x="${p.x + 14}" y="${p.y + 62}" font-size="10" font-weight="700" fill="${st.stroke}">${esc(s.role)}${orphanOut ? '（つながり未検出）' : ''}</text>` +
-      `</g>`);
+    const sub = `${s.sheets.length}シート ／ ${s.regionCount}表 ／ ${s.rowTotal.toLocaleString()}行`;
+    parts.push('<g>'
+      + (isOut
+        ? `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${(p.r + 5).toFixed(1)}" fill="none" stroke="${fill}" stroke-opacity="0.32" stroke-width="2"${orphanOut ? ' stroke-dasharray="5 4"' : ''}/>`
+        : '')
+      + `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${p.r}" fill="${fill}" stroke="#FCFDFE" stroke-width="1.5"/>`
+      + `<text x="${p.x.toFixed(1)}" y="${(p.y + p.r + 14).toFixed(1)}" font-size="11.5" font-weight="${isOut ? 800 : 700}" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">${esc(fitText((isOut ? '★ ' : '') + s.filename, 250, 11.5))}</text>`
+      + `<text x="${p.x.toFixed(1)}" y="${(p.y + p.r + 28).toFixed(1)}" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">${esc(sub)}${orphanOut ? '（つながり未検出）' : ''}</text>`
+      + '</g>');
   }
   parts.push('</svg>');
   return parts.join('\n');
