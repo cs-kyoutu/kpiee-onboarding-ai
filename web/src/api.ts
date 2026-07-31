@@ -106,7 +106,7 @@ export interface Artifact {
 
 /** シート役割の自動分類結果（混在ファイル対応） */
 export interface SheetClassification {
-  role: 'input_data' | 'working_sheet' | 'final_output' | 'unknown'
+  role: 'input_data' | 'master_data' | 'working_sheet' | 'final_output' | 'unknown'
   reason: string
   references: string[]
 }

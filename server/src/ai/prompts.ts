@@ -33,7 +33,7 @@ export function decodeInstruction(assetNames: string[]): string {
   return `登録済みデータファイル名（SQLジョブで参照可能なテーブル）: ${assetNames.join(', ') || '（なし）'}
 
 以下に顧客アーティファクトを整形した JSON を示します。各シートは規模が大きいため次のように要約されています:
-- role: シート役割（input_data=基幹インプット / working_sheet=中間 / final_output=最終帳票 / unknown=不明）
+- role: シート役割（input_data=基幹インプット / master_data=マスタ・分類表（集計の軸。SQL では結合先） / working_sheet=中間 / final_output=最終帳票 / unknown=不明）
 - rowCount: 元シートの総行数（真の規模。サンプルは一部のみ）
 - headerRows: 先頭のヘッダ行（列の意味把握用）
 - formulaPatterns: 数式パターン（重複排除済み）。appliesToRowCount=同パターンが適用される行数、gas=Googleスプレッドシート関数を含む

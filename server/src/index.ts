@@ -13,7 +13,7 @@ import { db, setProjectStatus, getProjectUsage, initDb } from './db.js';
 import { putObject, removeObject } from './storage.js';
 import { materializeBuffer, materializeParsed, driveKey, isDriveKey, driveIdOf } from './artifacts.js';
 import { parseArtifact, type ParsedArtifact } from './preprocess/parse.js';
-import { classifySheetRoles, type SheetClassification } from './preprocess/classify.js';
+import { classifySheetRoles, SHEET_ROLE_LABELS, type SheetClassification } from './preprocess/classify.js';
 import { analyzeBuffer, analyzeArtifacts, fileLabelOf, type RelationGraph } from './preprocess/relations.js';
 import { analyzeArtifactsInWorker, type WorkerFile } from './preprocess/analyzeInWorker.js';
 import { artifactSetSignature, getCachedRelationGraph, setCachedRelationGraph, invalidateRelationGraph } from './relationsCache.js';
@@ -343,9 +343,13 @@ app.post('/api/projects/:id/import-sheet', async (req, res) => {
 app.patch('/api/artifacts/:id/roles', async (req, res) => {
   const { sheet_roles } = req.body as { sheet_roles?: Record<string, string> };
   if (!sheet_roles) return res.status(400).json({ error: 'sheet_roles は必須です' });
-  const valid = new Set(['input_data', 'working_sheet', 'final_output', 'unknown']);
+  // 語彙は classify.ts の SHEET_ROLE_LABELS を唯一の出典にする。
+  // ここに配列を書き写すと役割を足したときに片方だけ古くなる（master_data 追加時に実際に起きた）。
+  const valid = new Set(Object.keys(SHEET_ROLE_LABELS));
   for (const role of Object.values(sheet_roles)) {
-    if (!valid.has(role)) return res.status(400).json({ error: `役割が不正です: ${role}` });
+    if (!valid.has(role)) {
+      return res.status(400).json({ error: `役割が不正です: ${role}（${[...valid].join(' / ')} のいずれか）` });
+    }
   }
   const row = await db.prepare(`SELECT sheet_roles FROM artifacts WHERE id = ?`).get(req.params.id) as { sheet_roles: string | null } | undefined;
   if (!row) return res.status(404).json({ error: 'artifact not found' });

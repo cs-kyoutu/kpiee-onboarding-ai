@@ -13,6 +13,7 @@ import type { StructureOverview, TableDefinition } from './ai/schemas.js';
 
 const ROLE_LABEL: Record<string, string> = {
   input_data: 'インプット（raw）',
+  master_data: 'マスタ（分類表）',
   working_sheet: '中間シート',
   final_output: '最終帳票',
   unknown: '⚠ 判定不能（要確認）',

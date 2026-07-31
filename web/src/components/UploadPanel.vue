@@ -100,6 +100,7 @@ const KIND_LABELS: Record<string, string> = {
 
 const ROLE_LABELS: Record<string, string> = {
   input_data: 'インプット（raw）',
+  master_data: 'マスタ（分類表）',
   working_sheet: '中間シート',
   final_output: '最終帳票',
   unknown: '⚠ 判定不能',
@@ -462,6 +463,7 @@ function rolesSummary(a: Artifact): string {
           <td>
             <select v-model="editedRoles[name]" style="width: 180px">
               <option value="input_data">インプット（raw）</option>
+              <option value="master_data">マスタ（分類表）</option>
               <option value="working_sheet">中間シート</option>
               <option value="final_output">最終帳票</option>
               <option value="unknown">判定不能（除外）</option>
