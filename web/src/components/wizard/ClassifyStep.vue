@@ -28,6 +28,8 @@ const books = ref<Book[]>([])
 const saving = ref(false)
 const saved = ref(false)
 const error = ref('')
+// 保存の進捗（何ファイル目か）。1件ずつ PATCH するので途中で止まっても分かるようにする
+const savedCount = ref(0)
 
 /** 解析できたファイルだけが対象（解析失敗・非対応形式は分類しても意味がない） */
 const targets = computed(() => props.artifacts.filter(a => a.parse_status === 'done'))
@@ -36,6 +38,13 @@ const unknownCount = computed(() =>
   books.value.reduce((n, b) => n + b.rows.filter(r => r.role === 'unknown').length, 0))
 const finalCount = computed(() =>
   books.value.reduce((n, b) => n + b.rows.filter(r => r.role === 'final_output').length, 0))
+
+// 読み込みの進捗。シート情報の取得はファイルごとに時間差があり、
+// 進んでいるか分からないと「先に確定を押す」ことになるので、必ず件数で見せる。
+const loadedCount = computed(() => books.value.filter(b => !b.loading).length)
+const loading = computed(() => books.value.some(b => b.loading))
+const loadPercent = computed(() =>
+  books.value.length === 0 ? 0 : Math.round((loadedCount.value / books.value.length) * 100))
 
 async function loadBooks() {
   error.value = ''
@@ -73,12 +82,14 @@ function applyAll(book: Book, role: string) {
 async function confirmAll() {
   saving.value = true
   error.value = ''
+  savedCount.value = 0
   try {
     for (const book of books.value) {
       if (book.rows.length === 0) continue
       await patch(`/artifacts/${book.artifactId}/roles`, {
         sheet_roles: Object.fromEntries(book.rows.map(r => [r.sheet, r.role])),
       })
+      savedCount.value++
     }
     // 人が確認した印。自動分類の結果が入っているだけでは完了にしないため、ここで初めて立つ
     await setProjectFlag(props.projectId, 'roles_confirmed')
@@ -112,18 +123,31 @@ watch(() => targets.value.map(a => a.id).join(','), loadBooks)
     <p v-if="error" class="error-box">{{ error }}</p>
     <p v-if="targets.length === 0" class="muted">解析済みのファイルがありません。前のステップで取り込んでください。</p>
 
+    <!-- 読み込みの進捗。全部そろうまで確定できないので、残りが分かるようにする -->
+    <div v-if="loading" class="wz-progress">
+      <span class="spin"></span>
+      <span>シート情報を読み込んでいます</span>
+      <span class="bar"><i :style="{ width: loadPercent + '%' }"></i></span>
+      <span class="cnt">{{ loadedCount }} / {{ books.length }} ファイル</span>
+    </div>
+
     <div v-for="book in books" :key="book.artifactId" class="wz-card">
       <div class="wz-book-head">
         <h3 class="wz-h">{{ book.filename }}</h3>
-        <span class="muted">{{ book.rows.length }} シート</span>
-        <span class="wz-bulk">
+        <span v-if="book.loading" class="badge info">読み込み中</span>
+        <span v-else class="muted">{{ book.rows.length }} シート</span>
+        <span v-if="!book.loading" class="wz-bulk">
           一括:
           <button v-for="r in ROLES.slice(0, 4)" :key="r.value" class="link" @click="applyAll(book, r.value)">
             {{ r.label }}
           </button>
         </span>
       </div>
-      <p v-if="book.loading" class="muted">読み込み中…</p>
+      <div v-if="book.loading" class="sk-wrap">
+        <div v-for="i in 3" :key="i" class="sk-row">
+          <span class="sk"></span><span class="sk"></span><span class="sk"></span><span class="sk"></span>
+        </div>
+      </div>
       <p v-else-if="book.error" class="error-box">{{ book.error }}</p>
       <table v-else class="wz-table">
         <thead>
@@ -149,9 +173,12 @@ watch(() => targets.value.map(a => a.id).join(','), loadBooks)
       <span v-if="unknownCount > 0" class="badge warn">未分類 {{ unknownCount }} シート</span>
       <span v-if="finalCount === 0" class="badge warn">最終アウトプットが未指定</span>
       <span v-else class="badge ok">最終アウトプット {{ finalCount }} シート</span>
-      <button class="primary" :disabled="saving" @click="confirmAll">
-        {{ saving ? '保存中…' : saved ? '✓ 確定済み（再保存）' : 'この分類で確定する' }}
+      <!-- 読み込み中は押させない（途中の状態で確定すると、まだ見ていないシートまで保存される） -->
+      <button class="primary" :disabled="saving || loading" @click="confirmAll">
+        {{ saving ? `保存中… ${savedCount} / ${books.length}` : saved ? '確定済み（再保存）' : 'この分類で確定する' }}
       </button>
+      <span v-if="loading" class="muted">読み込みが終わると確定できます</span>
+      <span v-else-if="saved" class="badge ok">保存しました</span>
     </div>
   </div>
 </template>

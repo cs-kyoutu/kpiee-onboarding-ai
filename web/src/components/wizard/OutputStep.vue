@@ -57,6 +57,31 @@ function itemNote(key: keyof ReportSpecItems): string {
   return ''
 }
 
+/**
+ * AI の回答が実際に構成を変えたかを、回答ごとに日本語で並べる。
+ * 「合意したのに反映されていない気がする」を無くすため、変わった項目を明示し、
+ * 変わっていない回答には「構成は変更なし」と出す（AI がツールを呼ばずに同意した場合が見える）。
+ */
+function patchSummary(raw?: string | null): string[] {
+  if (!raw) return []
+  try {
+    const p = JSON.parse(raw) as Partial<ReportSpec>
+    const out: string[] = []
+    if (p.title !== undefined) out.push(`表題「${p.title || '（既定）'}」`)
+    if (p.focus !== undefined) out.push(`重点「${p.focus}」`)
+    for (const [k, v] of Object.entries(p.sections ?? {})) {
+      out.push(`${sectionLabels.value[k] ?? k}: ${v ? '出す' : '出さない'}`)
+    }
+    for (const [k, v] of Object.entries(p.items ?? {})) {
+      out.push(`${itemLabels.value[k] ?? k}: ${v ? '出す' : '出さない'}`)
+    }
+    if (p.notes) out.push(`補足 ${p.notes.length} 件`)
+    return out
+  } catch {
+    return ['構成を更新しました']
+  }
+}
+
 async function loadSpec() {
   const d = await getReportSpec(props.projectId)
   spec.value = d.spec
@@ -155,9 +180,14 @@ onMounted(async () => {
     const before = JSON.stringify(spec.value)
     await loadChat()
     if (pending.value) return
-    notice.value = ''
     await loadSpec()
-    if (JSON.stringify(spec.value) !== before) reloadKey.value++
+    // AI が構成を変えたらプレビューを作り直し、作り直したことを一言出す
+    if (JSON.stringify(spec.value) !== before) {
+      reloadKey.value++
+      notice.value = '構成が変わったのでレポートを作り直しました'
+    } else {
+      notice.value = ''
+    }
     emit('changed')
   }, 2500)
 })
@@ -212,7 +242,14 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
             <div v-for="m in messages" :key="m.id" class="wz-msg" :class="m.role">
               <span class="who">{{ m.role === 'user' ? '担当者' : 'AI' }}</span>
               <p class="wz-pre">{{ m.content }}</p>
-              <span v-if="m.spec_patch" class="badge info">構成を更新しました</span>
+              <!-- 実際に構成が変わったかを回答ごとに明示する（合意したのに反映されない、を防ぐ） -->
+              <div v-if="m.role === 'assistant'" class="wz-applied">
+                <template v-if="m.spec_patch">
+                  <span class="badge ok">レポートに反映</span>
+                  <span v-for="(c, i) in patchSummary(m.spec_patch)" :key="i" class="wz-tag">{{ c }}</span>
+                </template>
+                <span v-else class="badge">構成は変更なし</span>
+              </div>
             </div>
             <!-- 押した瞬間の仮表示。サーバーの履歴に入り次第、上のリストへ置き換わる -->
             <div v-if="echo" class="wz-msg user sending">

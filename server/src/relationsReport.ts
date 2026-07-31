@@ -314,10 +314,31 @@ function buildQuestions(
 }
 
 // ============================================================
-// 関係マップ（SVG）
+// 関係マップ（SVG）— ノード（円）形式
+//
+// 【変更禁止の要件】表どうしの関係図は必ずノード（円）形式で出す。
+// 顧客と構造合意する本体の図であり、箱を並べた図では「どの表が何本つながっているか」が読めない。
+// この静的 SVG は印刷・JS 無効・操作版 OFF のときに出るものなので、ここが箱だと
+// 「ノード形式で出す」が経路によって破れる（実際に破れていた）。操作版（REPORT_GRAPH_JS）と
+// 同じ見え方（円・大きさ＝つながりの本数・色＝表の役割・縦が流れ）に揃えてある。
 // ============================================================
-const NODE_W = 192, NODE_H = 62, COL_GAP = 128, ROW_GAP = 24, PAD = 28;
+
+// 縦が流れ（上＝元データ → 下＝最終アウトプット）。ガイド文もこの向きで説明している。
+const NODE_GAP_X = 176;   // 同じ段のノード間隔
+const LAYER_GAP_Y = 152;  // 段の間隔（円＋ラベル2行＋辺ラベルが重ならない高さ）
+const MAP_PAD = 46;
+const R_MIN = 10, R_MAX = 26;
+const PER_ROW = 7;        // 1段に並べる上限。超えたら段内で折り返す（横に伸びすぎるのを防ぐ）
 const MAX_NODES = 28, MAX_EDGES = 60;
+
+/** 表の役割 → 円の色。CSS の .relgraph-stage.lightmode（操作版）と同じ配色 */
+const ROLE_FILL: Record<Role, string> = {
+  '元データ（明細）': '#1E9E6A',
+  'マスタ（参照元）': '#1F5FAE',
+  '中間集計': '#7B5EA7',
+  '最終アウトプット': '#C0392B',
+  '独立（つながりなし）': '#9AA7B4',
+};
 
 // インタラクティブ・グラフ（Obsidian 風 force graph）へ渡すデータ。静的SVGと同じ kept 集合から作る。
 interface GNode { id: string; label: string; sub: string; role: string; deg: number; x: number; y: number }
@@ -326,7 +347,7 @@ interface GraphData { nodes: GNode[]; links: GLink[]; w: number; h: number }
 interface MapResult { svg: string; omittedNodes: number; omittedEdges: number; data: GraphData }
 
 /**
- * 表どうしの関係図。02 のセグメントごとに呼ぶので、対象の regions / pairs は絞り込んで渡す。
+ * 表どうしの関係図（ノード形式）。
  * uid は同一ページに複数の SVG が並ぶための識別子（矢印マーカーの id が衝突すると
  * 後から定義されたものに全部の矢印が引きずられ、色が全て同じになる）。
  */
@@ -352,6 +373,7 @@ function buildMap(
   const drawPairs = pairs.filter(p => keptIds.has(p.from) && keptIds.has(p.to)).slice(0, MAX_EDGES);
   if (drawPairs.length === 0) return null;
 
+  // 段（流れの深さ）ごとに分ける。段内が多いときは折り返して横幅を抑える
   const layers = computeLayers([...keptIds], drawPairs);
   const byLayer = new Map<number, Region[]>();
   for (const r of kept) {
@@ -361,92 +383,87 @@ function buildMap(
     arr.push(r);
   }
   const layerNos = [...byLayer.keys()].sort((a, b) => a - b);
-  // 空レイヤを詰める（0,1,3 → 0,1,2）
-  const layerIndex = new Map<number, number>(layerNos.map((l, i) => [l, i]));
   for (const arr of byLayer.values()) arr.sort((a, b) => (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0));
 
-  const pos = new Map<string, { x: number; y: number }>();
-  let maxRows = 0;
+  // 円の半径＝つながりの本数（操作版と同じ規則）
+  const maxDeg = Math.max(1, ...[...degree.values()]);
+  const radiusOf = (id: string) =>
+    Math.round(R_MIN + (R_MAX - R_MIN) * Math.sqrt((degree.get(id) ?? 1) / maxDeg));
+
+  // 段ごとに行を作り、行内は中央寄せで並べる
+  const rows: Region[][] = [];
   for (const l of layerNos) {
     const arr = byLayer.get(l)!;
-    maxRows = Math.max(maxRows, arr.length);
-    arr.forEach((r, i) => {
-      pos.set(r.id, { x: PAD + layerIndex.get(l)! * (NODE_W + COL_GAP), y: PAD + i * (NODE_H + ROW_GAP) });
-    });
+    for (let i = 0; i < arr.length; i += PER_ROW) rows.push(arr.slice(i, i + PER_ROW));
   }
-  const width = PAD * 2 + layerNos.length * NODE_W + (layerNos.length - 1) * COL_GAP;
-  const height = PAD * 2 + maxRows * NODE_H + (maxRows - 1) * ROW_GAP;
+  const widest = Math.max(...rows.map(r => r.length), 1);
+  const width = MAP_PAD * 2 + (widest - 1) * NODE_GAP_X + NODE_GAP_X; // 端のラベルが切れないよう1枠分の余白
+  const height = MAP_PAD * 2 + (rows.length - 1) * LAYER_GAP_Y + 40;
 
-  const trunc = (s: string, n = 15) => (s.length <= n ? s : `${s.slice(0, n)}…`);
-  const showEdgeLabels = drawPairs.length <= 8;
+  const pos = new Map<string, { x: number; y: number; r: number }>();
+  rows.forEach((row, ri) => {
+    const y = MAP_PAD + ri * LAYER_GAP_Y;
+    const rowWidth = (row.length - 1) * NODE_GAP_X;
+    const startX = (width - rowWidth) / 2;
+    row.forEach((r, i) => pos.set(r.id, { x: startX + i * NODE_GAP_X, y, r: radiusOf(r.id) }));
+  });
 
+  const showEdgeLabels = drawPairs.length <= 10;
   const parts: string[] = [];
-  parts.push(`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="表どうしの関係マップ">`);
+  parts.push(`<svg viewBox="0 0 ${Math.round(width)} ${Math.round(height)}" role="img" aria-label="表どうしの関係図（ノード形式）">`);
   parts.push('<defs>');
   for (const g of GROUP_ORDER) {
     parts.push(`<marker id="arr-${uid}-${g}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${GROUP_META[g].color}"/></marker>`);
   }
   parts.push('</defs>');
 
-  // 辺（ノードより先に描いて下に敷く）。ラベルは辺・ノードの上に最後に重ねる
+  // 辺（ノードより先に描いて下に敷く）。円の縁で始点・終点を止め、矢印が円に重ならないようにする
   const edgeLabels: string[] = [];
   for (const p of drawPairs) {
     const a = pos.get(p.from)!; const b = pos.get(p.to)!;
     const g = dominantGroup(p);
     const meta = GROUP_META[g];
-    const sameCol = Math.abs(a.x - b.x) < 1;
-    // 同一レイヤ（縦並び）は縦線、そうでなければ右辺→左辺の曲線
-    let d: string; let lx: number; let ly: number;
-    if (sameCol) {
-      const x = a.x + NODE_W / 2;
-      // from の底辺（または上辺）から to へ向けて描き、矢印が正しい端に付くようにする
-      d = a.y < b.y
-        ? `M${x},${a.y + NODE_H} L${x},${b.y}`
-        : `M${x},${a.y} L${x},${b.y + NODE_H}`;
-      lx = x + 8; ly = (Math.min(a.y, b.y) + NODE_H + Math.max(a.y, b.y)) / 2;
-    } else {
-      const src = a.x < b.x ? a : b;
-      const dst = a.x < b.x ? b : a;
-      const x1 = src.x + NODE_W, y1 = src.y + NODE_H / 2;
-      const x2 = dst.x, y2 = dst.y + NODE_H / 2;
-      // 向きが右→左（逆流）の場合も座標は同じ曲線で、矢印だけが正しい端に付く
-      const rev = a.x > b.x;
-      // 2レイヤ以上を跨ぐ辺は中間ノードを貫通しないよう上へ迂回させる
-      const span = Math.round(Math.abs(a.x - b.x) / (NODE_W + COL_GAP));
-      if (span >= 2) {
-        const cy = Math.max(10, Math.min(y1, y2) - 52);
-        d = rev
-          ? `M${x2},${y2} C${x2 - 70},${cy} ${x1 + 70},${cy} ${x1},${y1}`
-          : `M${x1},${y1} C${x1 + 70},${cy} ${x2 - 70},${cy} ${x2},${y2}`;
-        lx = (x1 + x2) / 2; ly = cy + 12;
-      } else {
-        d = rev
-          ? `M${x2},${y2} C${x2 - 46},${y2} ${x1 + 46},${y1} ${x1},${y1}`
-          : `M${x1},${y1} C${x1 + 46},${y1} ${x2 - 46},${y2} ${x2},${y2}`;
-        lx = (x1 + x2) / 2; ly = (y1 + y2) / 2 - 7;
-      }
-    }
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len = Math.max(1, Math.hypot(dx, dy));
+    const ux = dx / len, uy = dy / len;
+    const x1 = a.x + ux * (a.r + 2), y1 = a.y + uy * (a.r + 2);
+    const x2 = b.x - ux * (b.r + 8), y2 = b.y - uy * (b.r + 8); // +8 は矢印の頭の分
+    // 同じ段どうし（ほぼ水平）は弧を描いて他のノードを避ける。段をまたぐ辺は緩い縦カーブ
+    const horizontal = Math.abs(dy) < 4;
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    const bow = horizontal ? Math.min(46, 14 + len * 0.12) : 0;
+    const d = horizontal
+      ? `M${x1.toFixed(1)},${y1.toFixed(1)} Q${mx.toFixed(1)},${(my - bow).toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`
+      : `M${x1.toFixed(1)},${y1.toFixed(1)} C${x1.toFixed(1)},${(y1 + dy * 0.4).toFixed(1)} ${x2.toFixed(1)},${(y2 - dy * 0.4).toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`;
     const dash = meta.dashed ? ' stroke-dasharray="7 5"' : '';
-    parts.push(`<path d="${d}" fill="none" stroke="${meta.color}" stroke-width="2"${dash} marker-end="url(#arr-${uid}-${g})"/>`);
+    parts.push(`<path d="${d}" fill="none" stroke="${meta.color}" stroke-width="${p.total > 3 ? 2.4 : 1.8}"${dash} marker-end="url(#arr-${uid}-${g})" opacity="0.85"/>`);
     const qid = g === 'copy' ? copyQuestionByPair.get(`${p.from}\u0000${p.to}`) : undefined;
     if (showEdgeLabels || qid) {
       const text = qid ? `手コピー推定 → ${qid}` : `${meta.label.split('（')[0]}${p.total > 1 ? ` ×${p.total}` : ''}`;
+      // 縦の辺はラベルを「線の横・少し手前」へ置く。中点だと矢印の先＝下のノードの円やラベルに重なる
+      const lx = horizontal ? mx : x1 + (x2 - x1) * 0.45 + 12;
+      const ly = horizontal ? my - bow - 5 : y1 + (y2 - y1) * 0.45;
+      const anchor = horizontal ? 'middle' : 'start';
       // 白フチ（paint-order）でノード・他の辺に重なっても読めるようにする
-      const anchor = sameCol ? '' : ' text-anchor="middle"';
-      edgeLabels.push(`<text x="${lx}" y="${ly}" font-size="10.5" fill="${meta.color}"${anchor}${qid ? ' font-weight="bold"' : ''} style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">${esc(text)}</text>`);
+      edgeLabels.push(`<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" font-size="10" fill="${meta.color}" text-anchor="${anchor}"${qid ? ' font-weight="bold"' : ''} style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.5px">${esc(text)}</text>`);
     }
   }
 
-  // ノード
+  // ノード（円＋ラベル）。最終アウトプットは輪を足して終着点だと分かるようにする
   for (const r of kept) {
     const p = pos.get(r.id)!;
+    const role = roles.get(r.id) ?? '中間集計';
+    const fill = ROLE_FILL[role] ?? '#7B5EA7';
     const label = labels.get(r.id) ?? r.sheet;
-    const rows = `${r.dataRowCount.toLocaleString()}行`;
     const key = keySummaryShort(r);
-    const sub = key === '' ? rows : `${rows} ／ ${trunc(key, 12)}`;
-    parts.push(`<g><rect x="${p.x}" y="${p.y}" width="${NODE_W}" height="${NODE_H}" rx="10" fill="#fff" stroke="#DDE5EE"/>` +
-      `<text x="${p.x + 14}" y="${p.y + 26}" font-size="12.5" font-weight="bold" fill="#0E2A47">${esc(trunc(label))}</text>` +
-      `<text x="${p.x + 14}" y="${p.y + 46}" font-size="10" fill="#7A8794">${esc(sub)}</text></g>`);
+    const sub = key === '' ? `${r.dataRowCount.toLocaleString()}行` : `${r.dataRowCount.toLocaleString()}行 ／ ${key}`;
+    const isOut = role === '最終アウトプット';
+    parts.push('<g>'
+      + (isOut ? `<circle cx="${p.x.toFixed(1)}" cy="${p.y}" r="${p.r + 5}" fill="none" stroke="${fill}" stroke-opacity="0.35" stroke-width="2"/>` : '')
+      + `<circle cx="${p.x.toFixed(1)}" cy="${p.y}" r="${p.r}" fill="${fill}" stroke="#FCFDFE" stroke-width="1.5"/>`
+      + `<text x="${p.x.toFixed(1)}" y="${p.y + p.r + 15}" font-size="11" font-weight="${isOut ? 800 : 700}" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">${esc(fitText(label, NODE_GAP_X - 10, 11))}</text>`
+      + `<text x="${p.x.toFixed(1)}" y="${p.y + p.r + 28}" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">${esc(fitText(sub, NODE_GAP_X - 10, 9.5))}</text>`
+      + '</g>');
   }
   parts.push(...edgeLabels);
   parts.push('</svg>');
@@ -462,7 +479,7 @@ function buildMap(
       sub: key === '' ? `${r.dataRowCount.toLocaleString()}行` : `${r.dataRowCount.toLocaleString()}行 ／ ${key}`,
       role: roles.get(r.id) ?? '',
       deg: degree.get(r.id) ?? 1,
-      x: p.x + NODE_W / 2, y: p.y + NODE_H / 2,
+      x: p.x, y: p.y,
     };
   });
   const glinks: GLink[] = drawPairs.map(p => {
@@ -478,7 +495,7 @@ function buildMap(
     svg: parts.join('\n'),
     omittedNodes: connected.length - kept.length,
     omittedEdges: pairs.filter(p => keptIds.has(p.from) && keptIds.has(p.to)).length - drawPairs.length,
-    data: { nodes: gnodes, links: glinks, w: width, h: height },
+    data: { nodes: gnodes, links: glinks, w: Math.round(width), h: Math.round(height) },
   };
 }
 
