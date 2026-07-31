@@ -1,22 +1,23 @@
 <script setup lang="ts">
-// 新UI: 案件ごとの5ステップ。
-//   ① データ取り込み（Google ドライブ）→ ② 分類確認 → ③ 構造解析 → ④ アウトプット相談 → ⑤ HTML 生成
+// 新UI: 案件ごとの4ステップ。
+//   ① データ取り込み（Google ドライブ）→ ② 分類確認 → ③ 構造解析 → ④ レポートを見ながら相談・生成
 //
 // 従来UI（ProjectDetail.vue のタブ）は機能ごとの入口が10個並び、初見では「次に何をするか」が読めない。
 // こちらは「1画面に1つの決めごと」に絞り、完了条件を満たすと次へ進める形にする。
 // どちらが使いやすいか比べるため、両方を残して ProjectPage.vue のトグルで切り替える。
 //
+// ④ は「相談」と「出来上がりの確認」を1画面にまとめている。何を直したいかは実物を見て初めて
+// 出てくるため、プレビューを見ながら相談し、その場で作り直せる形にした。
+//
 // ステップの完了はサーバー側の状態から導く（画面のフラグに頼らない。別端末・再読込でも同じに見える）:
 //   ① 解析できたファイルが1件以上ある
 //   ② roles_confirmed の印が立っている（人が分類を確定した。自動分類だけでは立たない）
 //   ③ 関係グラフに表が1つ以上ある
-//   ④ 構成指定が保存済み（相談でも手動チェックでも可）
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { get, getProjectRelations, getReportSpec, type ProjectDetailData } from '../api'
+import { get, getProjectRelations, type ProjectDetailData } from '../api'
 import DrivePickStep from '../components/wizard/DrivePickStep.vue'
 import ClassifyStep from '../components/wizard/ClassifyStep.vue'
 import AnalyzeStep from '../components/wizard/AnalyzeStep.vue'
-import OutputChatStep from '../components/wizard/OutputChatStep.vue'
 import OutputStep from '../components/wizard/OutputStep.vue'
 
 const props = defineProps<{ projectId: number }>()
@@ -24,15 +25,13 @@ const props = defineProps<{ projectId: number }>()
 const project = ref<ProjectDetailData | null>(null)
 const step = ref(1)
 const regionCount = ref(0)
-const specConfigured = ref(false)
 const error = ref('')
 
 const STEPS = [
   { no: 1, label: 'データ取り込み', desc: 'ドライブから案件のファイルを選ぶ' },
   { no: 2, label: '分類確認', desc: 'インプット / マスタ / 中間 / 最終アウトプット' },
   { no: 3, label: '構造解析', desc: '表どうしの関係を解析して確認' },
-  { no: 4, label: 'アウトプット相談', desc: '何を載せるか AI と決める' },
-  { no: 5, label: 'HTML 生成', desc: '確認してダウンロード' },
+  { no: 4, label: 'レポート作成', desc: '出来上がりを見ながら相談・修正して出力' },
 ] as const
 
 const parsedArtifacts = computed(() => project.value?.artifacts.filter(a => a.parse_status === 'done') ?? [])
@@ -40,8 +39,7 @@ const done = computed(() => ({
   1: parsedArtifacts.value.length > 0,
   2: parsedArtifacts.value.length > 0 && (project.value?.flags ?? []).includes('roles_confirmed'),
   3: regionCount.value > 0,
-  4: specConfigured.value,
-  5: false,
+  4: false, // 最終ステップ。ここは「終わり」ではなく何度でも作り直す場所
 }) as Record<number, boolean>)
 
 /** そのステップを開いてよいか（前のステップが終わっているか） */
@@ -55,7 +53,6 @@ const blockedReason = computed(() => {
   if (!done.value[1]) return 'まずファイルを取り込んでください。'
   if (!done.value[2]) return 'シートの分類を確定してください。'
   if (!done.value[3]) return '表が検出されていません。取り込んだファイルを確認してください。'
-  if (!done.value[4]) return 'アウトプットの構成を確定してください。'
   return ''
 })
 
@@ -69,11 +66,6 @@ async function load() {
     } catch {
       regionCount.value = 0
     }
-    try {
-      specConfigured.value = (await getReportSpec(props.projectId)).configured
-    } catch {
-      specConfigured.value = false
-    }
   } catch (e) {
     error.value = String(e)
   }
@@ -84,7 +76,7 @@ function goto(no: number) {
 }
 
 function next() {
-  if (step.value < 5 && reachable(step.value + 1)) step.value++
+  if (step.value < STEPS.length && reachable(step.value + 1)) step.value++
 }
 
 // パイプライン実行中は状態が変わるのでポーリングする（従来UI と同じ間隔）
@@ -92,7 +84,7 @@ let timer: ReturnType<typeof setInterval> | null = null
 onMounted(async () => {
   await load()
   // 初回は「今やるべきところ」から始める
-  step.value = [1, 2, 3, 4].find(n => !done.value[n]) ?? 5
+  step.value = [1, 2, 3].find(n => !done.value[n]) ?? 4
   timer = setInterval(() => {
     if (project.value?.runs.some(r => r.status === 'running')) void load()
   }, 2500)
@@ -134,14 +126,13 @@ watch(step, () => { void load() })
       <AnalyzeStep
         v-else-if="step === 3" :project-id="props.projectId" :runs="project.runs" @changed="load"
       />
-      <OutputChatStep v-else-if="step === 4" :project-id="props.projectId" @changed="load" />
-      <OutputStep v-else :project-id="props.projectId" />
+      <OutputStep v-else :project-id="props.projectId" @changed="load" />
     </div>
 
     <div class="wz-nav">
       <button :disabled="step === 1" @click="step--">← 戻る</button>
       <span class="muted">{{ step }} / {{ STEPS.length }}</span>
-      <button class="primary" :disabled="step === 5 || !reachable(step + 1)" @click="next">次へ →</button>
+      <button class="primary" :disabled="step === STEPS.length || !reachable(step + 1)" @click="next">次へ →</button>
     </div>
   </div>
 </template>

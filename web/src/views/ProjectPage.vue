@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// プロジェクト画面の入口。新UI（5ステップ）と従来UI（タブ）を切り替える。
+// プロジェクト画面の入口。新UI（4ステップ）と従来UI（タブ）を切り替える。
 //
 // どちらが使いやすいか実際に触って決めるため、当面は両方を残す。選択はブラウザに覚えさせ、
 // URL の ?ui=wizard / ?ui=tabs でも指定できる（他の人に「こっちで見て」と渡せるように）。
@@ -31,12 +31,12 @@ watch(mode, m => {
   <div class="ui-switch">
     <span class="muted">画面の作り</span>
     <div class="ui-switch-btns">
-      <button :class="{ on: mode === 'wizard' }" @click="mode = 'wizard'">新UI（5ステップ）</button>
+      <button :class="{ on: mode === 'wizard' }" @click="mode = 'wizard'">新UI（4ステップ）</button>
       <button :class="{ on: mode === 'tabs' }" @click="mode = 'tabs'">従来UI（タブ）</button>
     </div>
     <span class="muted">
       {{ mode === 'wizard'
-        ? '取り込み → 分類 → 解析 → 相談 → 生成 の順に進みます'
+        ? '取り込み → 分類 → 解析 → レポート作成（出来上がりを見ながら相談）'
         : '機能ごとのタブ。どの順でも操作できます' }}
     </span>
   </div>
