@@ -21,12 +21,14 @@ const emit = defineEmits<{ changed: [] }>()
 const unlocked = ref(false)
 const locked = computed(() => props.confirmed && !unlocked.value)
 
+// 凡例は「短い語 ＋ hover で補足」に留める。説明文を並べると読む前に諦められるので、
+// 画面に常時出す文字は最小限にし、詳しい言い方は title（ツールチップ）へ逃がす。
 const ROLES = [
-  { value: 'input_data', label: 'インプット（raw）', hint: '基幹システムの出力など、加工前のデータ' },
-  { value: 'master_data', label: 'マスタ（分類表）', hint: '部門・商品などの対応表。集計の軸に使う' },
-  { value: 'working_sheet', label: '中間シート', hint: '集計・整形の途中。数式が入る' },
+  { value: 'input_data', label: 'インプット', hint: '加工前の元データ。基幹システムの出力や CSV' },
+  { value: 'master_data', label: 'マスタ', hint: '部門・商品などの対応表。集計の軸になる' },
+  { value: 'working_sheet', label: '中間', hint: '集計・整形の途中。数式が入る' },
   { value: 'final_output', label: '最終アウトプット', hint: '顧客が見る帳票。kpiee で再現する対象' },
-  { value: 'unknown', label: '未分類', hint: '判断できないもの。残すと後段で確認待ちになる' },
+  { value: 'unknown', label: '未分類', hint: '判断がつかないもの。残すと確認待ちになる' },
 ] as const
 
 type Row = { sheet: string; role: string; reason: string; rowCount: number; formulaCount: number }
@@ -132,13 +134,13 @@ watch(() => targets.value.map(a => a.id).join(','), loadBooks)
 <template>
   <div class="wz-body">
     <p class="wz-lede">
-      各シートの役割を確認してください。自動判定を初期値にしています。<b>最終アウトプット</b>と<b>マスタ</b>は
-      構造からは決められないため、ここでのご指定が後段（関係図・レポート・kpiee 設定）の前提になります。
+      シートの役割を確認します。自動判定が初期値です。<b>最終アウトプット</b>と<b>マスタ</b>だけは
+      構造から判断できないため、ここでの指定が以降の前提になります。
     </p>
 
-    <div class="wz-chips">
-      <span v-for="r in ROLES" :key="r.value" class="wz-chip" :class="`role-${r.value}`">
-        <b>{{ r.label }}</b>{{ r.hint }}
+    <div class="wz-legend">
+      <span v-for="r in ROLES" :key="r.value" class="lg" :class="`role-${r.value}`" :title="r.hint">
+        <i></i>{{ r.label }}
       </span>
     </div>
 

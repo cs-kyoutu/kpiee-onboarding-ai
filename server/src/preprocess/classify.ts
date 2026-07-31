@@ -120,31 +120,36 @@ export function classifySheetRoles(parsed: ParsedArtifact): Record<string, Sheet
     const referencesOthers = out.size > 0;
     const isReferenced = inbound.size > 0;
 
+    // 理由は画面の1行に収まる長さで書く。長い説明文にすると読まれず、
+    // 「AI が並べた文章」に見えて確認の役に立たない（判断材料＝参照の向きだけ書く）。
     let role: SheetRole;
     let reason: string;
+    const names = (s: Set<string>) => {
+      const arr = [...s];
+      return arr.length <= 2 ? arr.join('・') : `${arr.slice(0, 2).join('・')}ほか${arr.length - 2}件`;
+    };
     if (!referencesOthers && isReferenced) {
       role = 'input_data';
-      reason = `${[...inbound].join('・')} から参照される出発点（自身はどこも参照しない）→ raw データと推定`;
+      reason = `${names(inbound)} から参照されるだけ`;
     } else if (referencesOthers && isReferenced) {
       role = 'working_sheet';
-      reason = `${[...out].join('・')} を参照しつつ ${[...inbound].join('・')} から参照される経由点 → 中間シートと推定`;
+      reason = `${names(out)} を参照し、${names(inbound)} から参照される`;
     } else if (referencesOthers && !isReferenced) {
       role = 'final_output';
-      reason = `${[...out].join('・')} を参照するが誰からも参照されない終着点 → 帳票と推定`;
+      reason = `${names(out)} を参照し、どこからも参照されない`;
     } else if (sheet.formulaCellCount > 0) {
       role = 'working_sheet';
-      reason = '他シートとの参照関係はないが数式を含む → 独立した作業シートと推定';
+      reason = '他シートとの参照はないが数式あり';
     } else if (isSystemExportSheet(sheet)) {
       // CSV 特例（下記）と同じ論理。数式が1つも無く、大量の行が均一な表形式で並ぶシートは
       // 人が値を貼ったものではなく基幹システムの出力（raw）と見るのが実務上ほぼ確実。
       // これを unknown にすると SQL の FROM 対象にもテーブル定義書にも載らず、
       // 必須のインプットデータが毎回手動指定待ちになる。
       role = 'input_data';
-      reason = `数式が無く ${sheet.rowCount.toLocaleString()} 行 × ${sheet.columnCount} 列の均一な表形式`
-        + ` → 基幹システム出力（インプットデータ）と推定`;
+      reason = `数式なし・${sheet.rowCount.toLocaleString()}行 × ${sheet.columnCount}列の均一な表`;
     } else {
       role = 'unknown';
-      reason = '数式がなく参照関係もないため自動判定不能（値貼り付け・手入力の可能性）。役割を手動で指定してください';
+      reason = '数式も参照もなく判断がつかない（値貼り付けの可能性）';
     }
     result[sheet.name] = { role, reason, references: [...out] };
   }
@@ -153,11 +158,7 @@ export function classifySheetRoles(parsed: ParsedArtifact): Record<string, Sheet
   // 実務上 CSV は基幹システム出力（インプット）であることがほとんどなので既定を input_data にする
   if (parsed.fileType === 'csv') {
     for (const key of Object.keys(result)) {
-      result[key] = {
-        role: 'input_data',
-        reason: 'CSV ファイルのため基幹システム出力（インプットデータ）と推定',
-        references: [],
-      };
+      result[key] = { role: 'input_data', reason: 'CSV ファイル', references: [] };
     }
   }
 

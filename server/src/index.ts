@@ -353,13 +353,20 @@ app.patch('/api/artifacts/:id/roles', async (req, res) => {
   }
   const row = await db.prepare(`SELECT sheet_roles FROM artifacts WHERE id = ?`).get(req.params.id) as { sheet_roles: string | null } | undefined;
   if (!row) return res.status(404).json({ error: 'artifact not found' });
-  // 既存の分類結果（判定理由）を保ちつつ役割だけ上書きする
+  // 既存の分類結果（判定理由）を保ちつつ役割だけ上書きする。
+  // 印は1回だけ付ける（保存ごとに足すと「（人が指定）（人が指定）…」と際限なく伸びる。
+  // 新UI の「確定」は全シートを毎回保存するので、以前は実際に伸びていた）
+  const MARK = '（人が指定）';
   const current = (row.sheet_roles ? JSON.parse(row.sheet_roles) : {}) as Record<string, SheetClassification>;
   for (const [name, role] of Object.entries(sheet_roles)) {
+    const prev = current[name];
+    const base = prev?.reason ? prev.reason.split(MARK)[0].trim() : '';
+    const changed = !prev || prev.role !== role;
     current[name] = {
       role: role as SheetClassification['role'],
-      reason: current[name] ? `${current[name].reason}（手動修正済み）` : '手動指定',
-      references: current[name]?.references ?? [],
+      // 役割を変えたときだけ印を付ける。自動判定のまま確定した行は理由をそのまま残す
+      reason: base === '' ? MARK : changed || prev.reason.includes(MARK) ? `${base}${MARK}` : base,
+      references: prev?.references ?? [],
     };
   }
   await db.prepare(`UPDATE artifacts SET sheet_roles = ? WHERE id = ?`).run(JSON.stringify(current), req.params.id);
