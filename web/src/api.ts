@@ -133,6 +133,11 @@ export function setProjectFlag(projectId: number, flag: string): Promise<{ ok: b
   return post<{ ok: boolean; flags: string[] }>(`/projects/${projectId}/flags/${flag}`)
 }
 
+/** 確認の印を外す（確定後に直したくなったときのロック解除） */
+export function clearProjectFlag(projectId: number, flag: string): Promise<{ ok: boolean; flags: string[] }> {
+  return del<{ ok: boolean; flags: string[] }>(`/projects/${projectId}/flags/${flag}`)
+}
+
 export interface Finding {
   id: number
   source_ref: string

@@ -14,6 +14,7 @@
 //   ② roles_confirmed の印が立っている（人が分類を確定した。自動分類だけでは立たない）
 //   ③ 関係グラフに表が1つ以上ある
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { get, getProjectRelations, type ProjectDetailData } from '../api'
 import DrivePickStep from '../components/wizard/DrivePickStep.vue'
 import ClassifyStep from '../components/wizard/ClassifyStep.vue'
@@ -21,6 +22,9 @@ import AnalyzeStep from '../components/wizard/AnalyzeStep.vue'
 import OutputStep from '../components/wizard/OutputStep.vue'
 
 const props = defineProps<{ projectId: number }>()
+
+// ?step=2 で開始位置を指定できる（「分類のところを見て」と URL で渡せるように）
+const route = useRoute()
 
 const project = ref<ProjectDetailData | null>(null)
 const step = ref(1)
@@ -83,8 +87,11 @@ function next() {
 let timer: ReturnType<typeof setInterval> | null = null
 onMounted(async () => {
   await load()
-  // 初回は「今やるべきところ」から始める
-  step.value = [1, 2, 3].find(n => !done.value[n]) ?? 4
+  // 初回は URL 指定があればそこ、無ければ「今やるべきところ」から始める
+  const q = Number(route.query.step)
+  step.value = q >= 1 && q <= STEPS.length && reachable(q)
+    ? q
+    : ([1, 2, 3].find(n => !done.value[n]) ?? 4)
   timer = setInterval(() => {
     if (project.value?.runs.some(r => r.status === 'running')) void load()
   }, 2500)
@@ -117,16 +124,21 @@ watch(step, () => { void load() })
     <p v-if="blockedReason" class="guide">{{ blockedReason }}</p>
 
     <div class="wz-panel">
+      <Transition name="wz-step" mode="out-in">
+      <div :key="step" class="wz-step-body">
       <DrivePickStep
         v-if="step === 1" :project-id="props.projectId" :artifacts="project.artifacts" @changed="load"
       />
       <ClassifyStep
-        v-else-if="step === 2" :project-id="props.projectId" :artifacts="project.artifacts" @changed="load"
+        v-else-if="step === 2" :project-id="props.projectId" :artifacts="project.artifacts"
+        :confirmed="(project.flags ?? []).includes('roles_confirmed')" @changed="load"
       />
       <AnalyzeStep
         v-else-if="step === 3" :project-id="props.projectId" :runs="project.runs" @changed="load"
       />
       <OutputStep v-else :project-id="props.projectId" @changed="load" />
+      </div>
+      </Transition>
     </div>
 
     <div class="wz-nav">

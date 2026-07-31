@@ -5,13 +5,21 @@
 // 構造からは決められない（マスタと raw はどちらも「参照される出発点」で見分けが付かない）。
 // なので自動判定を初期値として出し、人が直す形にする。
 //
-// 「確定」は全ファイルの役割を明示的に保存する。保存済み（sheet_roles あり）を完了の判定に使うので、
-// 何も直さない場合でも押してもらう必要がある（＝人が見た証跡になる）。
+// 「確定」は全ファイルの役割を明示的に保存し、roles_confirmed の印を立てる（人が見た証跡）。
+// 確定後は編集をロックする。後段（関係図・レポート）がこの分類を前提に作られるため、
+// 気づかず書き換わるのを防ぐ。直したいときは「確定を解除」で明示的に開けてもらう。
 import { computed, onMounted, ref, watch } from 'vue'
-import { get, patch, setProjectFlag, type Artifact, type SheetClassification, type SheetPreview } from '../../api'
+import {
+  get, patch, setProjectFlag, clearProjectFlag,
+  type Artifact, type SheetClassification, type SheetPreview,
+} from '../../api'
 
-const props = defineProps<{ projectId: number; artifacts: Artifact[] }>()
+const props = defineProps<{ projectId: number; artifacts: Artifact[]; confirmed: boolean }>()
 const emit = defineEmits<{ changed: [] }>()
+
+// 確定済みは既定でロック。解除すると編集できる（解除したこと自体も画面に出す）
+const unlocked = ref(false)
+const locked = computed(() => props.confirmed && !unlocked.value)
 
 const ROLES = [
   { value: 'input_data', label: 'インプット（raw）', hint: '基幹システムの出力など、加工前のデータ' },
@@ -94,11 +102,25 @@ async function confirmAll() {
     // 人が確認した印。自動分類の結果が入っているだけでは完了にしないため、ここで初めて立つ
     await setProjectFlag(props.projectId, 'roles_confirmed')
     saved.value = true
+    unlocked.value = false // 確定したらまたロックする
     emit('changed')
   } catch (e) {
     error.value = String(e)
   } finally {
     saving.value = false
+  }
+}
+
+/** 確定を解除して編集できるようにする（印を外し、後段が古い前提で進まないようにする） */
+async function unlock() {
+  error.value = ''
+  try {
+    await clearProjectFlag(props.projectId, 'roles_confirmed')
+    unlocked.value = true
+    saved.value = false
+    emit('changed')
+  } catch (e) {
+    error.value = String(e)
   }
 }
 
@@ -123,6 +145,18 @@ watch(() => targets.value.map(a => a.id).join(','), loadBooks)
     <p v-if="error" class="error-box">{{ error }}</p>
     <p v-if="targets.length === 0" class="muted">解析済みのファイルがありません。前のステップで取り込んでください。</p>
 
+    <!-- 確定/編集中の状態。今どちらなのかが一目で分かるようにする -->
+    <div v-if="props.confirmed || unlocked" class="wz-lockbar" :class="locked ? 'is-locked' : 'is-open'">
+      <span class="ico">{{ locked ? '🔒' : '✏️' }}</span>
+      <span class="tx">
+        <b>{{ locked ? '確定済み（編集ロック中）' : '編集中（未確定）' }}</b>
+        <em>{{ locked
+          ? 'この分類を前提に関係図とレポートを作っています。直すにはロックを解除してください。'
+          : '直したら「この分類で確定する」を押してください。押すまで後段は前の分類のままです。' }}</em>
+      </span>
+      <button v-if="locked" @click="unlock">確定を解除して編集する</button>
+    </div>
+
     <!-- 読み込みの進捗。全部そろうまで確定できないので、残りが分かるようにする -->
     <div v-if="loading" class="wz-progress">
       <span class="spin"></span>
@@ -136,7 +170,7 @@ watch(() => targets.value.map(a => a.id).join(','), loadBooks)
         <h3 class="wz-h">{{ book.filename }}</h3>
         <span v-if="book.loading" class="badge info">読み込み中</span>
         <span v-else class="muted">{{ book.rows.length }} シート</span>
-        <span v-if="!book.loading" class="wz-bulk">
+        <span v-if="!book.loading && !locked" class="wz-bulk">
           一括:
           <button v-for="r in ROLES.slice(0, 4)" :key="r.value" class="link" @click="applyAll(book, r.value)">
             {{ r.label }}
@@ -159,7 +193,7 @@ watch(() => targets.value.map(a => a.id).join(','), loadBooks)
             <td class="num">{{ r.rowCount.toLocaleString() }}</td>
             <td class="num">{{ r.formulaCount.toLocaleString() }}</td>
             <td>
-              <select v-model="r.role" @change="saved = false">
+              <select v-model="r.role" :disabled="locked" @change="saved = false">
                 <option v-for="o in ROLES" :key="o.value" :value="o.value">{{ o.label }}</option>
               </select>
             </td>

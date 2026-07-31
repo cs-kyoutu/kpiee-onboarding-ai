@@ -394,3 +394,119 @@ button.link.danger { color: var(--ng); }
   font-size: 11px; color: #4e5968; background: #f2f4f6; border-radius: 6px; padding: 2px 8px;
 }
 .sk-wrap { margin-top: 10px; }
+
+/* ============================================================
+   動きの設計。
+   目的は「派手さ」ではなく、状態が変わったことを目で追えるようにすること。
+   ・遷移は 1 段（フェード＋わずかな移動）だけ。位置が飛ぶと今どこを見ているか分からなくなる
+   ・時間は 140/220/320ms の3種類に固定。カーブも1つに統一して、画面全体で同じ速さに見せる
+   ・prefers-reduced-motion では全て無効化する（酔いやすい人には動かさない）
+   ・重い SVG フィルタは常時掛けない。掛けるのは「今そこを見てほしい要素」だけ
+   ============================================================ */
+:root {
+  --dur-1: 140ms;   /* 押した／色が変わった */
+  --dur-2: 220ms;   /* 開いた／閉じた */
+  --dur-3: 320ms;   /* 画面が入れ替わった */
+  /* 終わりが緩やかなカーブ。動き出しは速く、止まるときに減速する */
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ステップの入れ替え。out-in なので前の画面が消えてから次が入る */
+.wz-step-enter-active { transition: opacity var(--dur-3) var(--ease), transform var(--dur-3) var(--ease); }
+.wz-step-leave-active { transition: opacity var(--dur-2) var(--ease), transform var(--dur-2) var(--ease); }
+.wz-step-enter-from { opacity: 0; transform: translateY(8px); }
+.wz-step-leave-to { opacity: 0; transform: translateY(-6px); }
+
+/* 押した感。面の色は速く、影は少し遅れて戻す */
+button { transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease), opacity var(--dur-1) var(--ease), transform var(--dur-1) var(--ease); }
+button:active:not(:disabled) { transform: scale(0.985); }
+button.primary { box-shadow: 0 1px 2px rgba(49, 130, 246, 0.24); }
+/* 主要ボタンだけ、ホバーで淡く発光させる（filter: drop-shadow は GPU 側で処理される SVG フィルタ） */
+button.primary:hover:not(:disabled) { filter: drop-shadow(0 3px 8px rgba(49, 130, 246, 0.35)); }
+
+/* カード・ステップの浮き上がり */
+.wz-steps li, .wz-card, .project-card { transition: border-color var(--dur-2) var(--ease), background var(--dur-2) var(--ease), transform var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease); }
+.wz-steps li:not(.locked):hover { transform: translateY(-1px); }
+.project-card:hover { transform: translateY(-2px); }
+
+/* チェック・入力の状態変化 */
+.wz-check, .wz-chip, .badge, .wz-tag { transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
+input[type="text"], textarea, select { transition: border-color var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease); }
+
+/* 会話の吹き出しが増えるときの入り */
+.wz-msg { animation: wz-rise var(--dur-3) var(--ease) both; }
+@keyframes wz-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* プレビューの差し替え。作り直したときに白くパッと変わるのを避ける */
+.wz-preview iframe { transition: opacity var(--dur-3) var(--ease); }
+
+/* 確定ロックの帯。閉じている（確定済み）／開いている（編集中）が色と字で分かるようにする */
+.wz-lockbar {
+  display: flex; align-items: center; gap: 12px;
+  border-radius: var(--r); padding: 12px 16px;
+  transition: background var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease);
+}
+.wz-lockbar .ico { font-size: 16px; line-height: 1; }
+.wz-lockbar .tx { display: flex; flex-direction: column; line-height: 1.5; }
+.wz-lockbar .tx b { font-size: 13.5px; }
+.wz-lockbar .tx em { font-style: normal; font-size: 12px; color: var(--muted); }
+.wz-lockbar button { margin-left: auto; }
+.wz-lockbar.is-locked { background: #f2f4f6; }
+.wz-lockbar.is-locked .tx b { color: #4e5968; }
+.wz-lockbar.is-open { background: var(--warn-bg); }
+.wz-lockbar.is-open .tx b { color: var(--warn); }
+/* ロック中は触れないことを見た目でも示す */
+.wz-table select:disabled { background: #f7f8fa; color: var(--muted); cursor: not-allowed; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important; animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  button.primary:hover:not(:disabled) { filter: none; }
+}
+
+/* ============================================================
+   web UI の質感（レポート HTML は対象外）。
+   フィルタは「効く場所」だけに使う:
+   ・backdrop-filter … 固定ヘッダの背面をぼかす。スクロール中に境目がうるさくならない
+   ・drop-shadow    … 主要ボタン・進行中バッジの発光。box-shadow より輪郭に沿って柔らかく出る
+   使わないもの: feTurbulence / feDisplacementMap のような常時アニメーションするフィルタ。
+   要素数に比例して再描画が重くなり、実データ（数十行の表）を開いた瞬間に体感が落ちる。
+   ============================================================ */
+.app-header {
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: saturate(180%) blur(10px);
+  -webkit-backdrop-filter: saturate(180%) blur(10px);
+  box-shadow: none;
+  border-bottom: 1px solid var(--border);
+}
+.app-header nav a { transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
+
+/* ステップ番号。選択中はわずかに大きくし、淡く発光させて視線を集める */
+.wz-steps li .no { transition: background var(--dur-2) var(--ease), color var(--dur-2) var(--ease), transform var(--dur-2) var(--ease), filter var(--dur-2) var(--ease); }
+.wz-steps li.active .no { transform: scale(1.06); filter: drop-shadow(0 2px 6px rgba(49, 130, 246, 0.45)); }
+.wz-steps li.done .no { filter: drop-shadow(0 1px 3px rgba(15, 138, 95, 0.28)); }
+
+/* 進行バー。進んでいることが分かるよう、光の帯をゆっくり流す */
+.wz-progress { animation: wz-rise var(--dur-3) var(--ease) both; }
+.wz-progress .bar i { position: relative; overflow: hidden; }
+.wz-progress .bar i::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.75), transparent);
+  animation: wz-sheen 1.4s var(--ease) infinite;
+}
+@keyframes wz-sheen { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+/* 処理中バッジも同じ理屈で「動いている」ことを示す */
+.badge.info { filter: drop-shadow(0 1px 2px rgba(49, 130, 246, 0.18)); }
+
+/* 読み込み → 中身の入れ替わりをつなぐ（骨組みが消えて表が出るときに一段フェード） */
+.wz-table, .wz-arts, .wz-drive-list { animation: wz-rise var(--dur-2) var(--ease) both; }
+
+/* 一覧カードの押し込み */
+.project-card:active { transform: translateY(0) scale(0.995); }
+
+@media (prefers-reduced-motion: reduce) {
+  .wz-progress .bar i::after { animation: none; }
+  .wz-steps li.active .no { transform: none; }
+}
