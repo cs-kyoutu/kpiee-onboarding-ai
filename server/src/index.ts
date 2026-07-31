@@ -20,12 +20,17 @@ import { artifactSetSignature, getCachedRelationGraph, setCachedRelationGraph, i
 import { runDecode, runGenerate, runMatch, tableNameOf } from './pipeline/orchestrator.js';
 import { buildKpieePreview, buildImplReport } from './match/kpieePreview.js';
 import { gatherSummary, buildSummaryDocx, buildSummaryMarkdown } from './summaryDoc.js';
-import { buildRelationsReportHtml } from './relationsReport.js';
+import { buildRelationsReportHtml, summarizeReportQuestions } from './relationsReport.js';
 import {
   applyDeclaredFileRelations, proposeFileRelations, FILE_REL_TYPES, FILE_REL_LABELS,
   type DeclaredFileRel, type FileRelType,
 } from './relations/declared.js';
 import { startAsk as qaStartAsk, isAskPending as qaIsPending, getHistory as qaHistory } from './qa/agent.js';
+import {
+  loadReportSpec, saveReportSpec, reportSpecConfigured, reportChatHistory, reportChatPending,
+  startReportChat, REPORT_CHAT_KICKOFF, type ProjectFacts,
+} from './reportChat.js';
+import { REPORT_ITEM_LABELS, REPORT_SECTION_LABELS } from './reportSpec.js';
 import { invalidateBooks } from './qa/tools.js';
 import { aiAvailable, MODEL, estimateCostUsd } from './ai/client.js';
 import {
@@ -77,6 +82,41 @@ app.get('/api/projects', async (_req, res) => {
   res.json(projects);
 });
 
+// ---- 「人が確認した」印（project_flags）----
+// 自動処理では立たない印だけを置く場所。新UI のステップ完了判定に使う。
+
+/** 立っている印の一覧 */
+async function projectFlags(projectId: number): Promise<string[]> {
+  const rows = await db.prepare(`SELECT flag FROM project_flags WHERE project_id = ?`)
+    .all(projectId) as { flag: string }[];
+  return rows.map(r => r.flag);
+}
+
+async function setProjectFlag(projectId: number, flag: string): Promise<void> {
+  // 既にあれば何もしない（PK 重複は無視。SQLite / pg で同じ形にするため事前確認する）
+  const hit = await db.prepare(`SELECT flag FROM project_flags WHERE project_id = ? AND flag = ?`)
+    .get(projectId, flag);
+  if (!hit) await db.prepare(`INSERT INTO project_flags (project_id, flag) VALUES (?, ?)`).run(projectId, flag);
+}
+
+async function clearProjectFlag(projectId: number, flag: string): Promise<void> {
+  await db.prepare(`DELETE FROM project_flags WHERE project_id = ? AND flag = ?`).run(projectId, flag);
+}
+
+const VALID_FLAGS = ['roles_confirmed'];
+
+app.post('/api/projects/:id/flags/:flag', async (req, res) => {
+  const flag = req.params.flag;
+  if (!VALID_FLAGS.includes(flag)) return res.status(400).json({ error: `未知の flag: ${flag}` });
+  await setProjectFlag(Number(req.params.id), flag);
+  res.json({ ok: true, flags: await projectFlags(Number(req.params.id)) });
+});
+
+app.delete('/api/projects/:id/flags/:flag', async (req, res) => {
+  await clearProjectFlag(Number(req.params.id), req.params.flag);
+  res.json({ ok: true, flags: await projectFlags(Number(req.params.id)) });
+});
+
 app.get('/api/projects/:id', async (req, res) => {
   const project = await db.prepare(`SELECT * FROM projects WHERE id = ?`).get(req.params.id);
   if (!project) return res.status(404).json({ error: 'project not found' });
@@ -87,7 +127,11 @@ app.get('/api/projects/:id', async (req, res) => {
     `SELECT * FROM analysis_runs WHERE project_id = ? ORDER BY id DESC LIMIT 20`,
   ).all(req.params.id);
   const usage = await getProjectUsage(Number(req.params.id));
-  res.json({ ...project, artifacts, runs, usage: { ...usage, estimated_cost_usd: estimateCostUsd(usage) } });
+  res.json({
+    ...project, artifacts, runs,
+    flags: await projectFlags(Number(req.params.id)),
+    usage: { ...usage, estimated_cost_usd: estimateCostUsd(usage) },
+  });
 });
 
 // プロジェクト単位のトークン使用量・コスト（段階別内訳付き）
@@ -116,6 +160,9 @@ app.delete('/api/projects/:id', async (req, res) => {
     await t.prepare(`DELETE FROM match_results WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM deliverables WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM project_scripts WHERE project_id = ?`).run(projectId);
+    await t.prepare(`DELETE FROM project_flags WHERE project_id = ?`).run(projectId);
+    await t.prepare(`DELETE FROM report_specs WHERE project_id = ?`).run(projectId);
+    await t.prepare(`DELETE FROM report_chat_messages WHERE project_id = ?`).run(projectId);
     // file_relations は artifacts を参照するので artifacts より先に消す
     await t.prepare(`DELETE FROM file_relations WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM artifacts WHERE project_id = ?`).run(projectId);
@@ -171,6 +218,8 @@ async function ingestArtifact(projectId: number, filename: string, source: Inges
   }
   invalidateBooks(projectId); // Q&A 用ワークブックキャッシュを破棄（新規取込で内容が変わるため）
   await invalidateRelationGraph(projectId); // 関係グラフの保存キャッシュも破棄（アーティファクト変更で構造が変わる）
+  // ファイルが増えたら分類の確認はやり直し。新しいファイルの役割は誰も見ていないため
+  await clearProjectFlag(projectId, 'roles_confirmed');
   // 関係グラフの先行計算はここでは行わない（関係/要確認タブを開いた時に計算する）。
   // 以前は debounce 1.5 秒で「最後の取込の1回だけ」に纏める意図で呼んでいたが、取込1件が 1.5 秒より
   // 長いため実際には毎回発火し、そのたびにプロジェクト全ファイルを再取得・再パースしていた。
@@ -613,7 +662,7 @@ app.get('/api/projects/:id/attention', async (req, res) => {
     for (const w of warnings) {
       const { file, sheet, column } = parse(w.ref);
       kindCount.set(w.kind, (kindCount.get(w.kind) ?? 0) + 1);
-      const key = `${w.kind} ${file} ${sheet}`;
+      const key = `${w.kind}\u0000${file}\u0000${sheet}`;
       let g = groups.get(key);
       if (!g) { g = { kind: w.kind, file, sheet, count: 0, columns: [], seen: new Set() }; groups.set(key, g); }
       g.count++;
@@ -659,15 +708,116 @@ app.get('/api/projects/:id/relations/report', async (req, res) => {
       })),
       declaredFileRels: loaded.graph.declaredFileRels,
       fileRelAudit: loaded.graph.fileRelAudit,
+      // アウトプット相談で決めた構成。未登録なら既定（全部出す）＝従来と同じ内容
+      spec: await loadReportSpec(projectId),
     });
     const date = new Date().toISOString().slice(0, 10);
-    // ファイル名に使えない文字を除去。ASCII フォールバック + RFC5987 の両方を付ける
-    const safeName = `データ構造分析レポート_${customerName || `project${projectId}`}_${date}.html`.replace(/[\\/:*?"<>|]/g, '_');
-    res.setHeader('Content-Disposition',
-      `attachment; filename="relations-report-${projectId}-${date}.html"; filename*=UTF-8''${encodeURIComponent(safeName)}`);
+    // ?inline=1 は画面プレビュー（iframe）用。ダウンロードさせずそのまま表示する
+    if (req.query.inline !== '1') {
+      // ファイル名に使えない文字を除去。ASCII フォールバック + RFC5987 の両方を付ける
+      const safeName = `データ構造分析レポート_${customerName || `project${projectId}`}_${date}.html`.replace(/[\\/:*?"<>|]/g, '_');
+      res.setHeader('Content-Disposition',
+        `attachment; filename="relations-report-${projectId}-${date}.html"; filename*=UTF-8''${encodeURIComponent(safeName)}`);
+    }
     res.type('html').send(html);
   } catch (e) {
     res.status(500).json({ error: String(e) });
+  }
+});
+
+// ---- アウトプット相談（レポートに何を載せるか）----
+// 案件ごとに欲しい内容が違うため、デザイン固定・構成可変にする。指定は画面のチェックでも
+// AI との相談でも作れる。生成時に relations/report が読んで反映する。
+
+/** 相談の前提（解析結果の要約）。AI プロンプトと画面の要約に同じものを使う */
+async function reportFacts(projectId: number): Promise<ProjectFacts> {
+  const project = await db.prepare(`SELECT customer_name FROM projects WHERE id = ?`)
+    .get(projectId) as { customer_name: string } | undefined;
+  const arts = await relationArtifacts(projectId);
+  const loaded = await loadRelationGraphWithDeclarations(projectId);
+  const files = arts.map(a => ({
+    filename: a.original_filename,
+    kind: a.kind,
+    sheetRoles: parseSheetRoles(a.sheet_roles) ?? null,
+  }));
+  if (!loaded) {
+    return {
+      customerName: project?.customer_name ?? '', files,
+      regionCount: 0, edgeCount: 0, copyPairCount: 0, questionCount: 0,
+      declaredRelCount: 0, multiFile: files.length > 1,
+    };
+  }
+  const edges = loaded.graph.edges ?? [];
+  const copyPairs = new Set(edges.filter(e => e.type === 'copy').map(e => `${e.from}\u0000${e.to}`));
+  const q = summarizeReportQuestions({
+    customerName: project?.customer_name ?? '',
+    generatedAt: new Date(),
+    fileCount: loaded.fileCount,
+    graph: loaded.graph,
+    artifacts: files.map(f => ({ filename: f.filename, kind: f.kind, sheetRoles: f.sheetRoles ?? undefined })),
+    declaredFileRels: loaded.graph.declaredFileRels,
+    fileRelAudit: loaded.graph.fileRelAudit,
+  });
+  return {
+    customerName: project?.customer_name ?? '',
+    files,
+    regionCount: (loaded.graph.regions ?? []).length,
+    edgeCount: loaded.graph.edgeTotal ?? edges.length,
+    copyPairCount: copyPairs.size,
+    questionCount: q.count,
+    declaredRelCount: (loaded.graph.declaredFileRels ?? []).length,
+    multiFile: loaded.fileCount > 1,
+  };
+}
+
+/** 現在の構成指定＋項目カタログ＋解析結果の要約（画面のチェックリストがこれだけで描ける） */
+app.get('/api/projects/:id/report-spec', async (req, res) => {
+  const projectId = Number(req.params.id);
+  try {
+    res.json({
+      spec: await loadReportSpec(projectId),
+      configured: await reportSpecConfigured(projectId),
+      sectionLabels: REPORT_SECTION_LABELS,
+      itemLabels: REPORT_ITEM_LABELS,
+      facts: await reportFacts(projectId),
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+/** 画面のチェック操作から直接保存する（部分指定可。AI 相談と同じ正規化を通る） */
+app.put('/api/projects/:id/report-spec', async (req, res) => {
+  try {
+    res.json({ spec: await saveReportSpec(Number(req.params.id), req.body) });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+/** 相談履歴。回答生成は非同期なので pending で状態を返す（Q&A と同じ方式） */
+app.get('/api/projects/:id/report-chat', async (req, res) => {
+  const projectId = Number(req.params.id);
+  try {
+    res.json({
+      messages: await reportChatHistory(projectId),
+      pending: reportChatPending(projectId),
+      spec: await loadReportSpec(projectId),
+      kickoff: REPORT_CHAT_KICKOFF,
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.post('/api/projects/:id/report-chat', async (req, res) => {
+  const projectId = Number(req.params.id);
+  const { message } = req.body as { message?: string };
+  const text = message?.trim() || REPORT_CHAT_KICKOFF;
+  try {
+    res.status(202).json(await startReportChat(projectId, text, await reportFacts(projectId)));
+  } catch (e) {
+    res.status(409).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });
 

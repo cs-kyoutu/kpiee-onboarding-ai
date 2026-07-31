@@ -150,5 +150,35 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   tool_trace TEXT,
   created_at ${ts}
 );
+
+-- 画面のステップ完了など「人が確認した」という事実の記録。
+-- 例: roles_confirmed（シート分類を人が確定した）。自動分類の結果が入っているだけでは
+-- 「人が見た」ことにならないため、自動処理では絶対に立たない印として別に持つ。
+-- 取り込み内容が変わったら消し、再確認を促す。
+CREATE TABLE IF NOT EXISTS project_flags (
+  project_id INTEGER NOT NULL REFERENCES projects(id),
+  flag TEXT NOT NULL,
+  created_at ${ts},
+  PRIMARY KEY (project_id, flag)
+);
+
+-- 顧客共有レポートの「何を載せるか」の指定（案件ごとに1件）。
+-- 未登録なら既定（全部出す）＝従来と同じ内容になるので、既存プロジェクトは何もしなくてよい。
+CREATE TABLE IF NOT EXISTS report_specs (
+  project_id INTEGER PRIMARY KEY REFERENCES projects(id),
+  spec TEXT NOT NULL,
+  created_at ${ts}
+);
+
+-- アウトプット相談の会話。解読内容を答える Q&A（chat_messages）とは目的が別なので表を分ける。
+-- 同じ表に混ぜると、どちらの履歴もお互いのプロンプトに混入して噛み合わなくなる。
+CREATE TABLE IF NOT EXISTS report_chat_messages (
+  id ${pk},
+  project_id INTEGER NOT NULL REFERENCES projects(id),
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  spec_patch TEXT,
+  created_at ${ts}
+);
 `);
 }

@@ -204,3 +204,127 @@ td.cell-mismatch { background: var(--ng-bg); cursor: pointer; }
   background: var(--ng-bg); color: var(--ng); padding: 11px 14px; border-radius: var(--r-sm);
   font-size: 13px; margin-bottom: 14px; white-space: pre-wrap; border: 1px solid #f4c9c9;
 }
+
+/* ============================================================
+   新UI（5ステップのウィザード）。従来UI（タブ）と同じトークンを使い、
+   見た目の言語は揃えたまま「1画面に1つの決めごと」の並びにする。
+   ============================================================ */
+
+/* UI 切り替えバー */
+.ui-switch { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+.ui-switch-btns { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 999px; overflow: hidden; }
+.ui-switch-btns button {
+  border: none; border-radius: 0; background: #fff; color: var(--muted);
+  padding: 6px 16px; font-size: 13px; font-weight: 600;
+}
+.ui-switch-btns button.on { background: var(--primary); color: #fff; }
+
+/* ステップ表示 */
+.wz-head h1 { margin-bottom: 2px; }
+.wz-steps { list-style: none; display: flex; gap: 8px; margin: 18px 0; padding: 0; flex-wrap: wrap; }
+.wz-steps li {
+  display: flex; align-items: center; gap: 10px; flex: 1 1 180px; cursor: pointer;
+  background: #fff; border: 1px solid var(--border); border-radius: var(--r);
+  padding: 10px 13px; box-shadow: var(--sh-sm);
+}
+.wz-steps li .no {
+  width: 26px; height: 26px; flex: none; border-radius: 50%; display: grid; place-items: center;
+  background: var(--bg); color: var(--muted); font-weight: 700; font-size: 13px;
+}
+.wz-steps li .tx { display: flex; flex-direction: column; line-height: 1.35; }
+.wz-steps li .tx b { font-size: 13.5px; }
+.wz-steps li .tx em { font-style: normal; font-size: 11px; color: var(--muted); }
+.wz-steps li.done .no { background: var(--ok-bg); color: var(--ok); }
+.wz-steps li.active { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-soft); }
+.wz-steps li.active .no { background: var(--primary); color: #fff; }
+.wz-steps li.locked { opacity: 0.5; cursor: not-allowed; }
+
+.wz-panel { background: #fff; border: 1px solid var(--border); border-radius: var(--r-lg); padding: 22px 24px; box-shadow: var(--sh); }
+.wz-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; }
+
+.wz-body { display: flex; flex-direction: column; gap: 16px; }
+.wz-lede { font-size: 14px; line-height: 1.8; color: var(--text); margin: 0; }
+.wz-card { border: 1px solid var(--border); border-radius: var(--r); padding: 16px 18px; background: #fdfdfe; }
+.wz-h { font-size: 14px; margin: 0 0 8px; }
+.wz-h4 { font-size: 12px; color: var(--muted); letter-spacing: .04em; margin: 14px 0 6px; }
+.wz-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.wz-list { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.9; }
+.wz-pre { white-space: pre-wrap; font-size: 13px; line-height: 1.8; margin: 0; }
+.wz-more { font-size: 13px; color: var(--muted); }
+.wz-more summary { cursor: pointer; }
+button.link { border: none; background: none; color: var(--primary-dark); padding: 2px 4px; font-size: 13px; }
+button.link:hover { background: var(--primary-soft); }
+button.link.danger { color: var(--ng); }
+
+/* ステップ1: ドライブ選択 */
+.wz-drive-bar { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: center; }
+.wz-crumbs { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; font-size: 13px; }
+.wz-crumbs .sep { color: var(--muted); }
+.wz-search { display: flex; gap: 6px; }
+.wz-search input { width: 260px; }
+.wz-drive-list { margin-top: 12px; max-height: 340px; overflow: auto; border: 1px solid var(--border); border-radius: var(--r-sm); background: #fff; }
+.wz-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 8px 12px; border: none; border-bottom: 1px solid var(--border); background: #fff;
+  font-size: 13px; border-radius: 0;
+}
+.wz-row:last-child { border-bottom: none; }
+.wz-row:hover { background: var(--primary-soft); }
+.wz-row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wz-file { cursor: pointer; }
+.wz-arts { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+.wz-arts li { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px dashed var(--border); }
+.wz-arts li:last-child { border-bottom: none; }
+.wz-arts .nm { flex: 1; word-break: break-all; }
+
+/* ステップ2: 分類確認 */
+.wz-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.wz-chip {
+  font-size: 11.5px; color: var(--muted); background: #fff; border: 1px solid var(--border);
+  border-left-width: 4px; border-radius: var(--r-sm); padding: 5px 10px; display: inline-flex; gap: 6px;
+}
+.wz-chip b { color: var(--text); }
+.wz-chip.role-input_data { border-left-color: var(--ok); }
+.wz-chip.role-master_data { border-left-color: var(--primary); }
+.wz-chip.role-working_sheet { border-left-color: #7c5cbf; }
+.wz-chip.role-final_output { border-left-color: var(--ng); }
+.wz-chip.role-unknown { border-left-color: #9aa7b4; }
+.wz-book-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.wz-bulk { margin-left: auto; font-size: 12px; color: var(--muted); }
+.wz-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 10px; }
+.wz-table th { text-align: left; background: var(--bg); padding: 6px 10px; font-weight: 600; white-space: nowrap; }
+.wz-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.wz-table tr.warn td { background: #fffaf0; }
+.wz-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.wz-table td.nm { word-break: break-all; }
+.wz-table select { font-size: 12.5px; padding: 3px 6px; }
+
+/* ステップ3: 解析結果 */
+.wz-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.wz-tile { border: 1px solid var(--border); border-radius: var(--r); padding: 12px 14px; background: #fff; display: flex; flex-direction: column; }
+.wz-tile .tl { font-size: 11.5px; color: var(--muted); }
+.wz-tile .tv { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.wz-tile.warn { border-top: 3px solid var(--warn); }
+.wz-tile.warn .tv { color: var(--warn); }
+
+/* ステップ4: アウトプット相談 */
+.wz-chat-layout { display: grid; grid-template-columns: 1fr 340px; gap: 16px; align-items: start; }
+@media (max-width: 1000px) { .wz-chat-layout { grid-template-columns: 1fr; } }
+.wz-chat { display: flex; flex-direction: column; min-height: 420px; }
+.wz-chat-log { flex: 1; overflow: auto; max-height: 460px; display: flex; flex-direction: column; gap: 12px; }
+.wz-msg { border-radius: var(--r); padding: 10px 13px; background: #fff; border: 1px solid var(--border); }
+.wz-msg.user { background: var(--primary-soft); border-color: #cfdcfa; }
+.wz-msg .who { font-size: 11px; font-weight: 700; color: var(--muted); display: block; margin-bottom: 4px; }
+.wz-chat-input { margin-top: 12px; }
+.wz-chat-input textarea { width: 100%; font-size: 13px; }
+.wz-spec .wz-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+.wz-spec .wz-field input { font-size: 13px; }
+.wz-check { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; padding: 3px 0; cursor: pointer; }
+.wz-check em { font-style: normal; margin-left: 4px; }
+.wz-fixed-note { margin-top: 14px; background: var(--bg); border-radius: var(--r-sm); padding: 10px 12px; font-size: 12px; color: var(--muted); }
+.wz-fixed-note b { color: var(--text); display: block; margin-bottom: 4px; }
+.wz-fixed-note ul { margin: 0; padding-left: 16px; line-height: 1.8; }
+
+/* ステップ5: プレビュー */
+.wz-preview { padding: 0; overflow: hidden; }
+.wz-preview iframe { width: 100%; height: 70vh; border: none; display: block; background: #fff; }

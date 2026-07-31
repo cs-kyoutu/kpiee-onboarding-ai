@@ -22,6 +22,7 @@ import {
   type Group, type PairAgg, type FilePair,
 } from './relations/fileGraph.js';
 import { FILE_REL_LABELS, type DeclaredFileRel, type FileRelAudit } from './relations/declared.js';
+import { DEFAULT_REPORT_SPEC, type ReportSpec } from './reportSpec.js';
 
 /** 取込時のファイル情報。kind は運用担当者が指定した種別で、final_output が「最終アウトプット」の正解になる */
 export interface ReportArtifact {
@@ -42,6 +43,8 @@ export interface RelationsReportInput {
   declaredFileRels?: DeclaredFileRel[];
   /** 宣言と自動検出の突き合わせ。01 の表と 03 の質問になる */
   fileRelAudit?: FileRelAudit[];
+  /** 「何を載せるか」の指定（アウトプット相談の結果）。未指定なら全部出す＝従来と同じ */
+  spec?: ReportSpec;
 }
 
 // ============================================================
@@ -57,6 +60,7 @@ const confLabel = (c: number): string => (c >= 0.8 ? '高' : c >= 0.5 ? '中' : 
 /** 取込時に指定・確認されたシート役割の表示名（classify.ts / UploadPanel と同じ語彙） */
 const SHEET_ROLE_LABELS: Record<string, string> = {
   input_data: 'インプット（raw）',
+  master_data: 'マスタ（分類表）',
   working_sheet: '中間シート',
   final_output: '最終帳票',
   unknown: '判定不能',
@@ -904,6 +908,25 @@ function buildDetailRows(
   return { rows, omitted: pairs.length - shown.length };
 }
 
+/**
+ * レポート 03 に載る「ご確認いただきたい点」の件数と見出しだけを求める。
+ * アウトプット相談の AI へ「確認事項が何件あるか」を前提として渡すために使う。
+ * HTML を組まないので軽い（同じ decision 関数を使うため本文と件数が食い違わない）。
+ */
+export function summarizeReportQuestions(input: RelationsReportInput): { count: number; titles: string[] } {
+  const { graph } = input;
+  const regions = graph.regions ?? [];
+  const pairs = aggregatePairs((graph.edges ?? []) as Edge[]);
+  const labels = buildLabels(regions);
+  const roles = computeRoles(regions, pairs);
+  const fileStats = buildFileStats(regions, aggregateFilePairs(regions, pairs), input.artifacts ?? []);
+  const fileNameOf = (label: string) => fileStats.get(label)?.filename ?? label;
+  const qs = buildQuestions(
+    regions, pairs, graph.warnings ?? [], labels, roles, input.fileRelAudit ?? [], fileNameOf,
+  );
+  return { count: qs.length, titles: qs.map(q => `${q.id} ${q.title}`) };
+}
+
 // ============================================================
 // 本体
 // ============================================================
@@ -942,20 +965,46 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   for (const q of questions) if (q.refPair) copyQuestionByPair.set(q.refPair, q.id);
   const fileFlow = buildFileFlow(fileStats, filePairs, outputFiles);
 
+  // ---- 何を載せるか（アウトプット相談の指定）----
+  // 未指定なら全部出す＝従来と同じ。関係図（ノード形式）は指定対象に無く、常に出る。
+  const spec = input.spec ?? DEFAULT_REPORT_SPEC;
+
   // ---- 02 全体（ブック間）→ 詳細（シート・表間）の2段構え ----
   // 全体はファイル単位のフロー図、詳細は表単位のノード図（ER＋関係マップ＋操作版）。
   // 複数ファイルのときだけ「全体」を挟む。1ファイル案件ではブック間の図が1箱で意味を持たないので、
   // 従来どおり表単位の関係図から入る。
   const multiFile = fileStats.size > 1;
   const map = buildMap('r', regions, pairs, labels, copyQuestionByPair, roles);
-  const er = buildErDiagram(regions, graph.keyLinks ?? [], labels);
+  const er = spec.items.erDiagram ? buildErDiagram(regions, graph.keyLinks ?? [], labels) : null;
   const pairKeys = buildPairKeyIndex(graph.keyLinks ?? []);
   const { rows: detailRows, omitted: detailOmitted } = buildDetailRows(pairs, labels, pairKeys, copyQuestionByPair);
   // 担当者が登録したブック関係の説明。セグメントを廃したので、全体図の直下にまとめて出す。
   const declaredNotes = declaredRels.filter(d => d.note.trim() !== '');
+  const showFileFlow = multiFile && spec.items.fileFlow;
+
+  // ---- 節番号 ----
+  // 出さない節がある場合は繰り上げる（01 の次が 03 になると読み合わせで指示が噛み合わなくなる）。
+  const secOn = {
+    inventory: spec.sections.inventory,
+    flow: spec.sections.flow,
+    questions: spec.sections.questions,
+    nextSteps: spec.sections.nextSteps,
+  };
+  let secCount = 0;
+  const secNo = (on: boolean) => (on ? String(++secCount).padStart(2, '0') : '');
+  const noInventory = secNo(secOn.inventory);
+  const noFlow = secNo(secOn.flow);
+  const noQuestions = secNo(secOn.questions);
+  const noNext = secNo(secOn.nextSteps);
+  // 本文から他の節を指す言い方（節を出していないときは節番号で誘導しない）
+  const refInventory = noInventory ? `${noInventory} のとおりです` : '下記のとおりです';
+  const refQuestions = noQuestions ? `（${noQuestions} の確認事項をご覧ください）` : '';
+
   // 02 の小見出しは連番。1ファイル案件では「全体（ブック間）」が無い分だけ番号が繰り上がる。
+  // 小見出しの番号は「2-1」の形（節番号の 0 詰めは外す）。
+  const flowNo = noFlow.replace(/^0/, '') || '2';
   let subNo = 0;
-  const subH = (title: string) => `<h3 class="sub-h">2-${++subNo}　${esc(title)}</h3>`;
+  const subH = (title: string) => `<h3 class="sub-h">${flowNo}-${++subNo}　${esc(title)}</h3>`;
 
   const edgeTotal = graph.edgeTotal ?? edges.length;
   const dateStr = input.generatedAt.toISOString().slice(0, 10);
@@ -965,9 +1014,12 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   const outStats = outputLabels.map(l => fileStats.get(l)!).filter(Boolean);
 
   // ---- サマリ文（決定的に組み立てる） ----
+  // 先頭に「この案件の重点」（アウトプット相談で指定された focus）を置く。読み合わせの目的を
+  // 冒頭で共有できるようにするためで、指定が無ければ従来どおり件数の話から始まる。
   const bullets: string[] = [];
   {
-    bullets.push(`受領した <b>${input.fileCount} ファイル</b>（${sheetTotal} シート／${regions.length} 表）を解析しました。内訳は 01 のとおりです。`);
+    if (spec.focus) bullets.push(`<b>今回の重点：${esc(spec.focus)}</b>`);
+    bullets.push(`受領した <b>${input.fileCount} ファイル</b>（${sheetTotal} シート／${regions.length} 表）を解析しました。内訳は ${refInventory}。`);
     if (outStats.length > 0) {
       bullets.push(`最終アウトプットは <b>${outStats.length} 種</b>（${outStats.map(s => `「${esc(s.filename)}」`).join('、')}）` +
         (outputsDeclared ? 'です（取込時のご指定にもとづきます）。' : 'と推定しました（流れの終着点から自動判定）。'));
@@ -982,6 +1034,8 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
     if (copyCount > 0) bullets.push(`一方、<b>数式ではなく手作業の転記と推定されるつながりが ${copyCount} 組</b>あります（値の一致から逆推定）。ここが今回確認したい中心です。`);
     else if (warnings.length > 0) bullets.push(`数式列への手入力の上書きなど、確認したい箇所が ${warnings.length} 件あります。`);
     else bullets.push('手作業転記の疑いは検出されませんでした。');
+    // 案件固有の前提（アウトプット相談で足したメモ）
+    for (const n of spec.notes) bullets.push(esc(n));
   }
 
   // ---- 01 ファイル一覧 ----
@@ -1032,7 +1086,7 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
         const role = roleMap?.[name] ?? (kind && kind !== 'mixed' ? kind : undefined);
         const label = role ? (SHEET_ROLE_LABELS[role] ?? role) : '未指定';
         const cls = role === 'final_output' ? 'sr out' : role === 'working_sheet' ? 'sr mid'
-          : role === 'input_data' ? 'sr src' : 'sr unk';
+          : role === 'input_data' ? 'sr src' : role === 'master_data' ? 'sr mst' : 'sr unk';
         return `<span class="${cls}">${esc(name)}<em>${esc(label)}</em></span>`;
       }).join('');
       const regionBlocks = myRegions.slice(0, REGION_CAP_PER_FILE).map(r => {
@@ -1108,12 +1162,24 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
       <div class="ansbox">ご回答メモ：</div>
     </div>`).join('\n');
 
+  // 表題と、冒頭で示す「読む順番」。出さない節はここにも並べない。
+  const reportTitle = spec.title || 'ご提供データの構造分析レポート';
+  const heroH1 = spec.title
+    ? `<h1>${esc(spec.title)}</h1>`
+    : '<h1>ご提供データの<span class="em">構造分析</span>レポート<br>── 読み合わせのお願い</h1>';
+  const readOrder = [
+    secOn.inventory ? `${noInventory} 受領データ一覧` : '',
+    secOn.flow ? `${noFlow} 全体の流れと詳細ロジック` : '',
+    secOn.questions ? `${noQuestions} ご確認いただきたい点` : '',
+    secOn.nextSteps ? `${noNext} 今後の進め方` : '',
+  ].filter(Boolean).join(' → ');
+
   return `<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>データ構造 分析レポート｜${esc(input.customerName || 'kpiee')}</title>
+<title>${esc(reportTitle)}｜${esc(input.customerName || 'kpiee')}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Zen+Old+Mincho:wght@600;700;900&family=Noto+Sans+JP:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
@@ -1126,8 +1192,8 @@ ${REPORT_CSS}
   <div class="wrap">
     <div class="hero">
       <div class="brand">kpiee ONBOARDING ── DATA STRUCTURE REVIEW / dataX Inc.</div>
-      <h1>ご提供データの<span class="em">構造分析</span>レポート<br>── 読み合わせのお願い</h1>
-      <p class="lede">kpiee導入に先立ち、ご提供いただいたExcel・CSVファイルの構造を解析しました。<b style="color:#fff">01 受領データ一覧 → 02 全体の流れと詳細ロジック → 03 ご確認いただきたい点 → 04 今後の進め方</b> の順に、私たちの理解を整理しています。「この理解で合っているか」をご確認いただき、特に <b style="color:#fff">03. ご確認いただきたい点</b> についてお打ち合わせでご回答をいただけますと幸いです。</p>
+      ${heroH1}
+      <p class="lede">kpiee導入に先立ち、ご提供いただいたExcel・CSVファイルの構造を解析しました。${readOrder ? `<b style="color:#fff">${esc(readOrder)}</b> の順に、` : ''}私たちの理解を整理しています。「この理解で合っているか」をご確認いただき、${secOn.questions ? `特に <b style="color:#fff">${noQuestions}. ご確認いただきたい点</b> についてお打ち合わせでご回答をいただけますと幸いです。` : 'お打ち合わせでご意見をいただけますと幸いです。'}${spec.focus ? `<br>今回は特に <b style="color:#fff">${esc(spec.focus)}</b> を確認したいと考えています。` : ''}</p>
       <div class="hero-meta">
         <span>宛先：<b>${esc(customer)}</b></span>
         <span>分析日：<b>${dateStr}</b></span>
@@ -1137,10 +1203,11 @@ ${REPORT_CSS}
   </div>
 </header>
 
+${secOn.inventory ? `
 <section class="alt">
   <div class="wrap">
     <div class="sec-head">
-      <div class="eyebrow">01 ── INVENTORY</div>
+      <div class="eyebrow">${noInventory} ── INVENTORY</div>
       <h2>受領データ一覧</h2>
       <p class="sec-lede">いただいたファイル（ブック）と、その中の各シートがどういう役割かの一覧です。1つのシートに複数の表が含まれる場合は、表単位に分割して解析しています。</p>
     </div>
@@ -1157,21 +1224,23 @@ ${REPORT_CSS}
       </ul>
     </div>
 
+    ${spec.items.fileTable ? `
     <h3 class="sub-h">ブック（ファイル）別</h3>
     <div style="overflow-x:auto">
       <table class="ot">
         <tr><th>ファイル</th><th>シート</th><th>表</th><th>行数（合計）</th><th>役割</th><th>流れ込む元ファイル</th><th>ご登録の関係</th></tr>
         ${fileRows.join('\n        ')}
       </table>
-    </div>
+    </div>` : ''}
 
+    ${spec.items.sheetDetails ? `
     <h3 class="sub-h">ブックの中身（シートの役割と列構成）</h3>
     <p class="graph-guide">クリックで展開できます。列の色分け：<span class="colchip key">キー列</span> <span class="colchip formula">数式列</span> <span class="colchip manual">手入力の数値</span></p>
-    ${fileBlocks}
+    ${fileBlocks}` : ''}
 
-    ${auditRows.length > 0 ? `
+    ${spec.items.declaredAudit && auditRows.length > 0 ? `
     <h3 class="sub-h">ご登録いただいたブック関係と、自動解析の突き合わせ</h3>
-    <p class="graph-guide">ご登録内容と自動解析の結果が一致しているかの確認です。食い違いは 03 でご確認をお願いしています。</p>
+    <p class="graph-guide">ご登録内容と自動解析の結果が一致しているかの確認です。${noQuestions ? `食い違いは ${noQuestions} でご確認をお願いしています。` : ''}</p>
     <div style="overflow-x:auto">
       <table class="ot">
         <tr><th>ブック関係</th><th>種類</th><th>判定</th><th>検出した関係数</th><th>ご登録の説明</th></tr>
@@ -1179,18 +1248,21 @@ ${REPORT_CSS}
       </table>
     </div>` : ''}
   </div>
-</section>
+</section>` : ''}
 
+${secOn.flow ? `
 <section>
   <div class="wrap">
     <div class="sec-head">
-      <div class="eyebrow">02 ── FLOW &amp; LOGIC</div>
+      <div class="eyebrow">${noFlow} ── FLOW &amp; LOGIC</div>
       <h2>全体の流れと詳細ロジック</h2>
-      <p class="sec-lede">${multiFile
+      <p class="sec-lede">${showFileFlow
         ? 'まず<b>ブックどうしの全体関係図</b>で流れをご覧いただき、続けて<b>シート・表単位の詳細関係図</b>と、その処理内容（キー・数式）へ降りていきます。'
+        : multiFile
+        ? '<b>シート・表単位の関係図</b>で流れをご覧いただき、続けてその処理内容（キー・数式）を説明します。'
         : 'ご提供は1ブックのため、<b>シート・表単位の関係</b>で流れをご覧いただき、続けてその処理内容（キー・数式）を説明します。'}</p>
     </div>
-    ${multiFile ? (fileFlow ? `
+    ${showFileFlow ? (fileFlow ? `
     ${subH('全体関係図（ブックどうしの流れ）')}
     <ul class="graph-guide">
       <li><b>ボックス＝ファイル</b>。左が起点、<b style="color:#C24141">右端が最終アウトプット</b>で、矢印の向きにデータが流れます</li>
@@ -1206,7 +1278,7 @@ ${REPORT_CSS}
     </div>
     ${declaredNotes.length > 0 ? `<div class="seg-note"><span class="mark">📝</span><div>${declaredNotes.map(d =>
       `<p><b>${esc(fileNameOf(d.fromFile))} → ${esc(fileNameOf(d.toFile))}（${esc(FILE_REL_LABELS[d.relType])}）</b>：${esc(d.note)}</p>`).join('')}</div></div>` : ''}` : `
-    <p class="sec-lede">ファイルをまたぐ関係は検出されませんでした。各ファイルが独立して管理されている可能性があります（03 の確認事項をご覧ください）。</p>`) : ''}
+    <p class="sec-lede">ファイルをまたぐ関係は検出されませんでした。各ファイルが独立して管理されている可能性があります${refQuestions}。</p>`) : ''}
 
     ${map ? `
     ${er ? `
@@ -1222,19 +1294,19 @@ ${REPORT_CSS}
     <ul class="graph-guide">
       <li><b>ノード＝表</b>。<b>上＝元データ → 下＝最終アウトプット</b>、矢印の向きにデータが流れます</li>
       <li><b>線の色＝関係の種類</b>／<b>破線＝手作業コピー（要確認）</b></li>
-      <li class="only-screen"><b>クリック</b>すると、その表の関係先と最終アウトプットまでの経路を右パネルに表示します（パンくずで戻れます）</li>
-      <li class="only-screen">右上のボタン：<span class="k">＋ －</span> 拡大縮小／<span class="k">▤</span> レイアウト／<span class="k">☾</span> 配色／<span class="k">⤢</span> 全画面（Escで戻る）／<span class="k">⟳</span> リセット。背景ドラッグで移動</li>
+      ${spec.items.interactiveGraph ? `<li class="only-screen"><b>クリック</b>すると、その表の関係先と最終アウトプットまでの経路を右パネルに表示します（パンくずで戻れます）</li>
+      <li class="only-screen">右上のボタン：<span class="k">＋ －</span> 拡大縮小／<span class="k">▤</span> レイアウト／<span class="k">☾</span> 配色／<span class="k">⤢</span> 全画面（Escで戻る）／<span class="k">⟳</span> リセット。背景ドラッグで移動</li>` : ''}
     </ul>
-    <p class="graph-guide only-print">※ 本紙は静止画です。操作版はブラウザでご覧ください。</p>
+    ${spec.items.interactiveGraph ? '<p class="graph-guide only-print">※ 本紙は静止画です。操作版はブラウザでご覧ください。</p>' : ''}
     <div class="map-static map-scroll">${map.svg}</div>
-    <div class="map-interactive relgraph-wrap" id="relgraph-wrap">
+    ${spec.items.interactiveGraph ? `<div class="map-interactive relgraph-wrap" id="relgraph-wrap">
       <figure class="relgraph-stage lightmode" id="relgraph" aria-label="表どうしの関係グラフ（操作可能）"></figure>
       <aside class="relgraph-panel">
         <div class="relgraph-crumbs" id="relgraph-crumbs"><span class="cur">表を選択</span></div>
         <div class="relgraph-pbody" id="relgraph-pbody"><div class="empty">左のグラフで<b>表</b>をクリックすると、関係している表（上流／下流）と<b>最終アウトプットまでの経路</b>がここに出て、そのまま掘り下げられます。</div></div>
       </aside>
     </div>
-    <script type="application/json" id="relgraph-data">${JSON.stringify(map.data).replace(/</g, '\\u003c')}</script>
+    <script type="application/json" id="relgraph-data">${JSON.stringify(map.data).replace(/</g, '\\u003c')}</script>` : ''}
     <div class="legend">
       <span class="lg-h">関係の種類</span>
       ${GROUP_ORDER.map(g => `<span class="li"><span class="sw${GROUP_META[g].dashed ? ' dash' : ''}" style="border-color:${GROUP_META[g].color}"></span>${esc(GROUP_META[g].label)}</span>`).join('\n      ')}
@@ -1251,6 +1323,7 @@ ${REPORT_CSS}
       ? `<p class="tbl-note">※ 円の大きさ＝つながりの本数。つながりの多い表を優先表示（省略: 表 ${map.omittedNodes}・関係 ${map.omittedEdges}）。</p>`
       : '<p class="tbl-note">※ 円の大きさ＝つながりの本数。</p>'}
 
+    ${spec.items.detailLogic ? `
     ${subH('詳細ロジック — どのシートが、どのキーで、どうつながっているか')}
     <div style="overflow-x:auto">
       <table class="ot dl">
@@ -1258,19 +1331,20 @@ ${REPORT_CSS}
         ${detailRows.join('\n        ')}
       </table>
       ${detailOmitted > 0 ? `<p class="tbl-note">※ 関係が多いため流れの順に上位 ${DETAIL_ROWS_CAP} 件を掲載しています（全 ${pairs.length} 件）。残りはお打ち合わせで画面をご覧いただけます。</p>` : ''}
-    </div>
+    </div>` : ''}
     <div class="callout info">
       <span class="mark">ℹ️</span>
       <span>ピボットテーブル・INDIRECT関数・ファイル間の数式リンクは自動追跡の対象外です。図に出ていないつながりがあれば、お打ち合わせで補足をお願いします。</span>
     </div>` : `
-    <p class="sec-lede">表どうしをつなぐ数式・値一致の関係は検出されませんでした。各表が独立して管理されている可能性があります（03 の確認事項をご覧ください）。</p>`}
+    <p class="sec-lede">表どうしをつなぐ数式・値一致の関係は検出されませんでした。各表が独立して管理されている可能性があります${refQuestions}。</p>`}
   </div>
-</section>
+</section>` : ''}
 
+${secOn.questions ? `
 <section class="alt">
   <div class="wrap">
     <div class="sec-head">
-      <div class="eyebrow">03 ── QUESTIONS</div>
+      <div class="eyebrow">${noQuestions} ── QUESTIONS</div>
       <h2>ご確認いただきたい点（${questions.length}件）</h2>
       <p class="sec-lede">自動解析では「推定」までしかできない箇所です。上から順にご回答をいただけますと、kpieeの設定を正確に進められます。<b>回答メモ欄は印刷してそのままお使いいただけます。</b></p>
     </div>
@@ -1280,18 +1354,19 @@ ${REPORT_CSS}
       <span>実線の関係（数式由来）は数式そのものが根拠のため、原則ご確認は不要です。上記は<b>自動解析が「推定」に留まる箇所だけ</b>を抽出しています。</span>
     </div>
   </div>
-</section>
+</section>` : ''}
 
+${secOn.nextSteps ? `
 <section>
   <div class="wrap">
     <div class="sec-head">
-      <div class="eyebrow">04 ── NEXT STEP</div>
+      <div class="eyebrow">${noNext} ── NEXT STEP</div>
       <h2>今後の進め方</h2>
     </div>
     <div class="steps">
       <div class="step"><div class="no">1</div>
         <h3>本資料の読み合わせ<span class="who">貴社 × 弊社</span></h3>
-        <p>お打ち合わせ（30〜60分）で、03の確認事項にご回答をいただきます。わかる範囲で結構です。</p>
+        <p>お打ち合わせ（30〜60分）で、${noQuestions ? `${noQuestions}の確認事項に` : '確認事項に'}ご回答をいただきます。わかる範囲で結構です。</p>
       </div>
       <div class="step"><div class="no">2</div>
         <h3>定義の確定・追加データのご提供<span class="who">貴社 × 弊社</span></h3>
@@ -1311,13 +1386,13 @@ ${REPORT_CSS}
       <span>本レポートは自動解析の結果にもとづきます。数式のないつながり（破線）や役割・キーの表記は推定であり、ご確認の結果によって内容を更新します。本資料に原本の数値データは含まれていません（列名・数式・行数などの構造情報のみ）。</span>
     </div>
   </div>
-</section>
+</section>` : ''}
 
 <footer>
   <div class="wrap">© dataX Inc.　|　kpiee データ構造分析レポート（${dateStr} 生成）　|　本資料は貴社との確認用資料であり、社外への共有はお控えください。</div>
 </footer>
 <script>${REPORT_PRINT_JS}</script>
-${map ? `<script>${REPORT_GRAPH_JS}</script>` : ''}
+${map && spec.items.interactiveGraph ? `<script>${REPORT_GRAPH_JS}</script>` : ''}
 </body>
 </html>
 `;
@@ -1450,6 +1525,7 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
 .sr{display:inline-flex;flex-direction:column;gap:1px;border:1px solid var(--line);border-left-width:4px;border-radius:8px;padding:5px 10px;font-size:12px;color:var(--ink);background:#FCFDFE}
 .sr em{font-style:normal;font-size:10.5px;color:var(--sub)}
 .sr.src{border-left-color:var(--green)}
+.sr.mst{border-left-color:var(--blue)}
 .sr.mid{border-left-color:var(--violet)}
 .sr.out{border-left-color:var(--red)}
 .sr.unk{border-left-color:#9AA7B4}

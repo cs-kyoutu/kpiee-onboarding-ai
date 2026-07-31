@@ -98,7 +98,9 @@ export async function collectByRole(projectId: number): Promise<RoleCollections>
   for (const a of artifacts) {
     const pick = (role: string) => a.parsed.sheets.filter(s => a.roles[s.name] === role);
 
-    for (const sheet of pick('input_data')) {
+    // マスタ（分類表）も SQL の FROM 対象。人が input_data からマスタへ付け替えただけで
+    // テーブル定義から消えると、結合先を失った SQL が生成されてしまう
+    for (const sheet of [...pick('input_data'), ...pick('master_data')]) {
       // CSV は単一シートなのでファイル名、xlsx は各シート名をテーブル名にする
       const tableName = a.parsed.fileType === 'csv'
         ? tableNameOf(a.row.original_filename)

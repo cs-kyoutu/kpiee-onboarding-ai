@@ -11,7 +11,19 @@
 //       数式なし → unknown（値貼り付け or 手入力。人の確認が必要）
 import type { ParsedArtifact, ParsedSheet } from './parse.js';
 
-export type SheetRole = 'input_data' | 'working_sheet' | 'final_output' | 'unknown';
+// master_data（マスタ）は自動判定しない。参照専用の分類表・コード表は「他シートから参照される
+// 出発点」なので構造だけでは input_data と区別できず、どちらであるかは業務知識でしか決まらない。
+// 取込後の分類確認で人が指定する枠として持ち、パイプライン上は入力データと同じ扱いにする。
+export type SheetRole = 'input_data' | 'master_data' | 'working_sheet' | 'final_output' | 'unknown';
+
+/** 分類確認 UI・レポートで使う表示名。役割の語彙を1か所に集める */
+export const SHEET_ROLE_LABELS: Record<SheetRole, string> = {
+  input_data: 'インプット（raw）',
+  master_data: 'マスタ（分類表）',
+  working_sheet: '中間シート',
+  final_output: '最終アウトプット',
+  unknown: '判定不能',
+};
 
 /** システム出力(raw)と見なす行数の下限。これ以下の「数式なしシート」は値貼り付け・手入力の
  *  可能性が残るので従来どおり unknown（人の確認）に回す。ここで閾値を切る意味がそれ。 */

@@ -124,6 +124,13 @@ export interface AnalysisRun {
 export interface ProjectDetailData extends Project {
   artifacts: Artifact[]
   runs: AnalysisRun[]
+  /** 「人が確認した」印。roles_confirmed = シート分類を確定済み（自動分類では立たない） */
+  flags?: string[]
+}
+
+/** 人が確認した印を立てる（新UI のステップ完了に使う） */
+export function setProjectFlag(projectId: number, flag: string): Promise<{ ok: boolean; flags: string[] }> {
+  return post<{ ok: boolean; flags: string[] }>(`/projects/${projectId}/flags/${flag}`)
 }
 
 export interface Finding {
@@ -409,6 +416,87 @@ export function getChat(projectId: number): Promise<ChatState> {
 }
 export function askChat(projectId: number, question: string): Promise<{ pending: boolean }> {
   return post<{ pending: boolean }>(`/projects/${projectId}/chat`, { question })
+}
+
+// ---- アウトプット相談（レポートに何を載せるか）----
+// デザインと骨格は固定。案件ごとに変えるのは「どの節・どの項目を載せるか」だけ。
+// 関係図（ノード形式）は指定対象に無く、常に載る。
+export interface ReportSpecSections {
+  inventory: boolean; flow: boolean; questions: boolean; nextSteps: boolean
+}
+export interface ReportSpecItems {
+  fileTable: boolean; sheetDetails: boolean; declaredAudit: boolean
+  fileFlow: boolean; erDiagram: boolean; detailLogic: boolean; interactiveGraph: boolean
+}
+export interface ReportSpec {
+  title: string
+  focus: string
+  sections: ReportSpecSections
+  items: ReportSpecItems
+  notes: string[]
+}
+
+/** 相談の前提として画面にも出す解析結果の要約 */
+export interface ReportFacts {
+  customerName: string
+  files: { filename: string; kind: string; sheetRoles: Record<string, string> | null }[]
+  regionCount: number
+  edgeCount: number
+  copyPairCount: number
+  questionCount: number
+  declaredRelCount: number
+  multiFile: boolean
+}
+
+export interface ReportSpecData {
+  spec: ReportSpec
+  /** 構成を一度保存したか（＝相談ステップを通ったか）。未保存なら既定＝全部出す */
+  configured: boolean
+  sectionLabels: Record<keyof ReportSpecSections, string>
+  itemLabels: Record<keyof ReportSpecItems, string>
+  facts: ReportFacts
+}
+
+export interface ReportChatMessage {
+  id: number
+  role: 'user' | 'assistant'
+  content: string
+  spec_patch?: string | null
+  created_at: string
+}
+
+export interface ReportChatState {
+  messages: ReportChatMessage[]
+  pending: boolean
+  spec: ReportSpec
+  kickoff: string
+}
+
+export function getReportSpec(projectId: number): Promise<ReportSpecData> {
+  return get<ReportSpecData>(`/projects/${projectId}/report-spec`)
+}
+
+/** 部分指定で保存（省略した項目は現状維持） */
+export function saveReportSpec(projectId: number, patch: Partial<ReportSpec>): Promise<{ spec: ReportSpec }> {
+  return fetch(`${BASE}/projects/${projectId}/report-spec`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  }).then(res => handle<{ spec: ReportSpec }>(res))
+}
+
+export function getReportChat(projectId: number): Promise<ReportChatState> {
+  return get<ReportChatState>(`/projects/${projectId}/report-chat`)
+}
+
+/** message 省略で「提案から始めて」の初手を送る */
+export function sendReportChat(projectId: number, message?: string): Promise<{ pending: boolean }> {
+  return post<{ pending: boolean }>(`/projects/${projectId}/report-chat`, { message })
+}
+
+/** レポート HTML の URL。inline はプレビュー（iframe）用でダウンロードさせない */
+export function reportUrl(projectId: number, inline = false): string {
+  return `${BASE}/projects/${projectId}/relations/report${inline ? '?inline=1' : ''}`
 }
 
 export interface SheetPreview {
