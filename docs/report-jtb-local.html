@@ -1,0 +1,1489 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ご提供データの構造分析レポート｜JTB（ローカル検証）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Zen+Old+Mincho:wght@600;700;900&family=Noto+Sans+JP:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+
+:root{
+  --ink:#0E2A47;--blue:#1F5FAE;--sky:#3D9BE9;
+  --green:#1E9E6A;--green-bg:#E9F7F0;--violet:#7B5EA7;--violet-bg:#F1EDF8;
+  --amber:#B96A00;--amber-bg:#FFF4E3;--red:#C24141;--red-bg:#FBEFEF;
+  --paper:#F7F9FC;--text:#3A4552;--sub:#7A8794;--line:#DDE5EE;--blue-bg:#EDF4FC;
+  --mono:'IBM Plex Mono',monospace;--disp:'Zen Old Mincho',serif;--body:'Noto Sans JP',sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{font-family:var(--body);color:var(--text);background:var(--paper);font-size:15px;line-height:1.85;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1060px;margin:0 auto;padding:0 28px}
+header{background:var(--ink);color:#fff;position:relative;overflow:hidden}
+header::after{content:'';position:absolute;right:-120px;top:-120px;width:420px;height:420px;border-radius:50%;background:radial-gradient(circle,rgba(61,155,233,.25),transparent 70%);pointer-events:none}
+.hero{padding:64px 0 52px;position:relative;z-index:1;max-width:820px}
+.brand{font-family:var(--mono);font-size:12px;letter-spacing:.18em;color:var(--sky);margin-bottom:20px}
+h1{font-family:var(--disp);font-weight:900;font-size:34px;line-height:1.5;letter-spacing:.02em;margin-bottom:16px}
+h1 .em{color:var(--sky)}
+.lede{color:#C6D6E8;font-size:15px;max-width:40em}
+.hero-meta{display:flex;gap:10px;margin-top:24px;flex-wrap:wrap}
+.hero-meta span{font-size:12px;border:1px solid rgba(255,255,255,.28);border-radius:999px;padding:4px 14px;color:#D8E4F2}
+.hero-meta span b{color:#fff;font-weight:500}
+section{padding:60px 0}
+section.alt{background:#fff}
+.sec-head{margin-bottom:32px}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.16em;color:var(--blue);margin-bottom:10px}
+h2{font-family:var(--disp);font-weight:700;font-size:26px;color:var(--ink);line-height:1.5}
+.sec-lede{margin-top:12px;max-width:46em;color:var(--text)}
+.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
+.tile{background:#fff;border:1px solid var(--line);border-radius:16px;padding:20px 22px}
+.tile .tl{font-size:12px;color:var(--sub);letter-spacing:.04em}
+.tile .tv{font-family:var(--mono);font-size:30px;color:var(--ink);line-height:1.4;margin-top:2px}
+.tile .tv small{font-size:14px;color:var(--sub);margin-left:2px}
+/* タイルの補足行。数字だけでは「で、それが何なのか」が伝わらないので、対象名や参照先を1行添える */
+.tile .tsub{font-size:11.5px;color:var(--sub);line-height:1.5;margin-top:4px;word-break:break-all}
+.tile.warn{border-top:4px solid var(--amber)}
+.tile.warn .tv{color:var(--amber)}
+/* 最終アウトプット＝kpiee で再現する対象。読み合わせの目的地なので色で際立たせる */
+.tile.out{border-top:4px solid var(--red)}
+.tile.out .tv{color:var(--red)}
+/* ---- ロジック別ブロック ---- */
+.lb{border:1px solid var(--line);border-radius:14px;padding:0 0 6px;margin:20px 0;background:#fff;overflow:hidden}
+.lb.iso{border-style:dashed}
+.lb-head{display:flex;gap:14px;align-items:flex-start;padding:16px 22px;background:var(--bg2);border-bottom:1px solid var(--line)}
+.lb-no{flex:0 0 auto;width:26px;height:26px;border-radius:50%;background:var(--ink);color:#fff;
+  font-family:var(--mono);font-size:13px;display:flex;align-items:center;justify-content:center}
+.lb-sub{font-size:12px;color:var(--sub);margin-top:3px}
+.lb-step{padding:14px 22px 4px}
+.lb-st{display:inline-block;font-size:11px;letter-spacing:.06em;color:var(--sub);
+  border:1px solid var(--line);border-radius:999px;padding:2px 10px;margin-bottom:8px}
+/* 数式の部位分解。数式そのものを色分けし、直下に「どこが何を指すか」を並べる */
+.fx{margin:10px 0 4px}
+.fx-code{font-family:var(--mono);font-size:15px;background:var(--bg2);border:1px solid var(--line);
+  border-radius:8px;padding:12px 14px;overflow-x:auto;white-space:nowrap}
+.fx-legend{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:6px}
+.fx-legend li{font-size:12.5px;color:var(--sub);display:flex;gap:8px;align-items:baseline}
+.fx-legend li>span{flex:0 0 auto;font-family:var(--mono);font-size:12px;border-radius:4px;padding:1px 6px}
+.fx1{background:#E6F1FB;color:#185FA5}
+.fx2{background:#EAF3DE;color:#3B6D11}
+.fx3{background:var(--amber-bg);color:var(--amber)}
+.fx-how{font-size:12.5px;line-height:1.7;margin:10px 0 0;padding:10px 12px;border-radius:8px;
+  background:var(--amber-bg);border:1px solid #F0D8B0;color:#7A5100}
+.summary{margin-top:26px;background:#fff;border:1px solid var(--line);border-radius:16px;padding:24px 28px}
+.summary .stitle{font-weight:700;color:var(--ink);font-size:14px;border-left:3px solid var(--blue);padding-left:10px;margin-bottom:10px}
+.summary ul{list-style:none;display:flex;flex-direction:column;gap:8px;font-size:13.5px}
+.summary li{padding-left:16px;position:relative}
+.summary li::before{content:'▸';position:absolute;left:0;color:var(--blue)}
+.summary li b{color:var(--ink)}
+.ot{width:100%;border-collapse:collapse;font-size:12.5px;background:#fff;border-radius:12px;overflow:hidden;border:1px solid var(--line)}
+.ot th{background:var(--ink);color:#fff;padding:8px 12px;text-align:left;font-weight:500;white-space:nowrap}
+.ot td{padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+.ot tr:last-child td{border-bottom:none}
+.ot td.mono{font-family:var(--mono);font-size:11.5px;white-space:nowrap}
+.ot td.r{text-align:right;font-family:var(--mono);font-size:11.5px}
+.tbl-note{font-size:11.5px;color:var(--sub);margin-top:8px}
+.rel{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;border-radius:999px;padding:2px 10px;white-space:nowrap}
+.rel::before{content:'';width:8px;height:8px;border-radius:50%;background:currentColor}
+.rel.lookup{background:var(--blue-bg);color:var(--blue)}
+.rel.agg{background:var(--green-bg);color:var(--green)}
+.rel.move{background:var(--violet-bg);color:var(--violet)}
+.rel.copy{background:var(--amber-bg);color:var(--amber)}
+.conf{font-family:var(--mono);font-size:11px;color:var(--sub)}
+.conf b{color:var(--ink);font-weight:500}
+.map-scroll{overflow-x:auto;background:#FCFDFE;border:1px solid var(--line);border-radius:16px;padding:18px}
+.map-scroll svg{min-width:760px;width:100%;height:auto;display:block;font-family:var(--body)}
+.er-scroll svg{min-width:640px;width:100%;height:auto;display:block;font-family:var(--body)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:14px;font-size:12px}
+.legend .li{display:inline-flex;align-items:center;gap:7px;color:var(--text)}
+.legend .sw{width:22px;height:0;border-top:3px solid;border-radius:2px}
+.legend .sw.dash{border-top-style:dashed}
+/* 折りたたみブロック（01 のブック別）。三角は自前で描く */
+details.fileblk>summary{list-style:none}
+details.fileblk>summary::-webkit-details-marker{display:none}
+details.fileblk>summary::before{content:'▸';color:var(--blue);transition:transform .2s}
+details.fileblk[open]>summary::before{transform:rotate(90deg)}
+.loc{font-family:var(--mono);font-size:11px;color:var(--sub)}
+.rows{font-family:var(--mono);font-size:11px;color:var(--sub);margin-left:auto}
+.rbody{padding:14px 20px 18px}
+.colchips{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 4px}
+.colchip{font-size:11.5px;border:1px solid var(--line);border-radius:8px;padding:3px 10px;background:#FCFDFE}
+.colchip.key{border-color:#C9DEF4;background:var(--blue-bg);color:var(--blue);font-weight:700}
+.colchip.formula{border-color:#BFE5D3;background:var(--green-bg);color:var(--green)}
+.colchip.manual{border-color:#F0D8B0;background:var(--amber-bg);color:var(--amber)}
+.rnote{font-size:12px;color:var(--sub)}
+.key-note{font-size:12.5px;margin-top:8px}
+.key-note b{color:var(--ink)}
+.qcard{background:#fff;border:1px solid var(--line);border-left:5px solid var(--amber);border-radius:14px;padding:20px 24px;margin-bottom:16px}
+.qcard.p-high{border-left-color:var(--red)}
+.qhead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.qid{font-family:var(--mono);font-size:13px;font-weight:500;color:var(--ink)}
+.qtag{font-size:10.5px;font-weight:700;border-radius:999px;padding:2px 11px}
+.qtag.kind{background:var(--blue-bg);color:var(--blue)}
+.qtag.high{background:var(--red-bg);color:var(--red)}
+.qtag.mid{background:var(--amber-bg);color:var(--amber)}
+.qtitle{font-size:15px;font-weight:700;color:var(--ink)}
+.qgrid{display:grid;grid-template-columns:96px 1fr;gap:6px 14px;font-size:13px;margin-top:6px}
+.qgrid dt{color:var(--sub);font-size:12px;padding-top:2px}
+.qgrid dd{line-height:1.75}
+.ansbox{margin-top:12px;border:1.5px dashed var(--line);border-radius:10px;min-height:56px;padding:8px 12px;font-size:12px;color:var(--sub);background:#FCFDFE}
+.steps{position:relative;margin-left:12px}
+.steps::before{content:'';position:absolute;left:21px;top:8px;bottom:8px;width:2px;background:var(--line)}
+.step{position:relative;padding:0 0 26px 66px}
+.step:last-child{padding-bottom:0}
+.step .no{position:absolute;left:0;top:0;width:44px;height:44px;border-radius:50%;background:var(--blue);color:#fff;display:flex;align-items:center;justify-content:center;font-family:var(--disp);font-weight:700;font-size:18px;box-shadow:0 0 0 5px var(--paper)}
+.step h3{font-size:16px;color:var(--ink);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.step h3 .who{font-size:11px;font-weight:700;border-radius:999px;padding:2px 11px;background:var(--blue-bg);color:var(--blue)}
+.step p{font-size:13.5px;margin-top:4px;max-width:46em}
+.callout{margin-top:24px;border-radius:14px;padding:16px 20px;font-size:13px;display:flex;gap:12px;align-items:flex-start}
+.callout.warn{background:var(--amber-bg);border:1px solid #F0D8B0;color:#7A5100}
+.callout.info{background:var(--blue-bg);border:1px solid #C9DEF4;color:#1C4B84}
+.callout .mark{font-size:17px;line-height:1.4}
+footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
+@media (max-width:900px){
+  h1{font-size:26px}
+  .tiles{grid-template-columns:1fr 1fr}
+  .qgrid{grid-template-columns:1fr}
+  .qgrid dt{padding-top:6px}
+}
+.via{font-family:var(--mono);font-size:10.5px;color:var(--sub);margin-left:8px;white-space:nowrap}
+
+/* ---- 01 ブックの中身（シート役割＋列構成）---- */
+.fileblk{background:#fff;border:1px solid var(--line);border-radius:14px;margin-bottom:10px;overflow:hidden}
+.fileblk>summary{cursor:pointer;padding:13px 18px;display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;font-size:14px}
+.fileblk>summary:hover{background:var(--blue-bg)}
+.fileblk[open]>summary{border-bottom:1px solid var(--line)}
+.fileblk>summary b{word-break:break-all}
+.sub-lede{font-size:12px;font-weight:700;color:var(--sub);letter-spacing:.04em;margin:14px 0 7px}
+.sub-lede:first-child{margin-top:0}
+.srchips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:4px}
+.sr{display:inline-flex;flex-direction:column;gap:1px;border:1px solid var(--line);border-left-width:4px;border-radius:8px;padding:5px 10px;font-size:12px;color:var(--ink);background:#FCFDFE}
+.sr em{font-style:normal;font-size:10.5px;color:var(--sub)}
+.sr.src{border-left-color:var(--green)}
+.sr.mst{border-left-color:var(--blue)}
+.sr.mid{border-left-color:var(--violet)}
+.sr.out{border-left-color:var(--red)}
+.sr.unk{border-left-color:#9AA7B4}
+.rblock{border-top:1px dashed var(--line);padding-top:12px;margin-top:12px}
+.rblock:first-of-type{border-top:0;padding-top:0;margin-top:0}
+.rhead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:13px;margin-bottom:7px}
+.rrole{font-size:10.5px;color:var(--sub)}
+/* ---- 01 突き合わせ判定バッジ ---- */
+.av{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700;white-space:nowrap}
+.av.ok{background:var(--green-bg);color:var(--green)}
+.av.warn{background:var(--amber-bg);color:var(--amber)}
+.av.ng{background:var(--red-bg);color:var(--red)}
+
+/* ---- 02 ご登録いただいたブック関係の説明（全体関係図の直下）---- */
+.seg-note{display:flex;gap:10px;background:var(--blue-bg);border-radius:10px;padding:11px 14px;margin-top:14px;font-size:12.5px;line-height:1.8}
+.seg-note p{margin:0}
+.seg-note p+p{margin-top:4px}
+/* ---- 02 詳細ロジック表 ---- */
+table.dl{font-size:12px}
+table.dl td{vertical-align:top}
+.dl-col{display:block;font-family:var(--mono);font-size:10.5px;color:var(--blue)}
+.dl-proc{font-size:11px;color:var(--sub);margin-top:3px}
+.dl-ev{font-size:10.5px;color:var(--sub);word-break:break-all}
+.dl-q{font-family:var(--mono);font-size:10.5px;color:var(--red);font-weight:700}
+.dl-none{color:var(--sub)}
+/* ---- 図の凡例・見出し ---- */
+.sub-h{font-family:var(--disp);font-weight:700;font-size:18px;color:var(--ink);margin:30px 0 6px}
+.graph-guide{font-size:12.5px;color:var(--text);line-height:1.7;margin-bottom:12px}
+/* 図の凡例テキスト: 1行1項目で読ませる */
+ul.graph-guide{list-style:none;padding:0;display:flex;flex-direction:column;gap:4px}
+ul.graph-guide li{padding-left:15px;position:relative}
+ul.graph-guide li::before{content:'―';position:absolute;left:0;color:var(--sub)}
+ul.graph-guide b{color:var(--ink)}
+ul.graph-guide .k{font-family:var(--mono);font-size:11.5px;color:var(--ink)}
+.only-print{display:none}
+.legend .lg-h{font-weight:700;color:var(--ink);font-size:12px;margin-right:2px}
+.nrole{width:13px;height:13px;border-radius:50%;display:inline-block;border:2px solid;vertical-align:-2px}
+.nrole.src{background:var(--green-bg);border-color:var(--green)}
+.nrole.mst{background:var(--blue-bg);border-color:var(--blue)}
+.nrole.mid{background:var(--violet-bg);border-color:var(--violet)}
+.nrole.out{background:var(--red-bg);border-color:var(--red)}
+.nrole.iso{background:#F2F5F8;border-color:#9AA7B4}
+
+/* 関係グラフ本体（JS 有効時のみ表示。印刷・JS無効は静的SVG .map-static へ） */
+.map-interactive{display:none}
+.relgraph-wrap{grid-template-columns:1fr 300px;gap:14px;align-items:stretch}
+.relgraph-stage{position:relative;border:1px solid var(--line);border-radius:14px;overflow:hidden;min-height:560px;touch-action:none;
+  --gbg:#12141C;--glbl:#C9D1DE;--glbl2:#7F8A9C;
+  --c-src:#3FCF8E;--c-mst:#5AA9FF;--c-mid:#B392F0;--c-out:#FF8B7B;--c-iso:#8B98A5;
+  background:radial-gradient(circle at 50% 38%,#1C1F2A 0%,#12141C 72%)}
+.relgraph-stage.lightmode{--gbg:#FCFDFE;--glbl:#0E2A47;--glbl2:#7A8794;
+  --c-src:#1E9E6A;--c-mst:#1F5FAE;--c-mid:#7B5EA7;--c-out:#C0392B;--c-iso:#9AA7B4;
+  background:#FCFDFE;background-image:radial-gradient(circle at 1px 1px,#E4EBF3 1px,transparent 0);background-size:22px 22px}
+.relgraph-stage svg{width:100%;height:100%;display:block;font-family:var(--body);cursor:grab}
+.relgraph-stage svg.panning{cursor:grabbing}
+.relgraph-ctrl{position:absolute;top:10px;right:10px;display:flex;gap:6px;z-index:3}
+.relgraph-ctrl button{width:32px;height:32px;padding:0;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.09);color:#E3E9F2;border-radius:8px;font-size:14px;line-height:1;cursor:pointer;backdrop-filter:blur(4px)}
+.relgraph-ctrl button:hover{background:rgba(255,255,255,.2);border-color:rgba(255,255,255,.34)}
+.relgraph-stage.lightmode .relgraph-ctrl button{border-color:var(--line);background:#fff;color:var(--ink);box-shadow:0 1px 3px rgba(14,42,71,.1)}
+.relgraph-stage.lightmode .relgraph-ctrl button:hover{background:var(--blue-bg);border-color:var(--blue);color:var(--blue)}
+.relgraph-hint{position:absolute;left:12px;bottom:10px;z-index:3;font-size:10.5px;letter-spacing:.02em;color:var(--glbl2);pointer-events:none}
+/* ノード（Obsidian風の円） */
+.node{cursor:pointer;transition:opacity .18s}
+.node .dot{stroke:var(--gbg);stroke-width:1.5}
+.node .halo{fill:none;stroke:none;transition:.18s}
+.node.role-src .dot{fill:var(--c-src)}
+.node.role-mst .dot{fill:var(--c-mst)}
+.node.role-mid .dot{fill:var(--c-mid)}
+.node.role-out .dot{fill:var(--c-out)}
+.node.role-iso .dot{fill:var(--c-iso)}
+.node.role-out .halo{stroke:var(--c-out);stroke-opacity:.32;stroke-width:2}
+.node .lbl{fill:var(--glbl);font-size:11px;font-weight:600;text-anchor:middle;paint-order:stroke;stroke:var(--gbg);stroke-width:3.4px;stroke-linejoin:round;pointer-events:none}
+.node.hov .lbl,.node.sel .lbl{fill:#fff;font-weight:700}
+.relgraph-stage.lightmode .node.hov .lbl,.relgraph-stage.lightmode .node.sel .lbl{fill:var(--ink)}
+.node.hov .halo,.node.sel .halo{stroke:#fff;stroke-opacity:.55;stroke-width:2.4}
+.relgraph-stage.lightmode .node.hov .halo,.relgraph-stage.lightmode .node.sel .halo{stroke:var(--blue);stroke-opacity:.85}
+.node.role-out .lbl{font-weight:800}
+.edge{fill:none;stroke-width:1.3;opacity:.5;transition:opacity .18s,stroke-width .18s}
+.relgraph-stage svg.focused .node:not(.hl):not(.path){opacity:.14}
+.relgraph-stage svg.focused .edge:not(.epath):not(.ehl){opacity:.05}
+.edge.epath{stroke-width:3;opacity:1}
+.edge.ehl{stroke-width:2.4;opacity:1}
+/* インスペクタ（クリックした表の上流・下流と最終アウトプットまでの経路） */
+.relgraph-panel{background:#fff;border:1px solid var(--line);border-radius:14px;overflow:hidden;display:flex;flex-direction:column;min-height:480px}
+.relgraph-crumbs{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:10px 13px;border-bottom:1px solid var(--line);font-size:11.5px;min-height:42px}
+.relgraph-crumbs .c{color:var(--blue);cursor:pointer;background:none;border:0;padding:2px 4px;font:inherit;border-radius:6px}
+.relgraph-crumbs .c:hover{background:var(--blue-bg)}
+.relgraph-crumbs .sep{color:var(--sub)}
+.relgraph-crumbs .cur{color:var(--ink);font-weight:700}
+.relgraph-pbody{padding:15px 15px 20px;overflow:auto;font-size:13px}
+.relgraph-pbody .empty{color:var(--sub);font-size:12.5px;line-height:1.9}
+.relgraph-pbody .empty b{color:var(--ink)}
+.pname{font-size:15px;font-weight:800;color:var(--ink);line-height:1.35;margin:0 0 8px}
+.rolechip{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;border-radius:999px;padding:3px 11px;border:1px solid}
+.rolechip.rc-src{color:var(--green);background:var(--green-bg);border-color:var(--green)}
+.rolechip.rc-mst{color:var(--blue);background:var(--blue-bg);border-color:var(--blue)}
+.rolechip.rc-mid{color:var(--violet);background:var(--violet-bg);border-color:var(--violet)}
+.rolechip.rc-out{color:var(--red);background:var(--red-bg);border-color:var(--red)}
+.rolechip.rc-iso{color:var(--sub);background:#F2F5F8;border-color:#9AA7B4}
+.p-meta{font-size:11.5px;color:var(--sub);margin:10px 0 3px}
+.p-keys{font-family:var(--mono);font-size:11.5px;color:var(--text);background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+.p-route{display:flex;align-items:center;flex-wrap:wrap;gap:4px;background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:12px}
+.p-route .r{cursor:pointer;color:var(--blue);background:none;border:0;font:inherit;padding:1px 3px;border-radius:5px}
+.p-route .r:hover{background:var(--blue-bg)}
+.p-route .r.out{color:var(--red);font-weight:700}
+.p-route .arw{color:var(--sub)}
+.p-grp{margin-top:15px}
+.p-grp h4{margin:0 0 7px;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--sub);font-weight:700}
+.p-chips{display:flex;flex-direction:column;gap:6px}
+.p-chip{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:#fff;border:1px solid var(--line);border-radius:10px;padding:7px 10px;cursor:pointer;font:inherit;font-size:12px;color:var(--ink);transition:.12s}
+.p-chip:hover{border-color:var(--blue);background:var(--blue-bg)}
+.p-chip .dot{width:9px;height:9px;border-radius:50%;flex:none}
+.p-chip .via{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--sub);white-space:nowrap}
+.p-chip.none{cursor:default;color:var(--sub);border-style:dashed}
+.p-chip.none:hover{border-color:var(--line);background:#fff}
+.relgraph-wrap.expanded{position:fixed;inset:0;z-index:9999;margin:0;padding:16px;background:var(--paper);grid-template-columns:1fr 320px}
+.relgraph-wrap.expanded .relgraph-stage,.relgraph-wrap.expanded .relgraph-panel{min-height:0;height:100%}
+body.relgraph-noscroll{overflow:hidden}
+@media (max-width:760px){ .relgraph-wrap{grid-template-columns:1fr} .relgraph-panel{min-height:0} }
+@media print{
+  header::after{display:none}
+  section{padding:28px 0}
+  .qcard{page-break-inside:avoid}
+  /* 印刷時は折りたたみを全て開いて紙に載せる（details[open] は JS で付ける） */
+  .fileblk{page-break-inside:avoid}
+  .fileblk>summary{list-style:none}
+  /* 操作版は紙に出せないので静的SVGへ差し替える */
+  .map-interactive{display:none!important}
+  .map-static{display:block!important}
+  .only-print{display:inline}
+  .only-screen{display:none}
+}
+
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="hero">
+      <div class="brand">kpiee ONBOARDING ── DATA STRUCTURE REVIEW / dataX Inc.</div>
+      <h1>ご提供データの<span class="em">構造分析</span>レポート<br>── 読み合わせのお願い</h1>
+      <p class="lede">kpiee導入に先立ち、ご提供いただいたExcel・CSVファイルの構造を解析しました。<b style="color:#fff">01 受領データ一覧 → 02 全体の流れと詳細ロジック → 03 ご確認いただきたい点 → 04 今後の進め方</b> の順に、私たちの理解を整理しています。「この理解で合っているか」をご確認いただき、特に <b style="color:#fff">03. ご確認いただきたい点</b> についてお打ち合わせでご回答をいただけますと幸いです。</p>
+      <div class="hero-meta">
+        <span>宛先：<b>JTB（ローカル検証）様</b></span>
+        <span>分析日：<b>2026-08-05</b></span>
+        <span>作成：dataX カスタマーサクセス</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+
+<section class="alt">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="eyebrow">01 ── INVENTORY</div>
+      <h2>受領データ一覧</h2>
+      <p class="sec-lede">いただいたファイル（ブック）と、その中の各シートがどういう役割かの一覧です。1つのシートに複数の表が含まれる場合は、表単位に分割して解析しています。</p>
+    </div>
+    <div class="tiles">
+      <div class="tile"><div class="tl">受領ファイル</div><div class="tv">16<small>件</small></div>
+        <div class="tsub">90 シート</div></div>
+      <div class="tile"><div class="tl">元データ（インプット）</div><div class="tv">1<small>ファイル</small></div>
+        <div class="tsub">経由するファイル 10</div></div>
+      <div class="tile out"><div class="tl">最終アウトプット</div><div class="tv">2<small>ファイル</small></div>
+        <div class="tsub">000まとめ_2025年度利益計画改定(2025-0725).xlsx、20…</div></div>
+      <div class="tile warn"><div class="tl">ご確認いただきたい点</div><div class="tv">8<small>件</small></div>
+        <div class="tsub">03 をご覧ください</div></div>
+    </div>
+    <div class="summary">
+      <div class="stitle">まとめ</div>
+      <ul>
+        <li>受領した <b>16 ファイル</b>（90 シート／445 表）を解析しました。内訳は 01 のとおりです。</li>
+        <li>最終アウトプットは <b>2 種</b>（「000まとめ_2025年度利益計画改定(2025-0725).xlsx」、「2025年度【売総および損益実績】2601.xlsx」）です（取込時のご指定にもとづきます）。</li>
+        <li>表をつなぐ関係の大半は数式（SUMIFS・VLOOKUP等）で、<b>構造は自動で追跡できました</b>。</li>
+        <li>一方、<b>数式ではなく手修正と推定されるつながりが 2096 組</b>あります（値の一致から逆推定）。ここが今回確認したい中心です。</li>
+      </ul>
+    </div>
+
+    
+    <h3 class="sub-h">ブック（ファイル）別</h3>
+    <div style="overflow-x:auto">
+      <table class="ot">
+        <tr><th>ファイル</th><th>シート</th><th>表</th><th>行数（合計）</th><th>役割</th><th>流れ込む元ファイル</th><th>ご登録の関係</th></tr>
+        <tr><td><b>仕訳汎用検索_2507.xlsx</b></td><td class="r">2</td><td class="r">3</td><td class="r">89,121</td><td><span class="nrole mid"></span> 中間ファイル</td><td>仕訳汎用検索_2504.xlsx、仕訳汎用検索_2505.xlsx、仕訳汎用検索_250…</td><td><span class="dl-none">—</span></td></tr>
+        <tr><td><b>仕訳汎用検索_2512.xlsx</b></td><td class="r">2</td><td class="r">3</td><td class="r">88,987</td><td><span class="nrole mid"></span> 中間ファイル</td><td>仕訳汎用検索_2504.xlsx、仕訳汎用検索_2505.xlsx、仕訳汎用検索_250…</td><td><span class="dl-none">—</span></td></tr>
+        <tr><td><b>仕訳汎用検索_2510.xlsx</b></td><td class="r">2</td><td class="r">3</td><td class="r">88,289</td><td><span class="nrole mid"></span> 中間ファイル</td><td>仕訳汎用検索_2504.xlsx、仕訳汎用検索_2505.xlsx、仕訳汎用検索_250…</td><td><span class="dl-none">—</span></td></tr>
+        <tr><td><b>仕訳汎用検索_2511.xlsx</b></td><td class="r">2</td><td class="r">3</td><td class="r">87,282</td><td><span class="nrole mid"></span> 中間ファイル</td><td>仕訳汎用検索_2504.xlsx、仕訳汎用検索_2505.xlsx、仕訳汎用検索_250…</td><td><span class="dl-none">—</span></td></tr>
+        <tr><td><b>仕訳汎用検索_2509.xlsx</b></td><td class="r">2</td><td class="r">3</td><td class="r">84,379</td><td><span class="nrole mid"></span> 中間ファイル</td><td>仕訳汎用検索_2504.xlsx、仕訳汎用検索_2505.xlsx、仕訳汎用検索_250…</td><td><span class="dl-none">—</span></td></tr>
+        <tr><td><b>仕訳汎用検索_2506.xlsx</b></td><td class="r">2</td><td class="r">3</td><td class="r">82,077</td><td><span class="nrole mid"></span> 中間ファイル</td><td>仕訳汎用検索_2504.xlsx、仕訳汎用検索_2505.xlsx</td><td><span class="dl-none">—</span></td></tr>
+        <tr><td><b>仕訳汎用検索_2504.xlsx</b></td><td class="r">2</td><td class="r">3</td><td class="r">79,793</td><td><span class="nrole src"></span> 元データ</td><td>—</td><td><span class="dl-none">—</span></td></tr>
+        <tr><td><b>仕訳汎用検索_2508.xlsx</b></td><td class="r">2</td><td class="r">3</td><td class="r">79,237</td><td><span class="nrole mid"></span> 中間ファイル</td><td>仕訳汎用検索_2504.xlsx、仕訳汎用検索_2505.xlsx、仕訳汎用検索_250…</td><td><span class="dl-none">—</span></td></tr>
+        <tr><td><b>仕訳汎用検索_2602.xlsx</b></td><td class="r">2</td><td class="r">3</td><td class="r">77,615</td><td><span class="nrole mid"></span> 中間ファイル</td><td>仕訳汎用検索_2504.xlsx、仕訳汎用検索_2505.xlsx、仕訳汎用検索_250…</td><td><span class="dl-none">—</span></td></tr>
+        <tr><td><b>仕訳汎用検索_2505.xlsx</b></td><td class="r">2</td><td class="r">3</td><td class="r">76,533</td><td><span class="nrole mid"></span> 中間ファイル</td><td>仕訳汎用検索_2504.xlsx</td><td><span class="dl-none">—</span></td></tr>
+        <tr><td><b>仕訳汎用検索_2603_1.xlsx</b></td><td class="r">2</td><td class="r">3</td><td class="r">65,851</td><td><span class="nrole mid"></span> 中間ファイル</td><td>仕訳汎用検索_2504.xlsx、仕訳汎用検索_2505.xlsx、仕訳汎用検索_250…</td><td><span class="dl-none">—</span></td></tr>
+        <tr><td><b>2601_プロモーション部門_営業成績表.xlsx</b></td><td class="r">15</td><td class="r">29</td><td class="r">1,885</td><td><span class="nrole iso"></span> 独立</td><td>—</td><td><span class="dl-none">—</span></td></tr>
+        <tr><td><b>2601_全社_営業成績表.xlsx</b></td><td class="r">2</td><td class="r">4</td><td class="r">264</td><td><span class="nrole iso"></span> 独立</td><td>—</td><td><span class="dl-none">—</span></td></tr>
+        <tr><td><b>仕訳汎用検索_2603_2.xlsx</b></td><td class="r">2</td><td class="r">3</td><td class="r">62,232</td><td><span class="nrole out"></span> 最終アウトプット</td><td>仕訳汎用検索_2504.xlsx、仕訳汎用検索_2505.xlsx、仕訳汎用検索_250…</td><td><span class="dl-none">—</span></td></tr>
+        <tr><td><b>000まとめ_2025年度利益計画改定(2025-0725).xlsx</b><div class="rnote">取込時に「最終帳票」として指定</div></td><td class="r">41</td><td class="r">284</td><td class="r">54,401</td><td><span class="nrole out"></span> 最終アウトプット</td><td>—</td><td><span class="dl-none">—</span></td></tr>
+        <tr><td><b>2025年度【売総および損益実績】2601.xlsx</b><div class="rnote">取込時に「最終帳票」として指定</div></td><td class="r">8</td><td class="r">92</td><td class="r">8,736</td><td><span class="nrole out"></span> 最終アウトプット</td><td>—</td><td><span class="dl-none">—</span></td></tr>
+      </table>
+    </div>
+
+    
+    <h3 class="sub-h">ブックの中身（シートの役割と列構成）</h3>
+    <p class="graph-guide">クリックで展開できます。列の色分け：<span class="colchip key">キー列</span> <span class="colchip formula">数式列</span> <span class="colchip manual">手入力の数値</span></p>
+    <details class="fileblk" open>
+      <summary><b>仕訳汎用検索_2507.xlsx</b><span class="rows">2シート ／ 3表 ／ 89,121行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr src">元データ<em>インプット（raw）</em></span><span class="sr mid">ZERO科目<em>中間シート</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>元データ</b><span class="loc">A1:CU88270</span><span class="rows">88,269行 × 99列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="colchips"><span class="colchip">仕訳バッチ</span><span class="colchip">摘要_バッチ</span><span class="colchip">残高タイプ</span><span class="colchip">会計期間</span><span class="colchip">添付_バッチ</span><span class="colchip">ソース</span><span class="colchip">承認ステータス</span><span class="colchip">バッチ_ステータス</span><span class="colchip">完了ステータス</span><span class="colchip">管理合計_バッチ</span><span class="colchip manual">入力済借方合計_バッチ</span><span class="colchip manual">入力済貸方合計_バッチ</span><span class="colchip manual">計上済借方合計_バッチ</span><span class="colchip manual">計上済貸方合計_バッチ</span><span class="colchip manual">最終更新日_バッチ</span><span class="colchip">最終更新者_バッチ</span><span class="colchip manual">作成日_バッチ</span><span class="colchip">作成者_バッチ</span><span class="colchip">仕訳</span><span class="colchip">摘要_ヘッダー</span><span class="colchip">元帳</span><span class="colchip">会計日</span><span class="colchip">カテゴリ</span><span class="colchip">添付_ヘッダー</span><span class="colchip">…他75列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">A1:F852</span><span class="rows">851行 × 6列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip">A列</span><span class="colchip manual">コード</span><span class="colchip">名称</span><span class="colchip">種別</span><span class="colchip">成績表科目</span><span class="colchip formula">データ変換で使用している個数</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">B858:C859</span><span class="rows">1行 × 2列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip manual">1852</span><span class="colchip">仮払消費税（振替）</span></div>
+        </div>
+        
+      </div>
+    </details>
+<details class="fileblk">
+      <summary><b>仕訳汎用検索_2512.xlsx</b><span class="rows">2シート ／ 3表 ／ 88,987行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr src">元データ<em>インプット（raw）</em></span><span class="sr mid">ZERO科目<em>中間シート</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>元データ</b><span class="loc">A1:CV88136</span><span class="rows">88,135行 × 100列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="colchips"><span class="colchip">仕訳バッチ</span><span class="colchip">摘要_バッチ</span><span class="colchip">残高タイプ</span><span class="colchip">会計期間</span><span class="colchip">添付_バッチ</span><span class="colchip">ソース</span><span class="colchip">承認ステータス</span><span class="colchip">バッチ_ステータス</span><span class="colchip">完了ステータス</span><span class="colchip">管理合計_バッチ</span><span class="colchip manual">入力済借方合計_バッチ</span><span class="colchip manual">入力済貸方合計_バッチ</span><span class="colchip manual">計上済借方合計_バッチ</span><span class="colchip manual">計上済貸方合計_バッチ</span><span class="colchip manual">最終更新日_バッチ</span><span class="colchip">最終更新者_バッチ</span><span class="colchip manual">作成日_バッチ</span><span class="colchip">作成者_バッチ</span><span class="colchip">仕訳</span><span class="colchip">摘要_ヘッダー</span><span class="colchip">元帳</span><span class="colchip">会計日</span><span class="colchip">カテゴリ</span><span class="colchip">添付_ヘッダー</span><span class="colchip">…他76列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">A1:F852</span><span class="rows">851行 × 6列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip">A列</span><span class="colchip manual">コード</span><span class="colchip">名称</span><span class="colchip">種別</span><span class="colchip">成績表科目</span><span class="colchip formula">データ変換で使用している個数</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">B858:C859</span><span class="rows">1行 × 2列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip manual">1852</span><span class="colchip">仮払消費税（振替）</span></div>
+        </div>
+        
+      </div>
+    </details>
+<details class="fileblk">
+      <summary><b>仕訳汎用検索_2510.xlsx</b><span class="rows">2シート ／ 3表 ／ 88,289行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr src">元データ<em>インプット（raw）</em></span><span class="sr mid">ZERO科目<em>中間シート</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>元データ</b><span class="loc">A1:CV87438</span><span class="rows">87,437行 × 100列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="colchips"><span class="colchip">仕訳バッチ</span><span class="colchip">摘要_バッチ</span><span class="colchip">残高タイプ</span><span class="colchip">会計期間</span><span class="colchip">添付_バッチ</span><span class="colchip">ソース</span><span class="colchip">承認ステータス</span><span class="colchip">バッチ_ステータス</span><span class="colchip">完了ステータス</span><span class="colchip">管理合計_バッチ</span><span class="colchip manual">入力済借方合計_バッチ</span><span class="colchip manual">入力済貸方合計_バッチ</span><span class="colchip manual">計上済借方合計_バッチ</span><span class="colchip manual">計上済貸方合計_バッチ</span><span class="colchip manual">最終更新日_バッチ</span><span class="colchip">最終更新者_バッチ</span><span class="colchip manual">作成日_バッチ</span><span class="colchip">作成者_バッチ</span><span class="colchip">仕訳</span><span class="colchip">摘要_ヘッダー</span><span class="colchip">元帳</span><span class="colchip">会計日</span><span class="colchip">カテゴリ</span><span class="colchip">添付_ヘッダー</span><span class="colchip">…他76列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">A1:F852</span><span class="rows">851行 × 6列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip">A列</span><span class="colchip manual">コード</span><span class="colchip">名称</span><span class="colchip">種別</span><span class="colchip">成績表科目</span><span class="colchip formula">データ変換で使用している個数</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">B858:C859</span><span class="rows">1行 × 2列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip manual">1852</span><span class="colchip">仮払消費税（振替）</span></div>
+        </div>
+        
+      </div>
+    </details>
+<details class="fileblk">
+      <summary><b>仕訳汎用検索_2511.xlsx</b><span class="rows">2シート ／ 3表 ／ 87,282行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr src">元データ<em>インプット（raw）</em></span><span class="sr mid">ZERO科目<em>中間シート</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>元データ</b><span class="loc">A1:CV86431</span><span class="rows">86,430行 × 100列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="colchips"><span class="colchip">仕訳バッチ</span><span class="colchip">摘要_バッチ</span><span class="colchip">残高タイプ</span><span class="colchip">会計期間</span><span class="colchip">添付_バッチ</span><span class="colchip">ソース</span><span class="colchip">承認ステータス</span><span class="colchip">バッチ_ステータス</span><span class="colchip">完了ステータス</span><span class="colchip">管理合計_バッチ</span><span class="colchip manual">入力済借方合計_バッチ</span><span class="colchip manual">入力済貸方合計_バッチ</span><span class="colchip manual">計上済借方合計_バッチ</span><span class="colchip manual">計上済貸方合計_バッチ</span><span class="colchip manual">最終更新日_バッチ</span><span class="colchip">最終更新者_バッチ</span><span class="colchip manual">作成日_バッチ</span><span class="colchip">作成者_バッチ</span><span class="colchip">仕訳</span><span class="colchip">摘要_ヘッダー</span><span class="colchip">元帳</span><span class="colchip">会計日</span><span class="colchip">カテゴリ</span><span class="colchip">添付_ヘッダー</span><span class="colchip">…他76列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">A1:F852</span><span class="rows">851行 × 6列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip">A列</span><span class="colchip manual">コード</span><span class="colchip">名称</span><span class="colchip">種別</span><span class="colchip">成績表科目</span><span class="colchip formula">データ変換で使用している個数</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">B858:C859</span><span class="rows">1行 × 2列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip manual">1852</span><span class="colchip">仮払消費税（振替）</span></div>
+        </div>
+        
+      </div>
+    </details>
+<details class="fileblk">
+      <summary><b>仕訳汎用検索_2509.xlsx</b><span class="rows">2シート ／ 3表 ／ 84,379行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr src">元データ<em>インプット（raw）</em></span><span class="sr mid">ZERO科目<em>中間シート</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>元データ</b><span class="loc">A1:CV83528</span><span class="rows">83,527行 × 100列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="colchips"><span class="colchip">仕訳バッチ</span><span class="colchip">摘要_バッチ</span><span class="colchip">残高タイプ</span><span class="colchip">会計期間</span><span class="colchip">添付_バッチ</span><span class="colchip">ソース</span><span class="colchip">承認ステータス</span><span class="colchip">バッチ_ステータス</span><span class="colchip">完了ステータス</span><span class="colchip">管理合計_バッチ</span><span class="colchip manual">入力済借方合計_バッチ</span><span class="colchip manual">入力済貸方合計_バッチ</span><span class="colchip manual">計上済借方合計_バッチ</span><span class="colchip manual">計上済貸方合計_バッチ</span><span class="colchip manual">最終更新日_バッチ</span><span class="colchip">最終更新者_バッチ</span><span class="colchip manual">作成日_バッチ</span><span class="colchip">作成者_バッチ</span><span class="colchip">仕訳</span><span class="colchip">摘要_ヘッダー</span><span class="colchip">元帳</span><span class="colchip">会計日</span><span class="colchip">カテゴリ</span><span class="colchip">添付_ヘッダー</span><span class="colchip">…他76列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">A1:F852</span><span class="rows">851行 × 6列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip">A列</span><span class="colchip manual">コード</span><span class="colchip">名称</span><span class="colchip">種別</span><span class="colchip">成績表科目</span><span class="colchip formula">データ変換で使用している個数</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">B858:C859</span><span class="rows">1行 × 2列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip manual">1852</span><span class="colchip">仮払消費税（振替）</span></div>
+        </div>
+        
+      </div>
+    </details>
+<details class="fileblk">
+      <summary><b>仕訳汎用検索_2506.xlsx</b><span class="rows">2シート ／ 3表 ／ 82,077行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr src">元データ<em>インプット（raw）</em></span><span class="sr mid">ZERO科目<em>中間シート</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>元データ</b><span class="loc">A1:CU81226</span><span class="rows">81,225行 × 99列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="colchips"><span class="colchip">仕訳バッチ</span><span class="colchip">摘要_バッチ</span><span class="colchip">残高タイプ</span><span class="colchip">会計期間</span><span class="colchip">添付_バッチ</span><span class="colchip">ソース</span><span class="colchip">承認ステータス</span><span class="colchip">バッチ_ステータス</span><span class="colchip">完了ステータス</span><span class="colchip">管理合計_バッチ</span><span class="colchip manual">入力済借方合計_バッチ</span><span class="colchip manual">入力済貸方合計_バッチ</span><span class="colchip manual">計上済借方合計_バッチ</span><span class="colchip manual">計上済貸方合計_バッチ</span><span class="colchip manual">最終更新日_バッチ</span><span class="colchip">最終更新者_バッチ</span><span class="colchip manual">作成日_バッチ</span><span class="colchip">作成者_バッチ</span><span class="colchip">仕訳</span><span class="colchip">摘要_ヘッダー</span><span class="colchip">元帳</span><span class="colchip">会計日</span><span class="colchip">カテゴリ</span><span class="colchip">添付_ヘッダー</span><span class="colchip">…他75列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">A1:F852</span><span class="rows">851行 × 6列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip">A列</span><span class="colchip manual">コード</span><span class="colchip">名称</span><span class="colchip">種別</span><span class="colchip">成績表科目</span><span class="colchip formula">データ変換で使用している個数</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">B858:C859</span><span class="rows">1行 × 2列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip manual">1852</span><span class="colchip">仮払消費税（振替）</span></div>
+        </div>
+        
+      </div>
+    </details>
+<details class="fileblk">
+      <summary><b>仕訳汎用検索_2504.xlsx</b><span class="rows">2シート ／ 3表 ／ 79,793行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr src">元データ<em>インプット（raw）</em></span><span class="sr mid">ZERO科目<em>中間シート</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>元データ</b><span class="loc">A1:CU78942</span><span class="rows">78,941行 × 99列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="colchips"><span class="colchip">仕訳バッチ</span><span class="colchip">摘要_バッチ</span><span class="colchip">残高タイプ</span><span class="colchip">会計期間</span><span class="colchip">添付_バッチ</span><span class="colchip">ソース</span><span class="colchip">承認ステータス</span><span class="colchip">バッチ_ステータス</span><span class="colchip">完了ステータス</span><span class="colchip">管理合計_バッチ</span><span class="colchip manual">入力済借方合計_バッチ</span><span class="colchip manual">入力済貸方合計_バッチ</span><span class="colchip manual">計上済借方合計_バッチ</span><span class="colchip manual">計上済貸方合計_バッチ</span><span class="colchip manual">最終更新日_バッチ</span><span class="colchip">最終更新者_バッチ</span><span class="colchip manual">作成日_バッチ</span><span class="colchip">作成者_バッチ</span><span class="colchip">仕訳</span><span class="colchip">摘要_ヘッダー</span><span class="colchip">元帳</span><span class="colchip">会計日</span><span class="colchip">カテゴリ</span><span class="colchip">添付_ヘッダー</span><span class="colchip">…他75列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">A1:F852</span><span class="rows">851行 × 6列</span><span class="rrole">元データ（明細）</span></div>
+          <div class="colchips"><span class="colchip">A列</span><span class="colchip manual">コード</span><span class="colchip">名称</span><span class="colchip">種別</span><span class="colchip">成績表科目</span><span class="colchip formula">データ変換で使用している個数</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">B858:C859</span><span class="rows">1行 × 2列</span><span class="rrole">元データ（明細）</span></div>
+          <div class="colchips"><span class="colchip manual">1852</span><span class="colchip">仮払消費税（振替）</span></div>
+        </div>
+        
+      </div>
+    </details>
+<details class="fileblk">
+      <summary><b>仕訳汎用検索_2508.xlsx</b><span class="rows">2シート ／ 3表 ／ 79,237行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr src">元データ<em>インプット（raw）</em></span><span class="sr mid">ZERO科目<em>中間シート</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>元データ</b><span class="loc">A1:CU78386</span><span class="rows">78,385行 × 99列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="colchips"><span class="colchip">仕訳バッチ</span><span class="colchip">摘要_バッチ</span><span class="colchip">残高タイプ</span><span class="colchip">会計期間</span><span class="colchip">添付_バッチ</span><span class="colchip">ソース</span><span class="colchip">承認ステータス</span><span class="colchip">バッチ_ステータス</span><span class="colchip">完了ステータス</span><span class="colchip">管理合計_バッチ</span><span class="colchip manual">入力済借方合計_バッチ</span><span class="colchip manual">入力済貸方合計_バッチ</span><span class="colchip manual">計上済借方合計_バッチ</span><span class="colchip manual">計上済貸方合計_バッチ</span><span class="colchip manual">最終更新日_バッチ</span><span class="colchip">最終更新者_バッチ</span><span class="colchip manual">作成日_バッチ</span><span class="colchip">作成者_バッチ</span><span class="colchip">仕訳</span><span class="colchip">摘要_ヘッダー</span><span class="colchip">元帳</span><span class="colchip">会計日</span><span class="colchip">カテゴリ</span><span class="colchip">添付_ヘッダー</span><span class="colchip">…他75列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">A1:F852</span><span class="rows">851行 × 6列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip">A列</span><span class="colchip manual">コード</span><span class="colchip">名称</span><span class="colchip">種別</span><span class="colchip">成績表科目</span><span class="colchip formula">データ変換で使用している個数</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">B858:C859</span><span class="rows">1行 × 2列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip manual">1852</span><span class="colchip">仮払消費税（振替）</span></div>
+        </div>
+        
+      </div>
+    </details>
+<details class="fileblk">
+      <summary><b>仕訳汎用検索_2602.xlsx</b><span class="rows">2シート ／ 3表 ／ 77,615行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr src">元データ<em>インプット（raw）</em></span><span class="sr mid">ZERO科目<em>中間シート</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>元データ</b><span class="loc">A1:CV76764</span><span class="rows">76,763行 × 100列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="colchips"><span class="colchip">仕訳バッチ</span><span class="colchip">摘要_バッチ</span><span class="colchip">残高タイプ</span><span class="colchip">会計期間</span><span class="colchip">添付_バッチ</span><span class="colchip">ソース</span><span class="colchip">承認ステータス</span><span class="colchip">バッチ_ステータス</span><span class="colchip">完了ステータス</span><span class="colchip">管理合計_バッチ</span><span class="colchip manual">入力済借方合計_バッチ</span><span class="colchip manual">入力済貸方合計_バッチ</span><span class="colchip manual">計上済借方合計_バッチ</span><span class="colchip manual">計上済貸方合計_バッチ</span><span class="colchip manual">最終更新日_バッチ</span><span class="colchip">最終更新者_バッチ</span><span class="colchip manual">作成日_バッチ</span><span class="colchip">作成者_バッチ</span><span class="colchip">仕訳</span><span class="colchip">摘要_ヘッダー</span><span class="colchip">元帳</span><span class="colchip">会計日</span><span class="colchip">カテゴリ</span><span class="colchip">添付_ヘッダー</span><span class="colchip">…他76列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">A1:F852</span><span class="rows">851行 × 6列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip">A列</span><span class="colchip manual">コード</span><span class="colchip">名称</span><span class="colchip">種別</span><span class="colchip">成績表科目</span><span class="colchip formula">データ変換で使用している個数</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">B858:C859</span><span class="rows">1行 × 2列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip manual">1852</span><span class="colchip">仮払消費税（振替）</span></div>
+        </div>
+        
+      </div>
+    </details>
+<details class="fileblk">
+      <summary><b>仕訳汎用検索_2505.xlsx</b><span class="rows">2シート ／ 3表 ／ 76,533行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr src">元データ<em>インプット（raw）</em></span><span class="sr mid">ZERO科目<em>中間シート</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>元データ</b><span class="loc">A1:CU75682</span><span class="rows">75,681行 × 99列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="colchips"><span class="colchip">仕訳バッチ</span><span class="colchip">摘要_バッチ</span><span class="colchip">残高タイプ</span><span class="colchip">会計期間</span><span class="colchip">添付_バッチ</span><span class="colchip">ソース</span><span class="colchip">承認ステータス</span><span class="colchip">バッチ_ステータス</span><span class="colchip">完了ステータス</span><span class="colchip">管理合計_バッチ</span><span class="colchip manual">入力済借方合計_バッチ</span><span class="colchip manual">入力済貸方合計_バッチ</span><span class="colchip manual">計上済借方合計_バッチ</span><span class="colchip manual">計上済貸方合計_バッチ</span><span class="colchip manual">最終更新日_バッチ</span><span class="colchip">最終更新者_バッチ</span><span class="colchip manual">作成日_バッチ</span><span class="colchip">作成者_バッチ</span><span class="colchip">仕訳</span><span class="colchip">摘要_ヘッダー</span><span class="colchip">元帳</span><span class="colchip">会計日</span><span class="colchip">カテゴリ</span><span class="colchip">添付_ヘッダー</span><span class="colchip">…他75列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">A1:F852</span><span class="rows">851行 × 6列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip">A列</span><span class="colchip manual">コード</span><span class="colchip">名称</span><span class="colchip">種別</span><span class="colchip">成績表科目</span><span class="colchip formula">データ変換で使用している個数</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">B858:C859</span><span class="rows">1行 × 2列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip manual">1852</span><span class="colchip">仮払消費税（振替）</span></div>
+        </div>
+        
+      </div>
+    </details>
+<details class="fileblk">
+      <summary><b>仕訳汎用検索_2603_1.xlsx</b><span class="rows">2シート ／ 3表 ／ 65,851行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr src">元データ<em>インプット（raw）</em></span><span class="sr mid">ZERO科目<em>中間シート</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>元データ</b><span class="loc">A1:CW65000</span><span class="rows">64,999行 × 101列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="colchips"><span class="colchip">仕訳バッチ</span><span class="colchip">摘要_バッチ</span><span class="colchip">残高タイプ</span><span class="colchip">会計期間</span><span class="colchip">添付_バッチ</span><span class="colchip">ソース</span><span class="colchip">承認ステータス</span><span class="colchip">バッチ_ステータス</span><span class="colchip">完了ステータス</span><span class="colchip">管理合計_バッチ</span><span class="colchip manual">入力済借方合計_バッチ</span><span class="colchip manual">入力済貸方合計_バッチ</span><span class="colchip manual">計上済借方合計_バッチ</span><span class="colchip manual">計上済貸方合計_バッチ</span><span class="colchip manual">最終更新日_バッチ</span><span class="colchip">最終更新者_バッチ</span><span class="colchip manual">作成日_バッチ</span><span class="colchip">作成者_バッチ</span><span class="colchip">仕訳</span><span class="colchip">摘要_ヘッダー</span><span class="colchip">元帳</span><span class="colchip">会計日</span><span class="colchip">カテゴリ</span><span class="colchip">添付_ヘッダー</span><span class="colchip">…他77列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">A1:F852</span><span class="rows">851行 × 6列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip">A列</span><span class="colchip manual">コード</span><span class="colchip">名称</span><span class="colchip">種別</span><span class="colchip">成績表科目</span><span class="colchip formula">データ変換で使用している個数</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">B858:C859</span><span class="rows">1行 × 2列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip manual">1852</span><span class="colchip">仮払消費税（振替）</span></div>
+        </div>
+        
+      </div>
+    </details>
+<details class="fileblk">
+      <summary><b>仕訳汎用検索_2603_2.xlsx</b><span class="rows">2シート ／ 3表 ／ 62,232行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr src">元データ<em>インプット（raw）</em></span><span class="sr mid">ZERO科目<em>中間シート</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>元データ</b><span class="loc">A1:CW61381</span><span class="rows">61,380行 × 101列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="colchips"><span class="colchip">仕訳バッチ</span><span class="colchip">摘要_バッチ</span><span class="colchip">残高タイプ</span><span class="colchip">会計期間</span><span class="colchip">添付_バッチ</span><span class="colchip">ソース</span><span class="colchip">承認ステータス</span><span class="colchip">バッチ_ステータス</span><span class="colchip">完了ステータス</span><span class="colchip">管理合計_バッチ</span><span class="colchip manual">入力済借方合計_バッチ</span><span class="colchip manual">入力済貸方合計_バッチ</span><span class="colchip manual">計上済借方合計_バッチ</span><span class="colchip manual">計上済貸方合計_バッチ</span><span class="colchip manual">最終更新日_バッチ</span><span class="colchip">最終更新者_バッチ</span><span class="colchip manual">作成日_バッチ</span><span class="colchip">作成者_バッチ</span><span class="colchip">仕訳</span><span class="colchip">摘要_ヘッダー</span><span class="colchip">元帳</span><span class="colchip">会計日</span><span class="colchip">カテゴリ</span><span class="colchip">添付_ヘッダー</span><span class="colchip">…他77列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">A1:F852</span><span class="rows">851行 × 6列</span><span class="rrole">最終アウトプット</span></div>
+          <div class="colchips"><span class="colchip">A列</span><span class="colchip manual">コード</span><span class="colchip">名称</span><span class="colchip">種別</span><span class="colchip">成績表科目</span><span class="colchip formula">データ変換で使用している個数</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>ZERO科目</b><span class="loc">B858:C859</span><span class="rows">1行 × 2列</span><span class="rrole">最終アウトプット</span></div>
+          <div class="colchips"><span class="colchip manual">1852</span><span class="colchip">仮払消費税（振替）</span></div>
+        </div>
+        
+      </div>
+    </details>
+<details class="fileblk">
+      <summary><b>000まとめ_2025年度利益計画改定(2025-0725).xlsx</b><span class="rows">41シート ／ 284表 ／ 54,401行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr unk">Readme<em>判定不能</em></span><span class="sr src">部署リスト<em>インプット（raw）</em></span><span class="sr mid">局別年間と当初計画良否<em>中間シート</em></span><span class="sr out">事業部門計<em>最終帳票</em></span><span class="sr src">全社まとめ<em>インプット（raw）</em></span><span class="sr out">全社まとめ (ダミー加算)<em>最終帳票</em></span><span class="sr out">全局<em>最終帳票</em></span><span class="sr out">全局示達<em>最終帳票</em></span><span class="sr mid">全局示達 (値)<em>中間シート</em></span><span class="sr src">当初1月時点の示達<em>インプット（raw）</em></span><span class="sr src">ダミー<em>インプット（raw）</em></span><span class="sr mid">PR1<em>中間シート</em></span><span class="sr mid">PR2<em>中間シート</em></span><span class="sr mid">PR3<em>中間シート</em></span><span class="sr mid">PR4<em>中間シート</em></span><span class="sr mid">IS<em>中間シート</em></span><span class="sr mid">CP<em>中間シート</em></span><span class="sr mid">HRC<em>中間シート</em></span><span class="sr mid">ME1<em>中間シート</em></span><span class="sr mid">ME2<em>中間シート</em></span><span class="sr mid">ME3<em>中間シート</em></span><span class="sr mid">CO1<em>中間シート</em></span><span class="sr mid">CO2<em>中間シート</em></span><span class="sr mid">LM<em>中間シート</em></span><span class="sr mid">TS<em>中間シート</em></span><span class="sr mid">AM1<em>中間シート</em></span><span class="sr mid">AM2<em>中間シート</em></span><span class="sr mid">AM3<em>中間シート</em></span><span class="sr mid">AM4<em>中間シート</em></span><span class="sr mid">SB<em>中間シート</em></span><span class="sr mid">EXP<em>中間シート</em></span><span class="sr mid">MP<em>中間シート</em></span><span class="sr mid">MPP<em>中間シート</em></span><span class="sr mid">MPA<em>中間シート</em></span><span class="sr mid">MPS<em>中間シート</em></span><span class="sr mid">BPM<em>中間シート</em></span><span class="sr mid">BPP<em>中間シート</em></span><span class="sr mid">MPG<em>中間シート</em></span><span class="sr mid">AO<em>中間シート</em></span><span class="sr mid">管理計算<em>中間シート</em></span><span class="sr mid">営業成績表<em>中間シート</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>営業成績表</b><span class="loc">W1:Z2100</span><span class="rows">2,100行 × 4列</span><span class="rrole">最終アウトプット</span></div>
+          <div class="colchips"><span class="colchip formula">W列</span><span class="colchip formula">X列</span><span class="colchip">Y列</span><span class="colchip formula">Z列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>営業成績表</b><span class="loc">E1:J2100</span><span class="rows">1,980行 × 6列</span><span class="rrole">最終アウトプット</span></div>
+          <div class="colchips"><span class="colchip">E列</span><span class="colchip">F列</span><span class="colchip">G列</span><span class="colchip">H列</span><span class="colchip manual">I列</span><span class="colchip manual">J列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>営業成績表</b><span class="loc">A1:A2100</span><span class="rows">1,950行 × 1列</span><span class="rrole">最終アウトプット</span></div>
+          <div class="colchips"><span class="colchip manual">A列 ⚠</span></div><p class="rnote">⚠ A列 列で数式と手入力の混在があります。</p>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>全局</b><span class="loc">AC1:AE1451</span><span class="rows">1,451行 × 3列</span><span class="rrole">最終アウトプット</span></div>
+          <div class="colchips"><span class="colchip formula">AC列</span><span class="colchip">AD列</span><span class="colchip formula">AE列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>全局示達</b><span class="loc">S1:U1451</span><span class="rows">1,451行 × 3列</span><span class="rrole">最終アウトプット</span></div>
+          <div class="colchips"><span class="colchip formula">S列</span><span class="colchip">T列</span><span class="colchip formula">U列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>全局示達 (値)</b><span class="loc">S1:U1451</span><span class="rows">1,451行 × 3列</span><span class="rrole">最終アウトプット</span></div>
+          <div class="colchips"><span class="colchip formula">S列</span><span class="colchip">T列</span><span class="colchip formula">U列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>全局</b><span class="loc">A1:Y1451</span><span class="rows">1,392行 × 25列</span><span class="rrole">最終アウトプット</span></div>
+          <div class="colchips"><span class="colchip manual">A列</span><span class="colchip">B列</span><span class="colchip key">C列</span><span class="colchip">D列</span><span class="colchip">E列</span><span class="colchip">(この行消さないで　→)</span><span class="colchip formula">G</span><span class="colchip formula">H</span><span class="colchip formula">I</span><span class="colchip formula">J</span><span class="colchip formula">K</span><span class="colchip formula">L</span><span class="colchip formula">M</span><span class="colchip formula">N</span><span class="colchip formula">O</span><span class="colchip formula">P</span><span class="colchip formula">Q</span><span class="colchip formula">R</span><span class="colchip formula">S</span><span class="colchip">T</span><span class="colchip formula">U</span><span class="colchip formula">V</span><span class="colchip">W</span><span class="colchip formula">X</span><span class="colchip">…他1列</span></div><p class="key-note">🔑 <b>（不明）</b> が1行を決めるキーと推定しています。</p>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>全局示達</b><span class="loc">A1:Q1451</span><span class="rows">1,392行 × 17列</span><span class="rrole">最終アウトプット</span></div>
+          <div class="colchips"><span class="colchip manual">A列</span><span class="colchip">B列</span><span class="colchip key">C列</span><span class="colchip">(この行消さないで　→)</span><span class="colchip formula">G</span><span class="colchip formula">H</span><span class="colchip formula">I</span><span class="colchip formula">J</span><span class="colchip formula">K</span><span class="colchip formula">L</span><span class="colchip formula">M</span><span class="colchip formula">N</span><span class="colchip formula">O</span><span class="colchip formula">P</span><span class="colchip formula">Q</span><span class="colchip formula">R</span><span class="colchip formula">S</span></div><p class="key-note">🔑 <b>（不明）</b> が1行を決めるキーと推定しています。</p>
+        </div>
+        <p class="tbl-note">※ 行数の多い上位 8 表を掲載しています（このファイルの全 284 表）。</p>
+      </div>
+    </details>
+<details class="fileblk">
+      <summary><b>2025年度【売総および損益実績】2601.xlsx</b><span class="rows">8シート ／ 92表 ／ 8,736行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr out">損益実全社<em>最終帳票</em></span><span class="sr out">売総実全局<em>最終帳票</em></span><span class="sr src">◆<em>インプット（raw）</em></span><span class="sr src">その他貼付<em>インプット（raw）</em></span><span class="sr src">2601成績<em>インプット（raw）</em></span><span class="sr mid">ロイＢ調整3月分<em>中間シート</em></span><span class="sr src">修正計上<em>インプット（raw）</em></span><span class="sr src">局コード<em>インプット（raw）</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>2601成績</b><span class="loc">P1:R2100</span><span class="rows">2,100行 × 3列</span><span class="rrole">最終アウトプット</span></div>
+          <div class="colchips"><span class="colchip manual">P列 ⚠</span><span class="colchip">Q列</span><span class="colchip key">R列</span></div><p class="key-note">🔑 <b>（不明）</b> が1行を決めるキーと推定しています。</p><p class="rnote">⚠ P列 列で数式と手入力の混在があります。</p>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>2601成績</b><span class="loc">E1:N2100</span><span class="rows">2,009行 × 10列</span><span class="rrole">最終アウトプット</span></div>
+          <div class="colchips"><span class="colchip">E列</span><span class="colchip">F列</span><span class="colchip">G列</span><span class="colchip">H列</span><span class="colchip manual">I列</span><span class="colchip manual">J列</span><span class="colchip manual">K列</span><span class="colchip manual">1月</span><span class="colchip manual">1月</span><span class="colchip manual">1月</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>2601成績</b><span class="loc">A1:A2100</span><span class="rows">1,950行 × 1列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="colchips"><span class="colchip manual">A列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>損益実全社</b><span class="loc">A1:H45</span><span class="rows">45行 × 8列</span><span class="rrole">最終アウトプット</span></div>
+          <div class="colchips"><span class="colchip formula">A列</span><span class="colchip">B列</span><span class="colchip">C列</span><span class="colchip formula">D列</span><span class="colchip formula">E列</span><span class="colchip formula">F列</span><span class="colchip formula">G列</span><span class="colchip formula">H列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>損益実全社</b><span class="loc">CW1:CZ45</span><span class="rows">45行 × 4列</span><span class="rrole">最終アウトプット</span></div>
+          <div class="colchips"><span class="colchip key">CW列</span><span class="colchip key">CX列 ⚠</span><span class="colchip formula">CY列</span><span class="colchip formula">CZ列</span></div><p class="key-note">🔑 <b>（不明）</b> が1行を決めるキーと推定しています。</p><p class="rnote">⚠ CX列 列で数式と手入力の混在があります。</p>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>損益実全社</b><span class="loc">DB1:DD45</span><span class="rows">45行 × 3列</span><span class="rrole">最終アウトプット</span></div>
+          <div class="colchips"><span class="colchip key">DB列 ⚠</span><span class="colchip formula">DC列</span><span class="colchip formula">DD列</span></div><p class="key-note">🔑 <b>（不明）</b> が1行を決めるキーと推定しています。</p><p class="rnote">⚠ DB列 列で数式と手入力の混在があります。</p>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>損益実全社</b><span class="loc">DF1:DH45</span><span class="rows">45行 × 3列</span><span class="rrole">最終アウトプット</span></div>
+          <div class="colchips"><span class="colchip key">DF列</span><span class="colchip formula">DG列</span><span class="colchip formula">DH列</span></div><p class="key-note">🔑 <b>（不明）</b> が1行を決めるキーと推定しています。</p>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>損益実全社</b><span class="loc">DJ1:DL45</span><span class="rows">45行 × 3列</span><span class="rrole">最終アウトプット</span></div>
+          <div class="colchips"><span class="colchip key">DJ列</span><span class="colchip formula">DK列</span><span class="colchip formula">DL列</span></div><p class="key-note">🔑 <b>（不明）</b> が1行を決めるキーと推定しています。</p>
+        </div>
+        <p class="tbl-note">※ 行数の多い上位 8 表を掲載しています（このファイルの全 92 表）。</p>
+      </div>
+    </details>
+<details class="fileblk">
+      <summary><b>2601_プロモーション部門_営業成績表.xlsx</b><span class="rows">15シート ／ 29表 ／ 1,885行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr mid">成績の一部分抜粋用<em>中間シート</em></span><span class="sr mid">単月_PR1<em>中間シート</em></span><span class="sr mid">累計_PR1<em>中間シート</em></span><span class="sr mid">単月_PR2<em>中間シート</em></span><span class="sr mid">累計_PR2<em>中間シート</em></span><span class="sr mid">単月_PR3<em>中間シート</em></span><span class="sr mid">累計_PR3<em>中間シート</em></span><span class="sr mid">単月_PR4<em>中間シート</em></span><span class="sr mid">累計_PR4<em>中間シート</em></span><span class="sr mid">単月_IS<em>中間シート</em></span><span class="sr mid">累計_IS<em>中間シート</em></span><span class="sr mid">単月_CP<em>中間シート</em></span><span class="sr mid">累計_CP<em>中間シート</em></span><span class="sr mid">単月_HRC<em>中間シート</em></span><span class="sr mid">累計_HRC<em>中間シート</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>単月_PR1</b><span class="loc">A2:A69</span><span class="rows">66行 × 1列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="colchips"><span class="colchip manual">A列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>単月_PR1</b><span class="loc">C2:CB69</span><span class="rows">66行 × 78列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip manual">C列</span><span class="colchip manual">D列</span><span class="colchip manual">E列</span><span class="colchip manual">F列</span><span class="colchip manual">G列</span><span class="colchip">H列</span><span class="colchip formula">I列</span><span class="colchip formula">J列</span><span class="colchip formula">K列</span><span class="colchip formula">L列</span><span class="colchip formula">M列</span><span class="colchip formula">N列</span><span class="colchip formula">O列</span><span class="colchip formula">P列</span><span class="colchip formula">Q列</span><span class="colchip formula">R列</span><span class="colchip formula">S列</span><span class="colchip formula">T列</span><span class="colchip formula">U列</span><span class="colchip formula">V列</span><span class="colchip formula">W列</span><span class="colchip formula">X列</span><span class="colchip formula">Y列</span><span class="colchip formula">Z列</span><span class="colchip">…他54列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>累計_PR1</b><span class="loc">A1:A69</span><span class="rows">66行 × 1列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="colchips"><span class="colchip manual">A列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>累計_PR1</b><span class="loc">C1:CB69</span><span class="rows">66行 × 78列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip manual">C列</span><span class="colchip manual">D列</span><span class="colchip manual">E列</span><span class="colchip manual">F列</span><span class="colchip manual">G列</span><span class="colchip">H列</span><span class="colchip formula">4月</span><span class="colchip formula">4月</span><span class="colchip formula">4月</span><span class="colchip formula">4月</span><span class="colchip formula">4月</span><span class="colchip formula">4月</span><span class="colchip formula">5月</span><span class="colchip formula">5月</span><span class="colchip formula">5月</span><span class="colchip formula">5月</span><span class="colchip formula">5月</span><span class="colchip formula">5月</span><span class="colchip formula">6月</span><span class="colchip formula">6月</span><span class="colchip formula">6月</span><span class="colchip formula">6月</span><span class="colchip formula">6月</span><span class="colchip formula">6月</span><span class="colchip">…他54列</span></div><p class="key-note">🔑 セルは <b>（行キー不明） × 月次（横持ち）</b> の組合せで決まります（横持ち表。縦持ちに展開すると「行キー・軸・値」の形になります）。</p>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>単月_PR2</b><span class="loc">A2:A69</span><span class="rows">66行 × 1列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="colchips"><span class="colchip manual">A列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>単月_PR2</b><span class="loc">C2:CB69</span><span class="rows">66行 × 78列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip manual">C列</span><span class="colchip manual">D列</span><span class="colchip manual">E列</span><span class="colchip manual">F列</span><span class="colchip manual">G列</span><span class="colchip">H列</span><span class="colchip formula">I列</span><span class="colchip formula">J列</span><span class="colchip formula">K列</span><span class="colchip formula">L列</span><span class="colchip formula">M列</span><span class="colchip formula">N列</span><span class="colchip formula">O列</span><span class="colchip formula">P列</span><span class="colchip formula">Q列</span><span class="colchip formula">R列</span><span class="colchip formula">S列</span><span class="colchip formula">T列</span><span class="colchip formula">U列</span><span class="colchip formula">V列</span><span class="colchip formula">W列</span><span class="colchip formula">X列</span><span class="colchip formula">Y列</span><span class="colchip formula">Z列</span><span class="colchip">…他54列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>累計_PR2</b><span class="loc">A1:A69</span><span class="rows">66行 × 1列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="colchips"><span class="colchip manual">A列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>累計_PR2</b><span class="loc">C1:CB69</span><span class="rows">66行 × 78列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip manual">C列</span><span class="colchip manual">D列</span><span class="colchip manual">E列</span><span class="colchip manual">F列</span><span class="colchip manual">G列</span><span class="colchip">H列</span><span class="colchip formula">4月</span><span class="colchip formula">4月</span><span class="colchip formula">4月</span><span class="colchip formula">4月</span><span class="colchip formula">4月</span><span class="colchip formula">4月</span><span class="colchip formula">5月</span><span class="colchip formula">5月</span><span class="colchip formula">5月</span><span class="colchip formula">5月</span><span class="colchip formula">5月</span><span class="colchip formula">5月</span><span class="colchip formula">6月</span><span class="colchip formula">6月</span><span class="colchip formula">6月</span><span class="colchip formula">6月</span><span class="colchip formula">6月</span><span class="colchip formula">6月</span><span class="colchip">…他54列</span></div><p class="key-note">🔑 セルは <b>（行キー不明） × 月次（横持ち）</b> の組合せで決まります（横持ち表。縦持ちに展開すると「行キー・軸・値」の形になります）。</p>
+        </div>
+        <p class="tbl-note">※ 行数の多い上位 8 表を掲載しています（このファイルの全 29 表）。</p>
+      </div>
+    </details>
+<details class="fileblk">
+      <summary><b>2601_全社_営業成績表.xlsx</b><span class="rows">2シート ／ 4表 ／ 264行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr mid">単月_全社<em>中間シート</em></span><span class="sr mid">累計_全社<em>中間シート</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>単月_全社</b><span class="loc">A2:A69</span><span class="rows">66行 × 1列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="colchips"><span class="colchip manual">A列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>単月_全社</b><span class="loc">C2:CB69</span><span class="rows">66行 × 78列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip manual">C列</span><span class="colchip manual">D列</span><span class="colchip manual">E列</span><span class="colchip manual">F列</span><span class="colchip manual">G列</span><span class="colchip">H列</span><span class="colchip formula">I列</span><span class="colchip formula">J列</span><span class="colchip formula">K列</span><span class="colchip formula">L列</span><span class="colchip formula">M列</span><span class="colchip formula">N列</span><span class="colchip formula">O列</span><span class="colchip formula">P列</span><span class="colchip formula">Q列</span><span class="colchip formula">R列</span><span class="colchip formula">S列</span><span class="colchip formula">T列</span><span class="colchip formula">U列</span><span class="colchip formula">V列</span><span class="colchip formula">W列</span><span class="colchip formula">X列</span><span class="colchip formula">Y列</span><span class="colchip formula">Z列</span><span class="colchip">…他54列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>累計_全社</b><span class="loc">A1:A69</span><span class="rows">66行 × 1列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="colchips"><span class="colchip manual">A列</span></div>
+        </div>
+<div class="rblock">
+          <div class="rhead"><b>累計_全社</b><span class="loc">C1:CB69</span><span class="rows">66行 × 78列</span><span class="rrole">中間集計</span></div>
+          <div class="colchips"><span class="colchip manual">C列</span><span class="colchip manual">D列</span><span class="colchip manual">E列</span><span class="colchip manual">F列</span><span class="colchip manual">G列</span><span class="colchip">H列</span><span class="colchip formula">4月</span><span class="colchip formula">4月</span><span class="colchip formula">4月</span><span class="colchip formula">4月</span><span class="colchip formula">4月</span><span class="colchip formula">4月</span><span class="colchip formula">5月</span><span class="colchip formula">5月</span><span class="colchip formula">5月</span><span class="colchip formula">5月</span><span class="colchip formula">5月</span><span class="colchip formula">5月</span><span class="colchip formula">6月</span><span class="colchip formula">6月</span><span class="colchip formula">6月</span><span class="colchip formula">6月</span><span class="colchip formula">6月</span><span class="colchip formula">6月</span><span class="colchip">…他54列</span></div><p class="key-note">🔑 セルは <b>（行キー不明） × 月次（横持ち）</b> の組合せで決まります（横持ち表。縦持ちに展開すると「行キー・軸・値」の形になります）。</p>
+        </div>
+        
+      </div>
+    </details>
+
+    
+  </div>
+</section>
+
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="eyebrow">02 ── FLOW &amp; LOGIC</div>
+      <h2>全体の流れと詳細ロジック</h2>
+      <p class="sec-lede">まず<b>ブックどうしの全体関係図</b>で流れをご覧いただき、続けて<b>シート・表単位の詳細関係図</b>と、その処理内容（キー・数式）へ降りていきます。</p>
+    </div>
+    
+    <h3 class="sub-h">2-1　全体関係図（ブックどうしの流れ）</h3>
+    <ul class="graph-guide">
+      <li><b>ボックス＝ファイル</b>。左が起点、<b style="color:#C24141">右端が最終アウトプット</b>で、矢印の向きにデータが流れます</li>
+      <li><b>線の色＝関係の種類</b>／<b>破線の線＝手作業コピー（要確認）</b>／<b>破線の枠＝つながりが自動検出できなかった最終アウトプット</b></li>
+    </ul>
+    <div class="map-scroll"><svg viewBox="0 0 1280 1354" role="img" aria-label="ブックどうしの関係図（ノード形式）">
+<defs>
+<marker id="ff-ref" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1F5FAE" fill-opacity="0.85"/></marker>
+<marker id="ff-agg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1E9E6A" fill-opacity="0.85"/></marker>
+<marker id="ff-move" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7B5EA7" fill-opacity="0.85"/></marker>
+<marker id="ff-copy" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B96A00" fill-opacity="0.85"/></marker>
+</defs>
+<rect x="0" y="0" width="1280" height="1354" fill="#FCFDFE"/>
+<pattern id="dot-ff" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#E4EBF3"/></pattern>
+<rect x="0" y="0" width="1280" height="1354" fill="url(#dot-ff)"/>
+<text x="64" y="56.0" font-size="11" font-weight="700" fill="#7A8794" letter-spacing=".04em">受領データ（起点）</text>
+<text x="64" y="201.0" font-size="11" font-weight="700" fill="#7A8794" letter-spacing=".04em">経由ファイル</text>
+<text x="64" y="346.0" font-size="11" font-weight="700" fill="#7A8794" letter-spacing=".04em">経由ファイル</text>
+<text x="64" y="491.0" font-size="11" font-weight="700" fill="#7A8794" letter-spacing=".04em">経由ファイル</text>
+<text x="64" y="636.0" font-size="11" font-weight="700" fill="#7A8794" letter-spacing=".04em">経由ファイル</text>
+<text x="64" y="781.0" font-size="11" font-weight="700" fill="#7A8794" letter-spacing=".04em">経由ファイル</text>
+<text x="64" y="926.0" font-size="11" font-weight="700" fill="#7A8794" letter-spacing=".04em">経由ファイル</text>
+<text x="64" y="1071.0" font-size="11" font-weight="700" fill="#7A8794" letter-spacing=".04em">経由ファイル</text>
+<text x="64" y="1216.0" font-size="11" font-weight="700" fill="#C24141" letter-spacing=".04em">最終アウトプット</text>
+<path d="M406.2,104.6 Q510.0,162.5 609.4,218.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M400.0,112.3 Q510.0,235.0 616.6,353.9" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M395.4,115.8 Q510.0,307.5 622.0,495.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M392.3,117.4 Q510.0,380.0 625.7,638.1" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M390.1,118.2 Q510.0,452.5 628.2,782.1" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M388.6,118.7 Q510.0,525.0 630.0,926.5" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M380.9,120.0 Q394.8,597.5 408.6,1070.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M374.2,119.4 Q279.6,597.5 186.0,1070.7" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M387.4,119.1 Q510.0,597.5 631.3,1071.1" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M393.1,117.0 Q625.2,597.5 855.2,1073.5" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M397.4,114.5 Q740.4,597.5 1080.5,1076.5" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,265.0 Q640.0,307.5 640.0,345.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,265.0 Q640.0,380.0 640.0,490.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,265.0 Q640.0,452.5 640.0,635.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,265.0 Q640.0,525.0 640.0,780.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,265.0 Q640.0,597.5 640.0,925.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M632.3,264.0 Q524.8,670.0 418.6,1071.2" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M626.0,261.5 Q409.6,670.0 195.6,1074.1" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,265.0 Q640.0,670.0 640.0,1070.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M647.7,264.0 Q755.2,670.0 861.4,1071.2" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M654.0,261.5 Q870.4,670.0 1084.4,1074.1" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,410.0 Q640.0,452.5 640.0,490.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,410.0 Q640.0,525.0 640.0,635.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,410.0 Q640.0,597.5 640.0,780.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,410.0 Q640.0,670.0 640.0,925.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M630.9,408.6 Q524.8,742.5 420.2,1071.6" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M623.9,405.3 Q409.6,742.5 198.0,1075.5" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,410.0 Q640.0,742.5 640.0,1070.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M649.1,408.6 Q755.2,742.5 859.8,1071.6" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M656.1,405.3 Q870.4,742.5 1082.0,1075.5" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,555.0 Q640.0,597.5 640.0,635.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,555.0 Q640.0,670.0 640.0,780.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,555.0 Q640.0,742.5 640.0,925.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M628.9,552.9 Q524.8,815.0 422.5,1072.5" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M621.3,548.5 Q409.6,815.0 201.0,1077.6" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,555.0 Q640.0,815.0 640.0,1070.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M651.1,552.9 Q755.2,815.0 857.5,1072.5" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M658.7,548.5 Q870.4,815.0 1079.0,1077.6" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,700.0 Q640.0,742.5 640.0,780.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,700.0 Q640.0,815.0 640.0,925.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M626.0,696.5 Q524.8,887.5 426.0,1074.1" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M618.2,690.6 Q409.6,887.5 204.7,1081.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,700.0 Q640.0,887.5 640.0,1070.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M654.0,696.5 Q755.2,887.5 854.0,1074.1" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M661.8,690.6 Q870.4,887.5 1075.3,1081.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,845.0 Q640.0,887.5 640.0,925.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M621.3,838.5 Q524.8,960.0 431.4,1077.6" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M614.6,831.0 Q409.6,960.0 208.8,1086.4" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,845.0 Q640.0,960.0 640.0,1070.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M658.7,838.5 Q755.2,960.0 848.6,1077.6" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M665.4,831.0 Q870.4,960.0 1071.2,1086.4" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M614.6,976.0 Q524.8,1032.5 439.2,1086.4" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M611.4,969.0 Q409.6,1032.5 212.6,1094.5" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M640.0,990.0 Q640.0,1032.5 640.0,1070.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M665.4,976.0 Q755.2,1032.5 840.8,1086.4" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M668.6,969.0 Q870.4,1032.5 1067.4,1094.5" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M379.6,1105.0 Q294.4,1079.0 214.2,1105.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M439.6,1105.0 Q524.8,1131.0 605.0,1105.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M439.6,1105.0 Q640.0,1131.0 835.4,1105.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M439.6,1105.0 Q755.2,1131.0 1065.8,1105.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M209.2,1105.0 Q409.6,1131.0 605.0,1105.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M209.2,1105.0 Q524.8,1131.0 835.4,1105.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M209.2,1105.0 Q640.0,1131.0 1065.8,1105.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M670.0,1105.0 Q755.2,1131.0 835.4,1105.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M670.0,1105.0 Q870.4,1131.0 1065.8,1105.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M900.4,1105.0 Q985.6,1131.0 1065.8,1105.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<g><circle cx="380.0" cy="90.0" r="28" fill="#1E9E6A" stroke="#FCFDFE" stroke-width="1.5"/><text x="380.0" y="132.0" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">仕訳汎用検索_2504.xlsx</text><text x="380.0" y="146.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">2シート ／ 3表 ／ 79,793行</text></g>
+<g><circle cx="640.0" cy="235.0" r="28" fill="#7B5EA7" stroke="#FCFDFE" stroke-width="1.5"/><text x="640.0" y="277.0" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">仕訳汎用検索_2505.xlsx</text><text x="640.0" y="291.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">2シート ／ 3表 ／ 76,533行</text></g>
+<g><circle cx="640.0" cy="380.0" r="28" fill="#7B5EA7" stroke="#FCFDFE" stroke-width="1.5"/><text x="640.0" y="422.0" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">仕訳汎用検索_2506.xlsx</text><text x="640.0" y="436.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">2シート ／ 3表 ／ 82,077行</text></g>
+<g><circle cx="640.0" cy="525.0" r="28" fill="#7B5EA7" stroke="#FCFDFE" stroke-width="1.5"/><text x="640.0" y="567.0" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">仕訳汎用検索_2507.xlsx</text><text x="640.0" y="581.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">2シート ／ 3表 ／ 89,121行</text></g>
+<g><circle cx="640.0" cy="670.0" r="28" fill="#7B5EA7" stroke="#FCFDFE" stroke-width="1.5"/><text x="640.0" y="712.0" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">仕訳汎用検索_2508.xlsx</text><text x="640.0" y="726.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">2シート ／ 3表 ／ 79,237行</text></g>
+<g><circle cx="640.0" cy="815.0" r="28" fill="#7B5EA7" stroke="#FCFDFE" stroke-width="1.5"/><text x="640.0" y="857.0" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">仕訳汎用検索_2509.xlsx</text><text x="640.0" y="871.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">2シート ／ 3表 ／ 84,379行</text></g>
+<g><circle cx="640.0" cy="960.0" r="28" fill="#7B5EA7" stroke="#FCFDFE" stroke-width="1.5"/><text x="640.0" y="1002.0" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">仕訳汎用検索_2510.xlsx</text><text x="640.0" y="1016.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">2シート ／ 3表 ／ 88,289行</text></g>
+<g><circle cx="409.6" cy="1105.0" r="28" fill="#7B5EA7" stroke="#FCFDFE" stroke-width="1.5"/><text x="409.6" y="1147.0" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">仕訳汎用検索_2511.xlsx</text><text x="409.6" y="1161.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">2シート ／ 3表 ／ 87,282行</text></g>
+<g><circle cx="179.2" cy="1105.0" r="28" fill="#7B5EA7" stroke="#FCFDFE" stroke-width="1.5"/><text x="179.2" y="1147.0" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">仕訳汎用検索_2512.xlsx</text><text x="179.2" y="1161.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">2シート ／ 3表 ／ 88,987行</text></g>
+<g><circle cx="640.0" cy="1105.0" r="28" fill="#7B5EA7" stroke="#FCFDFE" stroke-width="1.5"/><text x="640.0" y="1147.0" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">仕訳汎用検索_2602.xlsx</text><text x="640.0" y="1161.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">2シート ／ 3表 ／ 77,615行</text></g>
+<g><circle cx="870.4" cy="1105.0" r="28" fill="#7B5EA7" stroke="#FCFDFE" stroke-width="1.5"/><text x="870.4" y="1147.0" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">仕訳汎用検索_2603_1.xlsx</text><text x="870.4" y="1161.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">2シート ／ 3表 ／ 65,851行</text></g>
+<g><circle cx="1100.8" cy="1105.0" r="28" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="1100.8" y="1147.0" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">仕訳汎用検索_2603_2.xlsx</text><text x="1100.8" y="1161.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">2シート ／ 3表 ／ 62,232行</text></g>
+<g><circle cx="510.0" cy="1250.0" r="21.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2" stroke-dasharray="5 4"/><circle cx="510.0" cy="1250.0" r="16" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="510.0" y="1280.0" font-size="11.5" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 000まとめ_2025年度利益計画改定(2025-0…</text><text x="510.0" y="1294.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">41シート ／ 284表 ／ 54,401行（つながり未検出）</text></g>
+<g><circle cx="640.0" cy="90.0" r="11" fill="#9AA7B4" stroke="#FCFDFE" stroke-width="1.5"/><text x="640.0" y="115.0" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">2601_プロモーション部門_営業成績表.xlsx</text><text x="640.0" y="129.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">15シート ／ 29表 ／ 1,885行</text></g>
+<g><circle cx="900.0" cy="90.0" r="11" fill="#9AA7B4" stroke="#FCFDFE" stroke-width="1.5"/><text x="900.0" y="115.0" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">2601_全社_営業成績表.xlsx</text><text x="900.0" y="129.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">2シート ／ 4表 ／ 264行</text></g>
+<g><circle cx="770.0" cy="1250.0" r="21.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2" stroke-dasharray="5 4"/><circle cx="770.0" cy="1250.0" r="16" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="770.0" y="1280.0" font-size="11.5" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 2025年度【売総および損益実績】2601.xl…</text><text x="770.0" y="1294.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">8シート ／ 92表 ／ 8,736行（つながり未検出）</text></g>
+</svg></div>
+    <div class="legend">
+      <span class="lg-h">ファイルの役割</span>
+      <span class="li"><span class="nrole src"></span>元データ</span>
+      <span class="li"><span class="nrole mid"></span>中間ファイル</span>
+      <span class="li"><span class="nrole out"></span>最終アウトプット</span>
+      <span class="li"><span class="nrole iso"></span>独立（つながり未検出）</span>
+    </div>
+    
+
+    
+    <h3 class="sub-h">2-2　最終アウトプットへの流れ（シート・表単位）</h3>
+    <ul class="graph-guide">
+      <li><b>ノード＝表</b>。<b>上＝元データ → 下＝最終アウトプット</b>、矢印の向きにデータが流れます</li>
+      <li><b>線の色＝関係の種類</b>／<b>破線＝手作業コピー（要確認）</b></li>
+      <li class="only-screen"><b>クリック</b>すると、その表の関係先と最終アウトプットまでの経路を右パネルに表示します（パンくずで戻れます）</li>
+      <li class="only-screen">右上のボタン：<span class="k">＋ －</span> 拡大縮小／<span class="k">▤</span> レイアウト／<span class="k">☾</span> 配色／<span class="k">⤢</span> 全画面（Escで戻る）／<span class="k">⟳</span> リセット。背景ドラッグで移動</li>
+    </ul>
+    <p class="graph-guide only-print">※ 本紙は静止画です。操作版はブラウザでご覧ください。</p>
+    <div class="map-static map-scroll"><svg viewBox="0 0 1280 780" role="img" aria-label="表どうしの関係図（ノード形式）">
+<defs>
+<marker id="arr-r-ref" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1F5FAE" fill-opacity="0.85"/></marker>
+<marker id="arr-r-agg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1E9E6A" fill-opacity="0.85"/></marker>
+<marker id="arr-r-move" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7B5EA7" fill-opacity="0.85"/></marker>
+<marker id="arr-r-copy" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B96A00" fill-opacity="0.85"/></marker>
+</defs>
+<rect x="0" y="0" width="1280" height="780" fill="#FCFDFE"/>
+<pattern id="dot-r" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#E4EBF3"/></pattern>
+<rect x="0" y="0" width="1280" height="780" fill="url(#dot-r)"/>
+<path d="M120.2,333.1 Q320.1,390.0 504.6,442.5" fill="none" stroke="#1F5FAE" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-ref)"/>
+<path d="M632.3,110.9 Q587.5,267.6 543.7,420.8" fill="none" stroke="#7B5EA7" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-move)"/>
+<path d="M631.9,225.3 Q587.5,328.8 547.5,422.2" fill="none" stroke="#7B5EA7" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-move)"/>
+<path d="M590.5,344.8 Q566.9,390.0 549.6,423.2" fill="none" stroke="#7B5EA7" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-move)"/>
+<path d="M286.1,336.3 Q402.4,390.0 506.3,438.0" fill="none" stroke="#7B5EA7" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-move)"/>
+<path d="M667.3,340.4 Q608.1,390.0 559.2,430.9" fill="none" stroke="#7B5EA7" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-move)"/>
+<path d="M910.8,334.2 Q731.5,390.0 565.2,441.8" fill="none" stroke="#7B5EA7" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-move)"/>
+<path d="M993.8,333.0 Q772.6,390.0 565.6,443.3" fill="none" stroke="#7B5EA7" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-move)"/>
+<path d="M519.1,345.6 Q525.8,390.0 530.3,420.0" fill="none" stroke="#7B5EA7" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-move)"/>
+<path d="M366.1,338.3 Q443.5,390.0 508.7,433.6" fill="none" stroke="#7B5EA7" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-move)"/>
+<path d="M748.4,336.8 Q649.2,390.0 562.9,436.3" fill="none" stroke="#7B5EA7" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-move)"/>
+<path d="M1076.0,332.4 Q813.8,390.0 565.9,444.4" fill="none" stroke="#7B5EA7" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-move)"/>
+<path d="M829.9,335.0 Q690.4,390.0 564.4,439.6" fill="none" stroke="#7B5EA7" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-move)"/>
+<path d="M1158.2,332.0 Q854.9,390.0 566.0,445.3" fill="none" stroke="#7B5EA7" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-move)"/>
+<path d="M445.1,341.9 Q484.6,390.0 514.9,426.8" fill="none" stroke="#7B5EA7" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-move)"/>
+<path d="M203.5,334.4 Q361.2,390.0 505.2,440.7" fill="none" stroke="#7B5EA7" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-move)"/>
+<path d="M514.3,468.0 Q459.5,512.4 400.1,560.6" fill="none" stroke="#1F5FAE" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-ref)"/>
+<path d="M116.9,339.2 Q244.6,451.2 368.4,559.9" fill="none" stroke="#1F5FAE" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-ref)"/>
+<path d="M640.0,112.0 Q640.0,390.0 640.0,663.5" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
+<path d="M640.0,227.0 Q640.0,451.2 640.0,663.5" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
+<path d="M600.9,346.7 Q619.4,512.4 636.4,663.7" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
+<path d="M282.5,341.5 Q454.9,512.4 616.9,673.1" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
+<path d="M679.1,346.7 Q660.6,512.4 643.6,663.7" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
+<path d="M916.9,343.0 Q784.0,512.4 660.1,670.4" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
+<path d="M998.2,340.8 Q825.1,512.4 663.1,673.1" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
+<path d="M522.0,344.9 Q578.3,512.4 629.6,665.2" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
+<path d="M362.5,342.2 Q496.0,512.4 619.9,670.4" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
+<path d="M758.0,344.9 Q701.7,512.4 650.4,665.2" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
+<path d="M1079.4,339.5 Q866.3,512.4 665.2,675.5" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
+<path d="M837.4,343.6 Q742.9,512.4 655.9,667.6" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
+<path d="M1160.8,338.4 Q907.4,512.4 666.8,677.6" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
+<path d="M442.6,343.6 Q537.1,512.4 624.1,667.6" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
+<path d="M200.6,339.5 Q413.7,512.4 614.8,675.5" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
+<path d="M881.8,580.4 Q768.0,634.8 669.3,682.0" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
+<path d="M1009.0,578.4 Q832.0,634.8 671.0,686.1" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
+<path d="M1136.7,577.3 Q896.0,634.8 671.6,688.4" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
+<path d="M640.0,589.3 Q640.0,634.8 640.0,663.5" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
+<path d="M747.8,465.9 Q756.5,512.4 764.3,553.9" fill="none" stroke="#7B5EA7" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-move)"/>
+<path d="M640.0,112.0 Q640.0,145.2 640.0,180.8" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M635.4,111.6 Q619.4,206.4 602.7,306.1" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M616.6,99.4 Q454.9,206.4 288.9,316.1" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M644.6,111.6 Q660.6,206.4 677.3,306.1" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M661.3,102.1 Q784.0,206.4 910.5,313.9" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M663.4,99.4 Q825.1,206.4 991.9,316.7" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M627.4,109.0 Q578.3,206.4 526.5,309.2" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M618.7,102.1 Q496.0,206.4 368.8,314.6" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M652.6,109.0 Q701.7,206.4 753.5,309.2" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M664.6,97.3 Q866.3,206.4 1073.2,318.3" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M658.0,105.4 Q742.9,206.4 831.6,312.0" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M665.5,95.7 Q907.4,206.4 1154.9,319.6" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M622.0,105.4 Q537.1,206.4 448.4,312.0" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M615.4,97.3 Q413.7,206.4 206.8,318.3" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M653.0,108.8 Q768.0,328.8 886.4,555.3" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M657.3,106.0 Q832.0,328.8 1011.2,557.3" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M660.2,103.4 Q896.0,328.8 1137.0,559.3" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M640.0,112.0 Q640.0,328.8 640.0,552.9" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M633.4,225.9 Q619.4,267.6 606.2,307.0" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M620.4,212.9 Q454.9,267.6 291.6,321.6" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M646.6,225.9 Q660.6,267.6 673.8,307.0" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<path d="M659.0,214.5 Q784.0,267.6 906.8,319.8" fill="none" stroke="#B96A00" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="6 5" marker-end="url(#arr-r-copy)"/>
+<g><circle cx="640.0" cy="696.0" r="30.5" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="640.0" cy="696.0" r="25.5" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="640.0" y="734.5" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 全社まとめ (ダミー加算) (1)</text></g>
+<g><circle cx="105.1" cy="328.8" r="18.7" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="105.1" cy="328.8" r="13.7" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="105.1" y="355.5" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 部署リスト</text></g>
+<g><circle cx="535.0" cy="451.2" r="29.6" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="535.0" cy="451.2" r="24.6" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="535.0" y="488.8" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 局別年間と当初計画良否 (2)</text></g>
+<g><circle cx="128.0" cy="573.6" r="18.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="128.0" cy="573.6" r="13" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="128.0" y="599.6" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 2601成績 (3)</text></g>
+<g><circle cx="256.0" cy="573.6" r="18.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="256.0" cy="573.6" r="13" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="256.0" y="599.6" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 2601成績 (4)</text></g>
+<g><circle cx="384.0" cy="573.6" r="18.7" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="384.0" cy="573.6" r="13.7" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="384.0" y="600.3" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 局別年間と当初計画良否 (6)</text></g>
+<g><circle cx="512.0" cy="573.6" r="18.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="512.0" cy="573.6" r="13" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="512.0" y="599.6" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 局コード</text></g>
+<g><circle cx="640.0" cy="84.0" r="31.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="640.0" cy="84.0" r="26" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="640.0" y="123.0" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ PR1 (1)</text></g>
+<g><circle cx="640.0" cy="573.6" r="18.7" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="640.0" cy="573.6" r="13.7" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="640.0" y="600.3" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 管理計算 (1)</text></g>
+<g><circle cx="745.0" cy="451.2" r="18.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="745.0" cy="451.2" r="13" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="745.0" y="477.2" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 損益実全社 (2)</text></g>
+<g><circle cx="768.0" cy="573.6" r="18.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="768.0" cy="573.6" r="13" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="768.0" y="599.6" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 損益実全社 (28)</text></g>
+<g><circle cx="187.4" cy="328.8" r="20.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="187.4" cy="328.8" r="15" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="187.4" y="356.8" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ EXP (1)</text></g>
+<g><circle cx="269.7" cy="328.8" r="21.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="269.7" cy="328.8" r="16" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="269.7" y="357.8" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ PR4 (1)</text></g>
+<g><circle cx="352.0" cy="328.8" r="20.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="352.0" cy="328.8" r="15" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="352.0" y="356.8" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ TS (1)</text></g>
+<g><circle cx="434.3" cy="328.8" r="20.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="434.3" cy="328.8" r="15" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="434.3" y="356.8" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ SB (1)</text></g>
+<g><circle cx="896.0" cy="573.6" r="18.7" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="896.0" cy="573.6" r="13.7" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="896.0" y="600.3" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ MP (1)</text></g>
+<g><circle cx="1024.0" cy="573.6" r="18.7" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="1024.0" cy="573.6" r="13.7" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="1024.0" y="600.3" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ MPA (1)</text></g>
+<g><circle cx="1152.0" cy="573.6" r="18.7" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="1152.0" cy="573.6" r="13.7" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="1152.0" y="600.3" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ BPM (1)</text></g>
+<g><circle cx="516.6" cy="328.8" r="20.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="516.6" cy="328.8" r="15" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="516.6" y="356.8" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ ME2 (1)</text></g>
+<g><circle cx="598.9" cy="328.8" r="21.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="598.9" cy="328.8" r="16" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="598.9" y="357.8" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ PR3 (1)</text></g>
+<g><circle cx="681.1" cy="328.8" r="21.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="681.1" cy="328.8" r="16" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="681.1" y="357.8" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ IS (1)</text></g>
+<g><circle cx="763.4" cy="328.8" r="20.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="763.4" cy="328.8" r="15" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="763.4" y="356.8" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ AM1 (1)</text></g>
+<g><circle cx="845.7" cy="328.8" r="20.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="845.7" cy="328.8" r="15" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="845.7" y="356.8" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ AM3 (1)</text></g>
+<g><circle cx="640.0" cy="206.4" r="23.6" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="640.0" cy="206.4" r="18.6" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="640.0" y="238.0" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ PR2 (1)</text></g>
+<g><circle cx="928.0" cy="328.8" r="21.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="928.0" cy="328.8" r="16" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="928.0" y="357.8" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ CP (1)</text></g>
+<g><circle cx="1010.3" cy="328.8" r="20.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="1010.3" cy="328.8" r="15" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="1010.3" y="356.8" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ ME1 (1)</text></g>
+<g><circle cx="1092.6" cy="328.8" r="20.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="1092.6" cy="328.8" r="15" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="1092.6" y="356.8" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ AM2 (1)</text></g>
+<g><circle cx="1174.9" cy="328.8" r="20.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="1174.9" cy="328.8" r="15" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="1174.9" y="356.8" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ AM4 (1)</text></g>
+</svg></div>
+    <div class="map-interactive relgraph-wrap" id="relgraph-wrap">
+      <figure class="relgraph-stage lightmode" id="relgraph" aria-label="表どうしの関係グラフ（操作可能）"></figure>
+      <aside class="relgraph-panel">
+        <div class="relgraph-crumbs" id="relgraph-crumbs"><span class="cur">表を選択</span></div>
+        <div class="relgraph-pbody" id="relgraph-pbody"><div class="empty">左のグラフで<b>表</b>をクリックすると、関係している表（上流／下流）と<b>最終アウトプットまでの経路</b>がここに出て、そのまま掘り下げられます。</div></div>
+      </aside>
+    </div>
+    <script type="application/json" id="relgraph-data">{"nodes":[{"id":"000まとめ_2025年度利益計画改定(2025-0725)／全社まとめ (ダミー加算)#1","label":"全社まとめ (ダミー加算) (1)","sub":"97行","role":"最終アウトプット","deg":413,"x":640,"y":696},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／部署リスト#1","label":"部署リスト","sub":"29行 ／ B列","role":"最終アウトプット","deg":220,"x":105.14285714285711,"y":328.8},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#2","label":"局別年間と当初計画良否 (2)","sub":"48行","role":"最終アウトプット","deg":165,"x":535,"y":451.2},{"id":"2025年度【売総および損益実績】2601／2601成績#3","label":"2601成績 (3)","sub":"2,009行","role":"最終アウトプット","deg":146,"x":128,"y":573.6},{"id":"2025年度【売総および損益実績】2601／2601成績#4","label":"2601成績 (4)","sub":"2,100行","role":"最終アウトプット","deg":145,"x":256,"y":573.6},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#6","label":"局別年間と当初計画良否 (6)","sub":"47行","role":"最終アウトプット","deg":142,"x":384,"y":573.6},{"id":"2025年度【売総および損益実績】2601／局コード#1","label":"局コード","sub":"29行 ／ A列","role":"最終アウトプット","deg":120,"x":512,"y":573.6},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","label":"PR1 (1)","sub":"48行","role":"最終アウトプット","deg":119,"x":640,"y":84},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／管理計算#1","label":"管理計算 (1)","sub":"48行","role":"最終アウトプット","deg":118,"x":640,"y":573.6},{"id":"2025年度【売総および損益実績】2601／損益実全社#2","label":"損益実全社 (2)","sub":"44行","role":"最終アウトプット","deg":113,"x":745,"y":451.2},{"id":"2025年度【売総および損益実績】2601／損益実全社#28","label":"損益実全社 (28)","sub":"44行","role":"最終アウトプット","deg":113,"x":768,"y":573.6},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／EXP#1","label":"EXP (1)","sub":"48行","role":"最終アウトプット","deg":108,"x":187.4285714285714,"y":328.8},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／PR4#1","label":"PR4 (1)","sub":"49行","role":"最終アウトプット","deg":107,"x":269.71428571428567,"y":328.8},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／TS#1","label":"TS (1)","sub":"48行","role":"最終アウトプット","deg":107,"x":352,"y":328.8},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／SB#1","label":"SB (1)","sub":"48行","role":"最終アウトプット","deg":107,"x":434.2857142857143,"y":328.8},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／MP#1","label":"MP (1)","sub":"48行","role":"最終アウトプット","deg":107,"x":896,"y":573.6},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／MPA#1","label":"MPA (1)","sub":"48行","role":"最終アウトプット","deg":105,"x":1024,"y":573.6},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／BPM#1","label":"BPM (1)","sub":"48行","role":"最終アウトプット","deg":105,"x":1152,"y":573.6},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／ME2#1","label":"ME2 (1)","sub":"48行","role":"最終アウトプット","deg":104,"x":516.5714285714286,"y":328.8},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／PR3#1","label":"PR3 (1)","sub":"48行","role":"最終アウトプット","deg":99,"x":598.8571428571429,"y":328.8},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／IS#1","label":"IS (1)","sub":"48行","role":"最終アウトプット","deg":99,"x":681.1428571428571,"y":328.8},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／AM1#1","label":"AM1 (1)","sub":"48行","role":"最終アウトプット","deg":99,"x":763.4285714285714,"y":328.8},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／AM3#1","label":"AM3 (1)","sub":"48行","role":"最終アウトプット","deg":99,"x":845.7142857142858,"y":328.8},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／PR2#1","label":"PR2 (1)","sub":"48行","role":"最終アウトプット","deg":98,"x":640,"y":206.4},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／CP#1","label":"CP (1)","sub":"48行","role":"最終アウトプット","deg":98,"x":928,"y":328.8},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／ME1#1","label":"ME1 (1)","sub":"48行","role":"最終アウトプット","deg":98,"x":1010.2857142857143,"y":328.8},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／AM2#1","label":"AM2 (1)","sub":"48行","role":"最終アウトプット","deg":98,"x":1092.5714285714287,"y":328.8},{"id":"000まとめ_2025年度利益計画改定(2025-0725)／AM4#1","label":"AM4 (1)","sub":"48行","role":"最終アウトプット","deg":98,"x":1174.857142857143,"y":328.8}],"links":[{"s":"000まとめ_2025年度利益計画改定(2025-0725)／部署リスト#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#2","color":"#1F5FAE","dashed":false,"label":"参照・照合","count":87},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#2","color":"#7B5EA7","dashed":false,"label":"転記・計算","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR2#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#2","color":"#7B5EA7","dashed":false,"label":"転記・計算","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR3#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#2","color":"#7B5EA7","dashed":false,"label":"転記・計算","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR4#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#2","color":"#7B5EA7","dashed":false,"label":"転記・計算","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／IS#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#2","color":"#7B5EA7","dashed":false,"label":"転記・計算","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／CP#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#2","color":"#7B5EA7","dashed":false,"label":"転記・計算","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／ME1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#2","color":"#7B5EA7","dashed":false,"label":"転記・計算","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／ME2#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#2","color":"#7B5EA7","dashed":false,"label":"転記・計算","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／TS#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#2","color":"#7B5EA7","dashed":false,"label":"転記・計算","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／AM1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#2","color":"#7B5EA7","dashed":false,"label":"転記・計算","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／AM2#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#2","color":"#7B5EA7","dashed":false,"label":"転記・計算","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／AM3#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#2","color":"#7B5EA7","dashed":false,"label":"転記・計算","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／AM4#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#2","color":"#7B5EA7","dashed":false,"label":"転記・計算","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／SB#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#2","color":"#7B5EA7","dashed":false,"label":"転記・計算","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／EXP#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#2","color":"#7B5EA7","dashed":false,"label":"転記・計算","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#2","t":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#6","color":"#1F5FAE","dashed":false,"label":"参照・照合","count":29},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／部署リスト#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／局別年間と当初計画良否#6","color":"#1F5FAE","dashed":false,"label":"参照・照合","count":84},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／全社まとめ (ダミー加算)#1","color":"#1E9E6A","dashed":false,"label":"集計","count":12},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR2#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／全社まとめ (ダミー加算)#1","color":"#1E9E6A","dashed":false,"label":"集計","count":12},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR3#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／全社まとめ (ダミー加算)#1","color":"#1E9E6A","dashed":false,"label":"集計","count":12},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR4#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／全社まとめ (ダミー加算)#1","color":"#1E9E6A","dashed":false,"label":"集計","count":12},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／IS#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／全社まとめ (ダミー加算)#1","color":"#1E9E6A","dashed":false,"label":"集計","count":12},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／CP#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／全社まとめ (ダミー加算)#1","color":"#1E9E6A","dashed":false,"label":"集計","count":12},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／ME1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／全社まとめ (ダミー加算)#1","color":"#1E9E6A","dashed":false,"label":"集計","count":12},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／ME2#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／全社まとめ (ダミー加算)#1","color":"#1E9E6A","dashed":false,"label":"集計","count":12},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／TS#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／全社まとめ (ダミー加算)#1","color":"#1E9E6A","dashed":false,"label":"集計","count":12},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／AM1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／全社まとめ (ダミー加算)#1","color":"#1E9E6A","dashed":false,"label":"集計","count":12},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／AM2#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／全社まとめ (ダミー加算)#1","color":"#1E9E6A","dashed":false,"label":"集計","count":12},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／AM3#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／全社まとめ (ダミー加算)#1","color":"#1E9E6A","dashed":false,"label":"集計","count":12},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／AM4#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／全社まとめ (ダミー加算)#1","color":"#1E9E6A","dashed":false,"label":"集計","count":12},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／SB#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／全社まとめ (ダミー加算)#1","color":"#1E9E6A","dashed":false,"label":"集計","count":12},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／EXP#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／全社まとめ (ダミー加算)#1","color":"#1E9E6A","dashed":false,"label":"集計","count":12},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／MP#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／全社まとめ (ダミー加算)#1","color":"#1E9E6A","dashed":false,"label":"集計","count":12},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／MPA#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／全社まとめ (ダミー加算)#1","color":"#1E9E6A","dashed":false,"label":"集計","count":12},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／BPM#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／全社まとめ (ダミー加算)#1","color":"#1E9E6A","dashed":false,"label":"集計","count":12},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／管理計算#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／全社まとめ (ダミー加算)#1","color":"#1E9E6A","dashed":false,"label":"集計","count":12},{"s":"2025年度【売総および損益実績】2601／損益実全社#2","t":"2025年度【売総および損益実績】2601／損益実全社#28","color":"#7B5EA7","dashed":false,"label":"転記・計算","count":22},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／PR2#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／PR3#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／PR4#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":2},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／IS#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／CP#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／ME1#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／ME2#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／TS#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":2},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／AM1#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／AM2#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／AM3#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／AM4#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／SB#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":2},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／EXP#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":2},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／MP#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":2},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／MPA#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":2},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／BPM#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":2},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR1#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／管理計算#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":2},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR2#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／PR3#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR2#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／PR4#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR2#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／IS#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":1},{"s":"000まとめ_2025年度利益計画改定(2025-0725)／PR2#1","t":"000まとめ_2025年度利益計画改定(2025-0725)／CP#1","color":"#B96A00","dashed":true,"label":"手修正推定","count":1}],"w":1280,"h":780}</script>
+    <div class="legend">
+      <span class="lg-h">関係の種類</span>
+      <span class="li"><span class="sw" style="border-color:#1F5FAE"></span>参照・照合（VLOOKUP等）</span>
+      <span class="li"><span class="sw" style="border-color:#1E9E6A"></span>集計（SUMIFS・SUM等）</span>
+      <span class="li"><span class="sw" style="border-color:#7B5EA7"></span>転記・計算（=参照・四則）</span>
+      <span class="li"><span class="sw dash" style="border-color:#B96A00"></span>手修正推定（要確認）</span>
+    </div>
+    <div class="legend">
+      <span class="lg-h">表の役割</span>
+      <span class="li"><span class="nrole src"></span>元データ（明細）</span>
+      <span class="li"><span class="nrole mst"></span>マスタ（参照元）</span>
+      <span class="li"><span class="nrole mid"></span>中間集計</span>
+      <span class="li"><span class="nrole out"></span>最終アウトプット</span>
+      <span class="li"><span class="nrole iso"></span>独立（つながりなし・要確認）</span>
+    </div>
+    <p class="tbl-note">※ 円の大きさ＝つながりの本数。つながりの多い表を優先表示（省略: 表 333・関係 149）。</p>
+
+    
+
+    
+    <h3 class="sub-h">2-3　関係の一覧（付録）— どのシートが、どのキーで、どうつながっているか</h3>
+    <div style="overflow-x:auto">
+      <table class="ot dl">
+        <tr><th>元（表・列）</th><th>キー</th><th>処理</th><th>先（表・列）</th><th>根拠（数式・一致）</th><th>確度</th></tr>
+        <tr><td>修正計上 (1)<span class="dl-col">4月修正計上</span></td><td class="mono"><span class="dl-none">（キー未特定）</span></td><td><span class="rel agg">集計</span><div class="dl-proc">SUM で集計</div></td><td>修正計上 (2)<span class="dl-col">年間修正計上</span></td><td class="mono dl-ev">SUM(D6:O6)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>修正計上 (1)<span class="dl-col">4月修正計上</span></td><td class="mono">BM列 ＝ C列</td><td><span class="rel agg">集計</span><div class="dl-proc">SUMIF で集計</div></td><td>売総実全局 (4)<span class="dl-col">BO列</span></td><td class="mono dl-ev">SUMIF('修正計上'!$C:$C,$BM6,'修正計上'!D:D)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>当初1月時点の示達 (5)<span class="dl-col">PR4</span></td><td class="mono"><span class="dl-none">（キー未特定）</span></td><td><span class="rel agg">集計</span><div class="dl-proc">SUM で集計</div></td><td>当初1月時点の示達 (6)<span class="dl-col">全社</span></td><td class="mono dl-ev">SUM(H9:AI9)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>当初1月時点の示達 (5)<span class="dl-col">PR4</span></td><td class="mono"><span class="dl-none">（キー未特定）</span></td><td><span class="rel agg">集計</span><div class="dl-proc">SUM で集計</div></td><td>事業部門計 (2)<span class="dl-col">年間当初示達額</span></td><td class="mono dl-ev">SUM('当初1月時点の示達'!H9:Z9)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>2601成績 (3)<span class="dl-col">I列</span></td><td class="mono"><span class="dl-none">（キー未特定）</span></td><td><span class="rel agg">集計</span><div class="dl-proc">SUMIF で集計</div></td><td>売総実全局 (3)<span class="dl-col">AS列</span></td><td class="mono dl-ev">SUMIF('2601成績'!$R:$R,$AP6&amp;AS$2,'2601成績'!$I:$I)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>局別年間と当初計画良否 (1)<span class="dl-col">B列</span></td><td class="mono"><span class="dl-none">（キー未特定）</span></td><td><span class="rel move">転記・計算</span><div class="dl-proc">INDIRECT で転記・計算</div></td><td>局別年間と当初計画良否 (2)<span class="dl-col">AA列</span></td><td class="mono dl-ev">INDIRECT(AA$5&amp;&quot;!&quot;&amp;$B6)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>ダミー (6)<span class="dl-col">6月</span></td><td class="mono"><span class="dl-none">（キー未特定）</span></td><td><span class="rel copy">手修正推定</span><div class="dl-proc">数式なし（値の一致から手作業コピーと推定）</div></td><td>ダミー (7)<span class="dl-col">6月</span></td><td class="mono dl-ev">値完全一致(11件, 手修正疑い)</td><td class="conf"><b>高</b><div class="dl-q">Q-01</div></td></tr>
+        <tr><td>局コード<span class="dl-col">B列</span></td><td class="mono">DB列 ＝ A列</td><td><span class="rel lookup">参照・照合</span><div class="dl-proc">VLOOKUP で参照・照合</div></td><td>損益実全社 (4)<span class="dl-col">DB列</span></td><td class="mono dl-ev">VLOOKUP(DB2,'局コード'!$A:$C,2,FALSE)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>局コード<span class="dl-col">B列</span></td><td class="mono">DF列 ＝ A列</td><td><span class="rel lookup">参照・照合</span><div class="dl-proc">VLOOKUP で参照・照合</div></td><td>損益実全社 (5)<span class="dl-col">DF列</span></td><td class="mono dl-ev">VLOOKUP(DF2,'局コード'!$A:$C,2,FALSE)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>局コード<span class="dl-col">B列</span></td><td class="mono">DJ列 ＝ A列</td><td><span class="rel lookup">参照・照合</span><div class="dl-proc">VLOOKUP で参照・照合</div></td><td>損益実全社 (6)<span class="dl-col">DJ列</span></td><td class="mono dl-ev">VLOOKUP(DJ2,'局コード'!$A:$C,2,FALSE)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>局コード<span class="dl-col">B列</span></td><td class="mono">DN列 ＝ A列</td><td><span class="rel lookup">参照・照合</span><div class="dl-proc">VLOOKUP で参照・照合</div></td><td>損益実全社 (7)<span class="dl-col">DN列</span></td><td class="mono dl-ev">VLOOKUP(DN2,'局コード'!$A:$C,2,FALSE)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>局コード<span class="dl-col">B列</span></td><td class="mono">DR列 ＝ A列</td><td><span class="rel lookup">参照・照合</span><div class="dl-proc">VLOOKUP で参照・照合</div></td><td>損益実全社 (8)<span class="dl-col">DR列</span></td><td class="mono dl-ev">VLOOKUP(DR2,'局コード'!$A:$C,2,FALSE)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>局コード<span class="dl-col">B列</span></td><td class="mono">DV列 ＝ A列</td><td><span class="rel lookup">参照・照合</span><div class="dl-proc">VLOOKUP で参照・照合</div></td><td>損益実全社 (9)<span class="dl-col">DV列</span></td><td class="mono dl-ev">VLOOKUP(DV2,'局コード'!$A:$C,2,FALSE)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>局コード<span class="dl-col">B列</span></td><td class="mono">DZ列 ＝ A列</td><td><span class="rel lookup">参照・照合</span><div class="dl-proc">VLOOKUP で参照・照合</div></td><td>損益実全社 (10)<span class="dl-col">DZ列</span></td><td class="mono dl-ev">VLOOKUP(DZ2,'局コード'!$A:$C,2,FALSE)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>局コード<span class="dl-col">B列</span></td><td class="mono">ED列 ＝ A列</td><td><span class="rel lookup">参照・照合</span><div class="dl-proc">VLOOKUP で参照・照合</div></td><td>損益実全社 (11)<span class="dl-col">ED列</span></td><td class="mono dl-ev">VLOOKUP(ED2,'局コード'!$A:$C,2,FALSE)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>局コード<span class="dl-col">B列</span></td><td class="mono">EH列 ＝ A列</td><td><span class="rel lookup">参照・照合</span><div class="dl-proc">VLOOKUP で参照・照合</div></td><td>損益実全社 (12)<span class="dl-col">EH列</span></td><td class="mono dl-ev">VLOOKUP(EH2,'局コード'!$A:$C,2,FALSE)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>局コード<span class="dl-col">B列</span></td><td class="mono">EL列 ＝ A列</td><td><span class="rel lookup">参照・照合</span><div class="dl-proc">VLOOKUP で参照・照合</div></td><td>損益実全社 (13)<span class="dl-col">EL列</span></td><td class="mono dl-ev">VLOOKUP(EL2,'局コード'!$A:$C,2,FALSE)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>局コード<span class="dl-col">B列</span></td><td class="mono">EP列 ＝ A列</td><td><span class="rel lookup">参照・照合</span><div class="dl-proc">VLOOKUP で参照・照合</div></td><td>損益実全社 (14)<span class="dl-col">EP列</span></td><td class="mono dl-ev">VLOOKUP(EP2,'局コード'!$A:$C,2,FALSE)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>局コード<span class="dl-col">B列</span></td><td class="mono">ET列 ＝ A列</td><td><span class="rel lookup">参照・照合</span><div class="dl-proc">VLOOKUP で参照・照合</div></td><td>損益実全社 (15)<span class="dl-col">ET列</span></td><td class="mono dl-ev">VLOOKUP(ET2,'局コード'!$A:$C,2,FALSE)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>局コード<span class="dl-col">B列</span></td><td class="mono">EX列 ＝ A列</td><td><span class="rel lookup">参照・照合</span><div class="dl-proc">VLOOKUP で参照・照合</div></td><td>損益実全社 (16)<span class="dl-col">EX列</span></td><td class="mono dl-ev">VLOOKUP(EX2,'局コード'!$A:$C,2,FALSE)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>局コード<span class="dl-col">B列</span></td><td class="mono">FB列 ＝ A列</td><td><span class="rel lookup">参照・照合</span><div class="dl-proc">VLOOKUP で参照・照合</div></td><td>損益実全社 (17)<span class="dl-col">FB列</span></td><td class="mono dl-ev">VLOOKUP(FB2,'局コード'!$A:$C,2,FALSE)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>局コード<span class="dl-col">B列</span></td><td class="mono">FF列 ＝ A列</td><td><span class="rel lookup">参照・照合</span><div class="dl-proc">VLOOKUP で参照・照合</div></td><td>損益実全社 (18)<span class="dl-col">FF列</span></td><td class="mono dl-ev">VLOOKUP(FF2,'局コード'!$A:$C,2,FALSE)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>局コード<span class="dl-col">B列</span></td><td class="mono">FJ列 ＝ A列</td><td><span class="rel lookup">参照・照合</span><div class="dl-proc">VLOOKUP で参照・照合</div></td><td>損益実全社 (19)<span class="dl-col">FJ列</span></td><td class="mono dl-ev">VLOOKUP(FJ2,'局コード'!$A:$C,2,FALSE)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>局コード<span class="dl-col">B列</span></td><td class="mono">FN列 ＝ A列</td><td><span class="rel lookup">参照・照合</span><div class="dl-proc">VLOOKUP で参照・照合</div></td><td>損益実全社 (20)<span class="dl-col">FN列</span></td><td class="mono dl-ev">VLOOKUP(FN2,'局コード'!$A:$C,2,FALSE)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>局コード<span class="dl-col">B列</span></td><td class="mono">FR列 ＝ A列</td><td><span class="rel lookup">参照・照合</span><div class="dl-proc">VLOOKUP で参照・照合</div></td><td>損益実全社 (21)<span class="dl-col">FR列</span></td><td class="mono dl-ev">VLOOKUP(FR2,'局コード'!$A:$C,2,FALSE)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>局コード<span class="dl-col">B列</span></td><td class="mono">FV列 ＝ A列</td><td><span class="rel lookup">参照・照合</span><div class="dl-proc">VLOOKUP で参照・照合</div></td><td>損益実全社 (22)<span class="dl-col">FV列</span></td><td class="mono dl-ev">VLOOKUP(FV2,'局コード'!$A:$C,2,FALSE)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>局コード<span class="dl-col">B列</span></td><td class="mono">FZ列 ＝ A列</td><td><span class="rel lookup">参照・照合</span><div class="dl-proc">VLOOKUP で参照・照合</div></td><td>損益実全社 (23)<span class="dl-col">FZ列</span></td><td class="mono dl-ev">VLOOKUP(FZ2,'局コード'!$A:$C,2,FALSE)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>2601成績 (3)<span class="dl-col">I列</span></td><td class="mono"><span class="dl-none">（キー未特定）</span></td><td><span class="rel agg">集計</span><div class="dl-proc">SUMIF で集計</div></td><td>損益実全社 (3)<span class="dl-col">CX列</span></td><td class="mono dl-ev">SUMIF('2601成績'!$R:$R,CX$1&amp;$CW6,'2601成績'!$I:$I)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>当初1月時点の示達 (2)<span class="dl-col">I列</span></td><td class="mono"><span class="dl-none">（キー未特定）</span></td><td><span class="rel agg">集計</span><div class="dl-proc">SUM で集計</div></td><td>当初1月時点の示達 (6)<span class="dl-col">全社</span></td><td class="mono dl-ev">SUM(H9:AI9)</td><td class="conf"><b>高</b></td></tr>
+        <tr><td>2601成績 (3)<span class="dl-col">I列</span></td><td class="mono"><span class="dl-none">（キー未特定）</span></td><td><span class="rel agg">集計</span><div class="dl-proc">SUMIF で集計</div></td><td>損益実全社 (4)<span class="dl-col">DB列</span></td><td class="mono dl-ev">SUMIF('2601成績'!$R:$R,DB$1&amp;$CW6,'2601成績'!$I:$I)</td><td class="conf"><b>高</b></td></tr>
+      </table>
+      <p class="tbl-note">※ 関係が多いため流れの順に上位 30 件を掲載しています（全 2755 件）。残りはお打ち合わせで画面をご覧いただけます。</p>
+    </div>
+    <div class="callout info">
+      <span class="mark">ℹ️</span>
+      <span>別ブックを参照する数式（外部リンク）は追跡していますが、参照先のファイルをいただいていない場合・リンクが切れている場合は追跡できません。
+      ピボットテーブルも自動追跡の対象外です。図に出ていないつながりがあれば、お打ち合わせで補足をお願いします。</span>
+    </div>
+  </div>
+</section>
+
+
+<section class="alt">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="eyebrow">03 ── QUESTIONS</div>
+      <h2>ご確認いただきたい点（8件）</h2>
+      <p class="sec-lede">自動解析では「推定」までしかできない箇所です。上から順にご回答をいただけますと、kpieeの設定を正確に進められます。<b>回答メモ欄は印刷してそのままお使いいただけます。</b></p>
+    </div>
+    
+    <div class="qcard p-high">
+      <div class="qhead"><span class="qid">Q-01</span><span class="qtag high">優先度 高</span><span class="qtag kind">手修正の確認</span></div>
+      <div class="qtitle">「ダミー (7)」の一部の列は「ダミー (6)」からの手作業転記ですか？</div>
+      <dl class="qgrid">
+        <dt>分析結果</dt><dd>数式が無いのに値が完全一致する列を 7 組検出しました（値完全一致(11件, 手修正疑い)）。手修正と推定しています。</dd>
+        <dt>伺いたいこと</dt><dd>①この理解で合っていますか？ ②転記のタイミングと担当の方は？ ③両者が一致しない場合はどちらが正ですか？</dd>
+        <dt>kpieeでは</dt><dd>元とする表と集計ロジックが確定すれば、この転記作業は自動化できます。</dd>
+      </dl>
+      <div class="ansbox">ご回答メモ：</div>
+    </div>
+
+    <div class="qcard p-high">
+      <div class="qhead"><span class="qid">Q-02</span><span class="qtag high">優先度 高</span><span class="qtag kind">手修正の確認</span></div>
+      <div class="qtitle">「EXP (1)」と「MP (1)」で値が一致する列があります。どちらが元データですか？</div>
+      <dl class="qgrid">
+        <dt>分析結果</dt><dd>数式が無いのに値が完全一致する列を 3 組検出しました（値完全一致(1002件, 手修正疑い)）。手修正と推定しています。</dd>
+        <dt>伺いたいこと</dt><dd>①どちらの表が元（正）ですか？ ②転記のタイミングと担当の方を教えてください。</dd>
+        <dt>kpieeでは</dt><dd>元とする表と集計ロジックが確定すれば、この転記作業は自動化できます。</dd>
+      </dl>
+      <div class="ansbox">ご回答メモ：</div>
+    </div>
+
+    <div class="qcard p-high">
+      <div class="qhead"><span class="qid">Q-03</span><span class="qtag high">優先度 高</span><span class="qtag kind">手修正の確認</span></div>
+      <div class="qtitle">「EXP (1)」と「管理計算 (1)」で値が一致する列があります。どちらが元データですか？</div>
+      <dl class="qgrid">
+        <dt>分析結果</dt><dd>数式が無いのに値が完全一致する列を 3 組検出しました（値完全一致(1002件, 手修正疑い)）。手修正と推定しています。</dd>
+        <dt>伺いたいこと</dt><dd>①どちらの表が元（正）ですか？ ②転記のタイミングと担当の方を教えてください。</dd>
+        <dt>kpieeでは</dt><dd>元とする表と集計ロジックが確定すれば、この転記作業は自動化できます。</dd>
+      </dl>
+      <div class="ansbox">ご回答メモ：</div>
+    </div>
+
+    <div class="qcard p-high">
+      <div class="qhead"><span class="qid">Q-04</span><span class="qtag high">優先度 高</span><span class="qtag kind">手修正の確認</span></div>
+      <div class="qtitle">ほか 2093 組の表ペアでも手修正の可能性を検出しています。</div>
+      <dl class="qgrid">
+        <dt>分析結果</dt><dd>個別の一覧はお打ち合わせで画面をご覧いただきながら確認させてください。</dd>
+        <dt>伺いたいこと</dt><dd>主要なものから順に、転記の有無と方向を確認させてください。</dd>
+        
+      </dl>
+      <div class="ansbox">ご回答メモ：</div>
+    </div>
+
+    <div class="qcard p-high">
+      <div class="qhead"><span class="qid">Q-05</span><span class="qtag high">優先度 高</span><span class="qtag kind">数式と手入力の混在</span></div>
+      <div class="qtitle">「ロイＢ調整3月分」の数式列に、数式を上書きした手入力が 4 箇所あります。意図的な補正ですか？</div>
+      <dl class="qgrid">
+        <dt>分析結果</dt><dd>数式が主体の列（P列）の中に、数式が消えて数値が直接入っているセルがあります。</dd>
+        <dt>伺いたいこと</dt><dd>返品・締め処理などによる意図的な修正でしょうか？ 修正のルールがあれば教えてください。</dd>
+        <dt>kpieeでは</dt><dd>補正ルールが明文化できれば取込時に反映します。例外的な修正なら「補正値の入力欄」として設計します。</dd>
+      </dl>
+      <div class="ansbox">ご回答メモ：</div>
+    </div>
+
+    <div class="qcard p-high">
+      <div class="qhead"><span class="qid">Q-06</span><span class="qtag high">優先度 高</span><span class="qtag kind">数式と手入力の混在</span></div>
+      <div class="qtitle">「全社まとめ (ダミー加算)」の数式列に、数式を上書きした手入力が 3 箇所あります。意図的な補正ですか？</div>
+      <dl class="qgrid">
+        <dt>分析結果</dt><dd>数式が主体の列（全社、H列）の中に、数式が消えて数値が直接入っているセルがあります。</dd>
+        <dt>伺いたいこと</dt><dd>返品・締め処理などによる意図的な修正でしょうか？ 修正のルールがあれば教えてください。</dd>
+        <dt>kpieeでは</dt><dd>補正ルールが明文化できれば取込時に反映します。例外的な修正なら「補正値の入力欄」として設計します。</dd>
+      </dl>
+      <div class="ansbox">ご回答メモ：</div>
+    </div>
+
+    <div class="qcard p-high">
+      <div class="qhead"><span class="qid">Q-07</span><span class="qtag high">優先度 高</span><span class="qtag kind">最終帳票の元データ</span></div>
+      <div class="qtitle">「事業部門計」、「全社まとめ (ダミー加算)」、「全局」、「全局示達」 ほか2シート は最終帳票とお伺いしていますが、この帳票を作る元データが受領データの中に見つかりませんでした。</div>
+      <dl class="qgrid">
+        <dt>分析結果</dt><dd>他ファイルからこの帳票へ流れ込む数式・値の一致を検出できませんでした。別ブックからの参照（リンク切れ・別フォルダのファイル）や、基幹システムからの手貼りが考えられます。</dd>
+        <dt>伺いたいこと</dt><dd>①この帳票の数値はどこから作られていますか？（別Excel／基幹システム／手入力） ②元になるファイルがあれば、そちらもご提供いただけますか？</dd>
+        <dt>kpieeでは</dt><dd>最終帳票をkpieeで再現するには元データが必要です。ここが最優先の確認事項になります。</dd>
+      </dl>
+      <div class="ansbox">ご回答メモ：</div>
+    </div>
+
+    <div class="qcard">
+      <div class="qhead"><span class="qid">Q-08</span><span class="qtag mid">優先度 中</span><span class="qtag kind">数式と手入力の混在</span></div>
+      <div class="qtitle">ほか 12 シートでも数式と手入力の混在を検出しています。</div>
+      <dl class="qgrid">
+        
+        <dt>伺いたいこと</dt><dd>一覧を添えますので、意図的な補正かどうかをご確認ください。</dd>
+        
+      </dl>
+      <div class="ansbox">ご回答メモ：</div>
+    </div>
+    <div class="callout info">
+      <span class="mark">💡</span>
+      <span>実線の関係（数式由来）は数式そのものが根拠のため、原則ご確認は不要です。上記は<b>自動解析が「推定」に留まる箇所だけ</b>を抽出しています。</span>
+    </div>
+  </div>
+</section>
+
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="eyebrow">04 ── NEXT STEP</div>
+      <h2>今後の進め方</h2>
+    </div>
+    <div class="steps">
+      <div class="step"><div class="no">1</div>
+        <h3>本資料の読み合わせ<span class="who">貴社 × 弊社</span></h3>
+        <p>お打ち合わせ（30〜60分）で、03の確認事項にご回答をいただきます。わかる範囲で結構です。</p>
+      </div>
+      <div class="step"><div class="no">2</div>
+        <h3>定義の確定・追加データのご提供<span class="who">貴社 × 弊社</span></h3>
+        <p>ご回答をもとにデータ定義を確定します。不足データがあればご提供をお願いします。</p>
+      </div>
+      <div class="step"><div class="no">3</div>
+        <h3>kpieeへの取込設定・KPIツリー構築<span class="who">弊社主導</span></h3>
+        <p>確定した構造にもとづき、kpieeのデータ取込とKPIの紐付けを設定します。手転記いただいていた箇所は自動化されます。</p>
+      </div>
+      <div class="step"><div class="no">4</div>
+        <h3>数値検証・運用開始<span class="who">貴社 × 弊社</span></h3>
+        <p>既存のExcel報告と kpiee の数値を突き合わせ、一致を確認してから運用に切り替えます。</p>
+      </div>
+    </div>
+    <div class="callout warn">
+      <span class="mark">⚠️</span>
+      <span>本レポートは自動解析の結果にもとづきます。数式のないつながり（破線）や役割・キーの表記は推定であり、ご確認の結果によって内容を更新します。本資料に原本の数値データは含まれていません（列名・数式・行数などの構造情報のみ）。</span>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">© dataX Inc.　|　kpiee データ構造分析レポート（2026-08-05 生成）　|　本資料は貴社との確認用資料であり、社外への共有はお控えください。</div>
+</footer>
+<script>
+(function(){
+  var opened = [];
+  window.addEventListener('beforeprint', function(){
+    opened = [];
+    var ds = document.querySelectorAll('details.fileblk');
+    for (var i = 0; i < ds.length; i++) {
+      if (!ds[i].open) { ds[i].open = true; opened.push(ds[i]); }
+    }
+  });
+  window.addEventListener('afterprint', function(){
+    for (var i = 0; i < opened.length; i++) opened[i].open = false;
+    opened = [];
+  });
+})();
+</script>
+<script>
+(function(){
+  try{
+    var wrap=document.getElementById('relgraph-wrap');
+    var host=document.getElementById('relgraph');
+    var dataEl=document.getElementById('relgraph-data');
+    var pbody=document.getElementById('relgraph-pbody');
+    var crumbsEl=document.getElementById('relgraph-crumbs');
+    if(!wrap||!host||!dataEl) return;
+    var data=JSON.parse(dataEl.textContent);
+    if(!data||!data.nodes||!data.nodes.length) return;
+    var staticEl=document.querySelector('.map-static'); if(staticEl) staticEl.style.display='none';
+    wrap.style.display='grid';
+
+    var NS='http://www.w3.org/2000/svg';
+    var nodes=data.nodes, byId={};
+    nodes.forEach(function(n){ byId[n.id]=n; });
+    var links=(data.links||[]).filter(function(l){ return byId[l.s]&&byId[l.t]; });
+    var outAdj={}, inAdj={}; nodes.forEach(function(n){ outAdj[n.id]=[]; inAdj[n.id]=[]; });
+    links.forEach(function(l){ outAdj[l.s].push(l); inAdj[l.t].push(l); });
+
+    function roleClass(role){ if(/最終/.test(role)) return 'out'; if(/マスタ/.test(role)) return 'mst'; if(/中間/.test(role)) return 'mid'; if(/元/.test(role)) return 'src'; return 'iso'; }
+    function ekey(l){ return l.s+'>'+l.t+'#'+(l.label||''); }
+    function fit(s,n){ s=String(s); return s.length<=n? s : s.slice(0,n)+'…'; }
+    function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+    /* ---- 最終アウトプット & 階層（経路計算・縦位置のヒントに使用） ---- */
+    var output=null,bestDeg=-1;
+    nodes.forEach(function(n){ if(/最終/.test(n.role)){ var d=inAdj[n.id].length; if(d>bestDeg){bestDeg=d;output=n.id;} } });
+    if(!output){ bestDeg=-1; nodes.forEach(function(n){ if(outAdj[n.id].length===0){ var d=inAdj[n.id].length; if(d>bestDeg){bestDeg=d;output=n.id;} } }); }
+    if(!output){ bestDeg=-1; nodes.forEach(function(n){ if((n.deg||0)>bestDeg){bestDeg=n.deg||0;output=n.id;} }); }
+    var layer={};
+    function dist(id,seen){ if(id===output) return 0; if(layer[id]!=null) return layer[id]; if(seen[id]) return 0; seen[id]=1; var best=0,any=false; outAdj[id].forEach(function(l){ any=true; var d=1+dist(l.t,seen); if(d>best) best=d; }); layer[id]=any?best:1; return layer[id]; }
+    nodes.forEach(function(n){ dist(n.id,{}); }); layer[output]=0;
+    function pathToOutput(id){ var ns=[id],es=[],cur=id,guard=0; while(cur!==output&&guard++<60){ var outs=outAdj[cur]; if(!outs.length) break; var best=outs[0]; for(var i=1;i<outs.length;i++){ if(layer[outs[i].t]<layer[best.t]) best=outs[i]; } es.push(ekey(best)); ns.push(best.t); cur=best.t; } return {ns:ns,es:es}; }
+
+    /* ---- ノード半径＝つながりの多さ ---- */
+    var W=1280,H=780,PAD=64,maxLink=1;
+    nodes.forEach(function(n){ n._d=inAdj[n.id].length+outAdj[n.id].length; if(n._d>maxLink) maxLink=n._d; });
+    nodes.forEach(function(n){ n.r=8+18*Math.sqrt(n._d/maxLink); if(roleClass(n.role)==='out') n.r=Math.max(n.r,13); });
+
+    /* ---- 初期配置（元の階層座標を種にして再現性を確保） ---- */
+    var sw=data.w||1848, sh=data.h||634;
+    function jit(i,k){ var v=Math.sin((i+1)*(k===0?12.9898:78.233))*43758.5453; return (v-Math.floor(v))-0.5; }
+    nodes.forEach(function(n,i){
+      n.px=PAD+((n.x||0)/sw)*(W-2*PAD)+jit(i,0)*70;
+      n.py=PAD+((n.y||0)/sh)*(H-2*PAD)+jit(i,1)*70;
+      n.vx=0; n.vy=0; n.fx=null; n.fy=null;
+    });
+    /* 階層レイアウト時の目標座標（＋力学時の緩やかな縦バイアス） */
+    var byLayer={}; nodes.forEach(function(n){ (byLayer[layer[n.id]]=byLayer[layer[n.id]]||[]).push(n); });
+    var maxL=0; Object.keys(byLayer).forEach(function(k){ maxL=Math.max(maxL,+k); });
+    Object.keys(byLayer).forEach(function(k){
+      var L=+k,row=byLayer[k], y=PAD+((maxL-L)/(maxL||1))*(H-2*PAD-40)+20;
+      var gap=Math.min(210,(W-2*PAD)/Math.max(1,row.length)), x0=W/2-gap*(row.length-1)/2;
+      row.forEach(function(n,i){ n.tx=x0+i*gap; n.ty=y; });
+    });
+
+    /* ---- SVG 生成 ---- */
+    var svg=document.createElementNS(NS,'svg');
+    svg.setAttribute('viewBox','0 0 '+W+' '+H);
+    svg.setAttribute('preserveAspectRatio','xMidYMid meet');
+    host.appendChild(svg);
+    var defs=document.createElementNS(NS,'defs'); svg.appendChild(defs);
+    var gZoom=document.createElementNS(NS,'g'); svg.appendChild(gZoom);
+    var gE=document.createElementNS(NS,'g'); gZoom.appendChild(gE);
+    var gN=document.createElementNS(NS,'g'); gZoom.appendChild(gN);
+
+    var dark=false;
+    var DARKMAP={'#1F5FAE':'#6BB0FF','#1E9E6A':'#43D39E','#7B5EA7':'#B392F0','#B96A00':'#F2A33C'};
+    function ecol(l){ return dark? (DARKMAP[l.color]||l.color) : l.color; }
+    var markers={};
+    function markerFor(col){
+      if(markers[col]) return markers[col];
+      var id='rgar'+Object.keys(markers).length;
+      var m=document.createElementNS(NS,'marker');
+      m.setAttribute('id',id); m.setAttribute('viewBox','0 0 10 10'); m.setAttribute('refX','9'); m.setAttribute('refY','5');
+      m.setAttribute('markerWidth','6'); m.setAttribute('markerHeight','6'); m.setAttribute('orient','auto');
+      var pa=document.createElementNS(NS,'path'); pa.setAttribute('d','M0,0 L10,5 L0,10 z'); pa.setAttribute('fill',col); pa.setAttribute('fill-opacity','.85');
+      m.appendChild(pa); defs.appendChild(m); markers[col]=id; return id;
+    }
+
+    /* 平行エッジのカーブ量 */
+    var cnt={}; links.forEach(function(l){ var k=[l.s,l.t].sort().join('|'); cnt[k]=(cnt[k]||0)+1; });
+    var seen={}; links.forEach(function(l){ var k=[l.s,l.t].sort().join('|'); var i=(seen[k]=(seen[k]||0)); seen[k]++; l._cv=(i-(cnt[k]-1)/2)*38; });
+
+    var edgeEls={};
+    links.forEach(function(l){
+      var p=document.createElementNS(NS,'path'); p.setAttribute('class','edge');
+      if(l.dashed) p.setAttribute('stroke-dasharray','6 5');
+      p.setAttribute('stroke-width', Math.min(3.2,1+Math.log10((l.count||1)+1)*1.1));
+      var tt=document.createElementNS(NS,'title'); tt.textContent=byId[l.s].label+' → '+byId[l.t].label+' ／ '+(l.label||'')+(l.qid?(' ／ '+l.qid):'')+(l.count?(' ／ '+l.count+'件'):''); p.appendChild(tt);
+      gE.appendChild(p); edgeEls[ekey(l)]=p;
+    });
+    function paintEdges(){ links.forEach(function(l){ var c=ecol(l), e=edgeEls[ekey(l)]; e.setAttribute('stroke',c); e.setAttribute('marker-end','url(#'+markerFor(c)+')'); }); }
+    paintEdges();
+
+    var nodeEls={}, lblEls={};
+    nodes.forEach(function(n){
+      var g=document.createElementNS(NS,'g'); g.setAttribute('class','node role-'+roleClass(n.role));
+      var halo=document.createElementNS(NS,'circle'); halo.setAttribute('class','halo'); halo.setAttribute('r',n.r+5); g.appendChild(halo);
+      var c=document.createElementNS(NS,'circle'); c.setAttribute('class','dot'); c.setAttribute('r',n.r); g.appendChild(c);
+      var t=document.createElementNS(NS,'text'); t.setAttribute('class','lbl'); t.setAttribute('y','13');
+      t.textContent=(roleClass(n.role)==='out'?'★ ':'')+fit(n.label,14); g.appendChild(t);
+      var tt=document.createElementNS(NS,'title'); tt.textContent=n.label+' ／ '+n.role+' ／ '+(n.sub||'')+' ／ つながり '+n._d+'本'; g.appendChild(tt);
+      g.addEventListener('pointerdown',function(ev){ startDrag(n,ev); });
+      g.addEventListener('mouseenter',function(){ hoverId=n.id; paintFocus(); });
+      g.addEventListener('mouseleave',function(){ if(hoverId===n.id){ hoverId=null; paintFocus(); } });
+      g.addEventListener('click',function(ev){ ev.stopPropagation(); if(lastDragDist<5) jumpTo(n.id,true); });
+      gN.appendChild(g); nodeEls[n.id]=g; lblEls[n.id]=t;
+    });
+
+    /* ---- 力学シミュレーション ---- */
+    var REP=20000, SPRING=0.006, GRAV=0.003, FLOW=0.014, DAMP=0.86;
+    var alpha=1, mode='layer', raf=null;
+    function step(){
+      var i,j,a,b,dx,dy,d,d2,f,ux,uy;
+      if(mode==='layer'){
+        var moving=false;
+        for(i=0;i<nodes.length;i++){ a=nodes[i];
+          if(a.fx!=null){ a.px=a.fx; a.py=a.fy; continue; }
+          dx=a.tx-a.px; dy=a.ty-a.py; if(Math.abs(dx)+Math.abs(dy)>0.4) moving=true;
+          a.px+=dx*0.16; a.py+=dy*0.16; }
+        return moving||!!dragN;
+      }
+      if(alpha<0.005 && !dragN) return false;
+      for(i=0;i<nodes.length;i++){ a=nodes[i];
+        for(j=i+1;j<nodes.length;j++){ b=nodes[j];
+          dx=b.px-a.px; dy=b.py-a.py; d2=dx*dx+dy*dy;
+          if(d2<1){ dx=(i-j)||1; dy=1; d2=2; }
+          d=Math.sqrt(d2); ux=dx/d; uy=dy/d;
+          f=REP/d2; if(f>3) f=3;
+          a.vx-=ux*f; a.vy-=uy*f; b.vx+=ux*f; b.vy+=uy*f;
+          var mn=a.r+b.r+40;
+          if(d<mn){ var ps=(mn-d)*0.22; a.vx-=ux*ps; a.vy-=uy*ps; b.vx+=ux*ps; b.vy+=uy*ps; }
+        }
+      }
+      for(i=0;i<links.length;i++){ var l=links[i]; a=byId[l.s]; b=byId[l.t];
+        dx=b.px-a.px; dy=b.py-a.py; d=Math.sqrt(dx*dx+dy*dy)||1; ux=dx/d; uy=dy/d;
+        var s=(d-(a.r+b.r+120))*SPRING;
+        a.vx+=ux*s; a.vy+=uy*s; b.vx-=ux*s; b.vy-=uy*s;
+      }
+      for(i=0;i<nodes.length;i++){ a=nodes[i];
+        a.vx+=(W/2-a.px)*GRAV; a.vy+=(H/2-a.py)*GRAV;
+        a.vy+=(a.ty-a.py)*FLOW;              /* 上流→下流の縦の流れを緩く維持 */
+        if(a.fx!=null){ a.px=a.fx; a.py=a.fy; a.vx=0; a.vy=0; continue; }
+        a.vx*=DAMP; a.vy*=DAMP;
+        var sp=Math.sqrt(a.vx*a.vx+a.vy*a.vy); if(sp>14){ a.vx*=14/sp; a.vy*=14/sp; }
+        a.px+=a.vx*alpha; a.py+=a.vy*alpha;
+        a.px=Math.max(a.r+44,Math.min(W-a.r-44,a.px));
+        a.py=Math.max(a.r+22,Math.min(H-a.r-36,a.py));
+      }
+      alpha*=0.985;
+      return true;
+    }
+    function draw(){
+      for(var i=0;i<links.length;i++){ var l=links[i], a=byId[l.s], b=byId[l.t];
+        var dx=b.px-a.px, dy=b.py-a.py, d=Math.sqrt(dx*dx+dy*dy)||1, ux=dx/d, uy=dy/d;
+        var mx=(a.px+b.px)/2-uy*l._cv, my=(a.py+b.py)/2+ux*l._cv;
+        var sx=a.px+ux*(a.r+2), sy=a.py+uy*(a.r+2);
+        var ex=b.px-ux*(b.r+7), ey=b.py-uy*(b.r+7);
+        edgeEls[ekey(l)].setAttribute('d','M'+sx.toFixed(1)+','+sy.toFixed(1)+' Q'+mx.toFixed(1)+','+my.toFixed(1)+' '+ex.toFixed(1)+','+ey.toFixed(1));
+      }
+      for(i=0;i<nodes.length;i++){ var n=nodes[i]; nodeEls[n.id].setAttribute('transform','translate('+n.px.toFixed(1)+','+n.py.toFixed(1)+')'); }
+    }
+    function loop(){ raf=null; var more=step(); draw(); if(more) raf=requestAnimationFrame(loop); }
+    function kick(a){ if(a!=null&&a>alpha) alpha=a; if(!raf) raf=requestAnimationFrame(loop); }
+    for(var w=0;w<60;w++) step();   /* 初期は少し落ち着かせてから描画 */
+
+    /* ---- ハイライト（ホバー＝一時／クリック＝固定） ---- */
+    var trail=[], selId=null, hoverId=null;
+    function paintFocus(){
+      var act=hoverId||selId;
+      svg.classList.toggle('focused',!!act);
+      var hl={},pN={},pE={},eH={};
+      if(act){ hl[act]=1;
+        inAdj[act].forEach(function(l){ hl[l.s]=1; eH[ekey(l)]=1; });
+        outAdj[act].forEach(function(l){ hl[l.t]=1; eH[ekey(l)]=1; });
+        var p=pathToOutput(act); p.ns.forEach(function(x){ pN[x]=1; }); p.es.forEach(function(x){ pE[x]=1; });
+      }
+      nodes.forEach(function(n){ var c='node role-'+roleClass(n.role);
+        if(n.id===selId) c+=' sel'; if(n.id===hoverId) c+=' hov';
+        if(hl[n.id]) c+=' hl'; if(pN[n.id]) c+=' path';
+        nodeEls[n.id].setAttribute('class',c); });
+      links.forEach(function(l){ var k=ekey(l),c='edge'; if(pE[k]) c+=' epath'; else if(eH[k]) c+=' ehl'; edgeEls[k].setAttribute('class',c); });
+    }
+    function render(){ paintFocus(); renderPanel(); renderCrumbs(); }
+    function jumpTo(id,push){ if(push){ var ix=trail.indexOf(id); if(ix>=0) trail=trail.slice(0,ix+1); else trail.push(id); } selId=id; render(); }
+    function crumbJump(i){ trail=trail.slice(0,i+1); selId=trail[i]; render(); }
+    function clearFocus(){ trail=[]; selId=null; hoverId=null; render(); }
+
+    function renderCrumbs(){ if(!selId){ crumbsEl.innerHTML='<span class="cur">表を選択</span>'; return; } var h=''; trail.forEach(function(id,i){ if(i>0) h+='<span class="sep">›</span>'; if(i===trail.length-1) h+='<span class="cur">'+esc(byId[id].label)+'</span>'; else h+='<button class="c" data-i="'+i+'">'+esc(byId[id].label)+'</button>'; }); crumbsEl.innerHTML=h; Array.prototype.forEach.call(crumbsEl.querySelectorAll('.c'),function(b){ b.addEventListener('click',function(){ crumbJump(+b.getAttribute('data-i')); }); }); }
+    function chip(l,dir){ var other=dir==='in'?l.s:l.t; var b=document.createElement('button'); b.className='p-chip'; b.innerHTML='<span class="dot" style="background:'+l.color+'"></span><span>'+esc(byId[other].label)+'</span><span class="via">'+esc(l.label||'')+(l.qid?(' '+l.qid):'')+'</span>'; b.addEventListener('click',function(){ jumpTo(other,true); }); b.addEventListener('mouseenter',function(){ hoverId=other; paintFocus(); }); b.addEventListener('mouseleave',function(){ if(hoverId===other){ hoverId=null; paintFocus(); } }); return b; }
+    function renderPanel(){ if(!selId){ pbody.innerHTML='<div class="empty">左のグラフで<b>表</b>をクリックすると、関係している表（上流／下流）と<b>最終アウトプットまでの経路</b>がここに出て、そのまま掘り下げられます。</div>'; return; } var n=byId[selId]; pbody.innerHTML=''; var nm=document.createElement('div'); nm.className='pname'; nm.textContent=n.label; pbody.appendChild(nm); var rc=document.createElement('span'); rc.className='rolechip rc-'+roleClass(n.role); rc.textContent=n.role; pbody.appendChild(rc); if(n.sub){ var mt=document.createElement('div'); mt.className='p-meta'; mt.textContent='規模 / キー'; pbody.appendChild(mt); var kb=document.createElement('div'); kb.className='p-keys'; kb.textContent=n.sub; pbody.appendChild(kb); }
+      var mt2=document.createElement('div'); mt2.className='p-meta'; mt2.textContent='つながりの数'; pbody.appendChild(mt2); var kb2=document.createElement('div'); kb2.className='p-keys'; kb2.textContent='上流 '+inAdj[selId].length+' ／ 下流 '+outAdj[selId].length+'（計 '+n._d+'）'; pbody.appendChild(kb2);
+      var rt=document.createElement('div'); rt.className='p-grp'; rt.innerHTML='<h4>最終アウトプットまでの経路</h4>'; var route=document.createElement('div'); route.className='p-route'; if(roleClass(n.role)==='out'){ route.innerHTML='<span>この表が最終アウトプットです。</span>'; } else { var p=pathToOutput(selId); if(p.ns.length<=1){ route.innerHTML='<span>最終アウトプットへの経路は見つかりませんでした。</span>'; } else { p.ns.forEach(function(id,i){ if(i>0){ var a=document.createElement('span'); a.className='arw'; a.textContent='▸'; route.appendChild(a); } var b=document.createElement('button'); b.className='r'+(id===output?' out':''); b.textContent=byId[id].label; b.addEventListener('click',function(){ jumpTo(id,true); }); route.appendChild(b); }); } } rt.appendChild(route); pbody.appendChild(rt);
+      var g1=document.createElement('div'); g1.className='p-grp'; g1.innerHTML='<h4>← この表に入ってくる（上流）</h4>'; var c1=document.createElement('div'); c1.className='p-chips'; if(inAdj[selId].length) inAdj[selId].forEach(function(l){ c1.appendChild(chip(l,'in')); }); else { var e=document.createElement('div'); e.className='p-chip none'; e.textContent='上流なし（起点データ）'; c1.appendChild(e); } g1.appendChild(c1); pbody.appendChild(g1);
+      var g2=document.createElement('div'); g2.className='p-grp'; g2.innerHTML='<h4>→ この表から出ていく（下流）</h4>'; var c2=document.createElement('div'); c2.className='p-chips'; if(outAdj[selId].length) outAdj[selId].forEach(function(l){ c2.appendChild(chip(l,'out')); }); else { var e2=document.createElement('div'); e2.className='p-chip none'; e2.textContent='下流なし（最終アウトプット）'; c2.appendChild(e2); } g2.appendChild(c2); pbody.appendChild(g2);
+    }
+
+    /* ---- 座標変換 / ズーム / パン ---- */
+    var scale=1,ox=0,oy=0,pan=null,moved=false;
+    function apply(){
+      gZoom.setAttribute('transform','translate('+ox+','+oy+') scale('+scale+')');
+      var k=1/scale;
+      nodes.forEach(function(n){ lblEls[n.id].setAttribute('transform','translate(0,'+n.r+') scale('+k+')'); });
+    }
+    function toVB(cx,cy){ var m=svg.getScreenCTM(); if(!m) return {x:0,y:0,k:1}; var p=svg.createSVGPoint(); p.x=cx; p.y=cy; var q=p.matrixTransform(m.inverse()); q.k=m.a||1; return q; }
+    function toWorld(ev){ var v=toVB(ev.clientX,ev.clientY); return {x:(v.x-ox)/scale, y:(v.y-oy)/scale}; }
+    function zoomAt(vx,vy,f){ var ns=Math.max(0.35,Math.min(5,scale*f)); ox=vx-(vx-ox)*(ns/scale); oy=vy-(vy-oy)*(ns/scale); scale=ns; apply(); }
+
+    var dragN=null, lastDragDist=0, dragStart=null;
+    function startDrag(n,ev){
+      ev.stopPropagation();
+      dragN=n; lastDragDist=0; dragStart={x:ev.clientX,y:ev.clientY};
+      var p=toWorld(ev); n._ox=p.x-n.px; n._oy=p.y-n.py; n.fx=n.px; n.fy=n.py;
+      kick(0.4);
+    }
+    window.addEventListener('pointermove',function(ev){
+      if(dragN){ var p=toWorld(ev); dragN.fx=p.x-dragN._ox; dragN.fy=p.y-dragN._oy;
+        lastDragDist=Math.abs(ev.clientX-dragStart.x)+Math.abs(ev.clientY-dragStart.y); kick(0.35); return; }
+      if(pan){ moved=true; var v=toVB(ev.clientX,ev.clientY); ox=pan.ox+(ev.clientX-pan.x)/v.k; oy=pan.oy+(ev.clientY-pan.y)/v.k; apply(); }
+    });
+    window.addEventListener('pointerup',function(){
+      if(dragN){ dragN.fx=null; dragN.fy=null; dragN=null; kick(0.2); }
+      if(pan){ pan=null; svg.classList.remove('panning'); }
+    });
+    svg.addEventListener('pointerdown',function(ev){ if(ev.target.closest&&ev.target.closest('.node')) return; pan={x:ev.clientX,y:ev.clientY,ox:ox,oy:oy}; moved=false; svg.classList.add('panning'); });
+    svg.addEventListener('click',function(ev){ if(!(ev.target.closest&&ev.target.closest('.node'))&&!moved) clearFocus(); });
+    svg.addEventListener('wheel',function(ev){ ev.preventDefault(); var v=toVB(ev.clientX,ev.clientY); zoomAt(v.x,v.y, ev.deltaY<0?1.12:0.9); },{passive:false});
+
+    /* ---- コントロール ---- */
+    var bar=document.createElement('div'); bar.className='relgraph-ctrl';
+    function ctl(txt,title,fn){ var b=document.createElement('button'); b.type='button'; b.textContent=txt; b.title=title; b.setAttribute('aria-label',title); b.addEventListener('click',function(ev){ ev.stopPropagation(); fn(b); }); bar.appendChild(b); return b; }
+    ctl('＋','拡大',function(){ zoomAt(W/2,H/2,1.25); });
+    ctl('－','縮小',function(){ zoomAt(W/2,H/2,0.8); });
+    ctl('▤','レイアウト切替（階層 → 力学）',function(b){ mode=(mode==='force'?'layer':'force'); b.textContent=(mode==='force'?'⚛':'▤'); b.title=(mode==='force'?'レイアウト切替（力学 → 階層）':'レイアウト切替（階層 → 力学）'); alpha=1; kick(1); });
+    ctl('☾','配色切替（ライト ⇔ ダーク）',function(b){ dark=!dark; host.classList.toggle('lightmode',!dark); b.textContent=dark?'☀':'☾'; paintEdges(); });
+    var expanded=false; function toggleExpand(){ expanded=!expanded; wrap.classList.toggle('expanded',expanded); document.body.classList.toggle('relgraph-noscroll',expanded); }
+    ctl('⤢','全画面で見る（Escで戻る）',function(){ toggleExpand(); });
+    ctl('⟳','配置と表示をリセット',function(){ scale=1; ox=0; oy=0; apply(); nodes.forEach(function(n,i){ n.px=PAD+((n.x||0)/sw)*(W-2*PAD)+jit(i,0)*70; n.py=PAD+((n.y||0)/sh)*(H-2*PAD)+jit(i,1)*70; n.vx=0; n.vy=0; n.fx=null; n.fy=null; }); alpha=1; kick(1); });
+    host.appendChild(bar);
+    var hint=document.createElement('div'); hint.className='relgraph-hint'; hint.textContent='ドラッグで移動 ／ ホイールで拡大縮小 ／ ノードをドラッグして並べ替え';
+    host.appendChild(hint);
+    document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ if(expanded) toggleExpand(); else clearFocus(); } });
+
+    apply(); draw(); render(); kick(1);
+  }catch(e){
+    var w=document.getElementById('relgraph-wrap'); if(w) w.style.display='none';
+    var s=document.querySelector('.map-static'); if(s) s.style.display='';
+  }
+})();
+</script>
+</body>
+</html>

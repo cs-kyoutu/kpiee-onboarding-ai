@@ -477,14 +477,21 @@ function buildMap(
     weight.set(p.from, (weight.get(p.from) ?? 0) + p.total);
     weight.set(p.to, (weight.get(p.to) ?? 0) + p.total);
   }
-  const connected = regions.filter(r => weight.has(r.id));
+  // 最終アウトプットの表は、つながりが1本も検出できなくても必ず図に出す。
+  // ここで落とすと「kpiee で再現する対象がどれか」が図から消えてしまい、読み合わせの目的地が
+  // 分からなくなる（つながりが見つかっていないこと自体が確認したい論点なので、隠さず置く）。
+  const isOut = (r: Region) => (roles.get(r.id) ?? '') === '最終アウトプット';
+  const connected = regions.filter(r => weight.has(r.id) || isOut(r));
   const kept = connected
     .slice()
-    .sort((a, b) => (weight.get(b.id) ?? 0) - (weight.get(a.id) ?? 0))
+    // 同じ重みなら最終アウトプットを優先して残す（上限で切られて消えないように）
+    .sort((a, b) => (Number(isOut(b)) - Number(isOut(a)))
+      || (weight.get(b.id) ?? 0) - (weight.get(a.id) ?? 0))
     .slice(0, MAX_NODES);
   const keptIds = new Set(kept.map(r => r.id));
   const drawPairs = pairs.filter(p => keptIds.has(p.from) && keptIds.has(p.to)).slice(0, MAX_EDGES);
-  if (drawPairs.length === 0) return null;
+  // 辺が1本も無くても、最終アウトプットが居るなら図は出す（「どれが目的地か」は示す）
+  if (drawPairs.length === 0 && !kept.some(isOut)) return null;
 
   // 隣接（操作版と同じく「辺の本数」で数える。重みではない）
   const outAdj = new Map<string, PairAgg[]>();
@@ -742,10 +749,25 @@ function buildLogicBlocks(
  * 「どういう計算か」を文章だけで書くと、=SUM([1]top:end!E6) のどこがどのファイルの
  * どのシートを指しているのかが読み取れない。数式そのものを部位ごとに色分けし、
  * 直下に対応表を置くことで「どこが何を意味するか」を目で追えるようにする。
+ *
+ * 数式が無い（値のコピーで運ばれている）区間は分解できないが、そこで何も書かないと
+ * ブロックが空になり「説明が抜けている」ようにしか見えない。分解の代わりに
+ * 「なぜ計算の根拠が出せないのか」と「では何を前提に対応しているのか」を書く。
  */
 function renderFormulaAnatomy(b: LogicBlock, fileNameOf: (l: string) => string): string {
   const f = b.repFormula;
-  if (!f) return '';
+  const howNote = (body: string) => `<div class="fx"><p class="fx-how">${body}</p></div>`;
+  // 判定は関係の種別で行う。evidence の文字列で見分けようとすると、値一致の根拠文
+  //「値完全一致(66件, 手修正疑い)」の括弧を数式と誤認する。
+  if (b.group === 'copy' || !f) {
+    // 数式ではなく値の一致から推定した区間（コピペ・貼り付け）
+    return howNote('<b>この区間は数式ではなく、値のコピーで運ばれています。</b>'
+      + 'Excel 上に計算の根拠が残らないため、どの列がどの列になるのかを自動では確定できません'
+      + `（値が一致していることから ${b.total.toLocaleString()} 本のつながりを推定しています）。`
+      + '<br>両ブックの行の並びが同じであることが前提になっているとみられます。'
+      + 'どちらかで行を挿入・並べ替えすると、気づかないまま数値がずれます。'
+      + '<br><b>kpieeで再現するには、対応づけの基準になる列（組織コード・科目コード等）の指定が必要です。</b>');
+  }
   const parts: { cls: string; text: string; note: string }[] = [];
   // 外部ブック参照 [n]
   const book = /\[(\d+)\]/.exec(f);
@@ -770,7 +792,11 @@ function renderFormulaAnatomy(b: LogicBlock, fileNameOf: (l: string) => string):
       note: b.byKey ? '照合するセル' : '自分と同じセル位置（行・列がそのまま対応）',
     });
   }
-  if (parts.length === 0) return '';
+  // 数式はあるが部位に分解できなかった（想定外の書き方）。素の数式だけでも根拠として出す
+  if (parts.length === 0) {
+    return `<div class="fx"><div class="fx-code">${esc(shortText(f, 120))}</div>`
+      + `<p class="fx-how">この数式の参照先を自動で読み取れませんでした。お打ち合わせで内容をご確認させてください。</p></div>`;
+  }
 
   // 数式を部位で塗り分ける。拾えなかった部分は素のまま残す
   let rest = f;
