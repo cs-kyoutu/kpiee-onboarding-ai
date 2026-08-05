@@ -671,6 +671,123 @@ function fitText(s: string, maxPx: number, fontPx: number): string {
 // ============================================================
 const ER = { W: 226, HEAD: 30, ROW: 22, GX: 148, GY: 26, PAD: 16, CAP: 20 };
 
+// ============================================================
+// ロジック別ブロック
+//
+// ER 図を1枚の巨大な図として出すと、直前に全体の流れを見ていても「これは何の話か」が
+// 分からない（465表から上位20表を抜いた図なので、全体のどこを切り出したのかが読めない）。
+// そこで「最終アウトプットへ流れ込むファイル1つ」を1ブロックとして切り、
+//   ① 全体のどの部分か → ② その計算の中身 → ③ 関係する表のキーと定義 → ④ だからこのER
+// の順に、関係の本数が多い（＝説明の重みが大きい）ブロックから並べる。
+// ============================================================
+interface LogicBlock {
+  fromFile: string;                 // 上流ファイル（ラベル）
+  toFile: string;                   // 最終アウトプット（ラベル）
+  total: number;                    // 関係の本数
+  group: Group | undefined;         // 関係の種類（代表）
+  srcRegionIds: string[];
+  dstRegionIds: string[];
+  srcSheets: string[];
+  dstSheets: string[];
+  repFormula: string;               // 代表の数式（根拠）
+  /** キーで引き当てているか。false なら「セル位置で対応」＝行の並びが同一である前提 */
+  byKey: boolean;
+}
+
+function buildLogicBlocks(
+  regions: Region[], pairs: PairAgg[], filePairs: FilePair[], outputs: Set<string>,
+): LogicBlock[] {
+  const fileOfRegion = new Map(regions.map(r => [r.id, r.file]));
+  const sheetOfRegion = new Map(regions.map(r => [r.id, r.sheet]));
+  const blocks: LogicBlock[] = [];
+  for (const out of outputs) {
+    const ups = [...new Set(filePairs.filter(p => p.to === out).map(p => p.from))];
+    for (const up of ups) {
+      const fp = filePairs.filter(p => p.from === up && p.to === out);
+      const rp = pairs.filter(p => fileOfRegion.get(p.from) === up && fileOfRegion.get(p.to) === out);
+      if (rp.length === 0) continue;
+      const srcRegionIds = [...new Set(rp.map(p => p.from))];
+      const dstRegionIds = [...new Set(rp.map(p => p.to))];
+      // 代表の数式は「一番本数の多い表ペア」から取る（例外的な1本を代表にしない）
+      const top = [...rp].sort((a, b) => b.total - a.total)[0];
+      const rep = Object.values(top.best).find(e => e && e.evidence)?.evidence ?? '';
+      blocks.push({
+        fromFile: up, toFile: out,
+        total: fp.reduce((s, p) => s + p.total, 0),
+        group: fp.length > 0 ? dominantFileGroup(fp[0]) : undefined,
+        srcRegionIds, dstRegionIds,
+        srcSheets: [...new Set(srcRegionIds.map(id => sheetOfRegion.get(id) ?? ''))].filter(Boolean),
+        dstSheets: [...new Set(dstRegionIds.map(id => sheetOfRegion.get(id) ?? ''))].filter(Boolean),
+        repFormula: rep,
+        // ref グループ = VLOOKUP・SUMIFS の条件範囲など「キーの値で引き当てている」関係。
+        // これが1本も無ければ、対応はセル位置（行・列の並び）に依っている。
+        byKey: rp.some(p => (p.counts.ref ?? 0) > 0),
+      });
+    }
+  }
+  return blocks.sort((a, b) => b.total - a.total);
+}
+
+/**
+ * 代表の数式を「どの部分が何を指しているか」に分解して見せる。
+ *
+ * 「どういう計算か」を文章だけで書くと、=SUM([1]top:end!E6) のどこがどのファイルの
+ * どのシートを指しているのかが読み取れない。数式そのものを部位ごとに色分けし、
+ * 直下に対応表を置くことで「どこが何を意味するか」を目で追えるようにする。
+ */
+function renderFormulaAnatomy(b: LogicBlock, fileNameOf: (l: string) => string): string {
+  const f = b.repFormula;
+  if (!f) return '';
+  const parts: { cls: string; text: string; note: string }[] = [];
+  // 外部ブック参照 [n]
+  const book = /\[(\d+)\]/.exec(f);
+  if (book) parts.push({ cls: 'fx1', text: book[0], note: `別ブック＝「${fileNameOf(b.fromFile)}」` });
+  // シート指定（範囲 a:b もそのまま拾う）
+  const sheet = /(?:\[\d+\])?((?:'[^']+')|[^!'[\]]+)!/.exec(f);
+  if (sheet) {
+    const spec = sheet[1];
+    const range = spec.includes(':');
+    parts.push({
+      cls: 'fx2', text: `${spec}!`,
+      note: range
+        ? `${spec.replace(':', '〜')} の ${b.srcSheets.length} シート（範囲内すべて）`
+        : `シート「${spec}」`,
+    });
+  }
+  // 参照先セル
+  const cell = /!\$?([A-Za-z]{1,3}\$?\d+)/.exec(f);
+  if (cell) {
+    parts.push({
+      cls: 'fx3', text: cell[1],
+      note: b.byKey ? '照合するセル' : '自分と同じセル位置（行・列がそのまま対応）',
+    });
+  }
+  if (parts.length === 0) return '';
+
+  // 数式を部位で塗り分ける。拾えなかった部分は素のまま残す
+  let rest = f;
+  let code = '';
+  for (const p of parts) {
+    const i = rest.indexOf(p.text);
+    if (i < 0) continue;
+    code += `${esc(rest.slice(0, i))}<span class="${p.cls}">${esc(p.text)}</span>`;
+    rest = rest.slice(i + p.text.length);
+  }
+  code += esc(rest);
+
+  return `<div class="fx">
+    <div class="fx-code">${code}</div>
+    <ul class="fx-legend">
+      ${parts.map(p => `<li><span class="${p.cls}">${esc(p.text)}</span>${esc(p.note)}</li>`).join('\n      ')}
+    </ul>
+    <p class="fx-how">${b.byKey
+      ? '<b>対応のしかた：キーの値で引き当て</b>（値が一致する行を探して結合します）'
+      : '<b>対応のしかた：セル位置で対応（結合キーなし）</b>'
+        + ' ── 両ブックの行の並び（勘定科目などの順序）が同一であることが前提です。'
+        + 'どちらかで行を挿入・並べ替えすると、気づかないまま数値がずれます。'}</p>
+  </div>`;
+}
+
 interface ErResult { svg: string; omitted: number }
 
 function buildErDiagram(regions: Region[], keyLinks: KeyLink[], labels: Map<string, string>): ErResult | null {
@@ -907,6 +1024,106 @@ function promoteDeclaredOutputRegions(
     const flowsOut = pairs.some(p => p.from === r.id && fileOfRegion.get(p.to) !== r.file);
     if (!flowsOut) roles.set(r.id, '最終アウトプット');
   }
+}
+
+/**
+ * 1ブロックの本文。① どの部分か → ② その計算 → ③ キーと定義 → ④ ER の順で組む。
+ * ER はこのブロックに登場する表だけに絞って描くので、直前の説明と1対1で対応する。
+ */
+function renderLogicBlock(
+  b: LogicBlock, no: number, regions: Region[], keyLinks: KeyLink[],
+  labels: Map<string, string>, fileNameOf: (l: string) => string,
+): string {
+  const byId = new Map(regions.map(r => [r.id, r]));
+  const ids = new Set([...b.srcRegionIds, ...b.dstRegionIds]);
+  const mine = [...ids].map(id => byId.get(id)).filter((r): r is Region => !!r);
+  const keyed = mine.filter(r => (r.keys?.keys?.length ?? 0) > 0);
+  // ER はこのブロックの表どうしのキー対応だけ
+  const myLinks = keyLinks.filter(l => ids.has(regionIdOf(l.a)) && ids.has(regionIdOf(l.b)));
+  const er = buildErDiagram(mine, myLinks, labels);
+
+  // 表の呼び名はシート名だけにする。ファイル名はブロックの見出しで既に2回出ているので、
+  // ここで繰り返すと1セルが100文字を超えて表が読めなくなる。
+  const sheetLabel = (r: Region): string => {
+    const l = labels.get(r.id) ?? r.sheet;
+    const i = l.lastIndexOf('›');
+    return i >= 0 ? l.slice(i + 1).trim() : l;
+  };
+  const keyRows = keyed.slice(0, 8).map(r => `<tr>`
+    + `<td><b>${esc(sheetLabel(r))}</b><div class="rnote">${esc(rangeOf(r))}・${r.dataRowCount.toLocaleString()}行</div></td>`
+    + `<td>${esc(cappedKeys(r))}</td>`
+    + `<td>${esc(cappedGrain(r))}</td>`
+    + `</tr>`).join('\n        ');
+
+  return `<div class="lb">
+    <div class="lb-head"><span class="lb-no">${no}</span>
+      <div><b>${esc(fileNameOf(b.fromFile))}</b> → <b>${esc(fileNameOf(b.toFile))}</b>
+        <div class="lb-sub">関係 ${b.total.toLocaleString()} 本${b.group ? ` ／ ${esc(GROUP_META[b.group].label)}` : ''}
+          ／ 元 ${b.srcRegionIds.length} 表 → 先 ${b.dstRegionIds.length} 表</div></div>
+    </div>
+
+    <div class="lb-step"><span class="lb-st">どういう計算か</span>
+      <p>最終アウトプット側の${b.dstSheets.length === 1 ? `<b>${esc(b.dstSheets[0])}</b>シート` : `<b>${b.dstSheets.length}</b>シート`}が、
+      元データ側の${b.srcSheets.length === 1 ? `<b>${esc(b.srcSheets[0])}</b>シート` : `<b>${b.srcSheets.length}</b>シート`}から
+      ${b.group ? esc(GROUP_META[b.group].label.replace(/（.*$/, '')) : '値を取得'}しています。</p>
+      ${renderFormulaAnatomy(b, fileNameOf)}
+    </div>
+
+    ${keyed.length > 0 ? `<div class="lb-step"><span class="lb-st">関係する表のキーと1行の定義</span>
+      <div style="overflow-x:auto"><table class="ot">
+        <tr><th>表</th><th>キー（1行を決める列）</th><th>1行の単位</th></tr>
+        ${keyRows}
+      </table></div>
+      ${keyed.length > 8 ? `<p class="tbl-note">※ キーが特定できた ${keyed.length} 表のうち上位8表。</p>` : ''}
+      ${keyed.length < mine.length ? `<p class="tbl-note">※ このブロックの ${mine.length} 表のうち ${mine.length - keyed.length} 表は、1行を決める列を特定できていません（03 でお伺いします）。</p>` : ''}
+    </div>` : `<div class="lb-step"><span class="lb-st">関係する表のキーと1行の定義</span>
+      <p class="tbl-note">このブロックの ${mine.length} 表では、1行を決める列（キー）を特定できませんでした。${b.byKey ? '' : '上記のとおりセル位置で対応しているため、キー列が数式に現れません。'}03 でお伺いします。</p>
+    </div>`}
+
+    ${er ? `<div class="lb-step"><span class="lb-st">キー関係図（ER）— 上記の表だけ</span>
+      <div class="map-scroll er-scroll">${er.svg}</div>
+      ${er.omitted > 0 ? `<p class="tbl-note">※ キーでつながる表を優先表示（ほか ${er.omitted} 表は省略）。</p>` : ''}
+    </div>` : `<div class="lb-step"><span class="lb-st">キー関係図（ER）</span>
+      <p class="tbl-note">このブロックには、キー列で結ばれる表の対がありません${b.byKey ? '' : '（セル位置での対応のため、結合キーが存在しません）'}。</p>
+    </div>`}
+  </div>`;
+}
+
+/** 表示上限。横持ちの広い表では軸列が数十本立つので、並べると1セルが読めなくなる */
+const KEY_COLS_SHOWN = 3;
+
+const capList = (names: string[], sep: string): string => names.length <= KEY_COLS_SHOWN
+  ? names.join(sep)
+  : `${names.slice(0, KEY_COLS_SHOWN).join(sep)} ほか${names.length - KEY_COLS_SHOWN}列`;
+
+/**
+ * 軸だけが多数立っている表を「キー未特定」と扱う本数のしきい値。
+ * 248行 × 250列のような横持ちの帳票では月別列などが軸として大量に立つ。それを並べて
+ * 「42列ごとに1行」と書くと、読み手には確定した事実に見えるが実際には特定できていない。
+ * 主キーが無くこの本数を超えるなら、断定せず 03 の確認事項に回す。
+ */
+const AXIS_ONLY_GIVEUP = 6;
+
+/** キー列の要約（列数が多い表でも1行に収まる長さにする） */
+function cappedKeys(r: Region): string {
+  if (r.keys?.grain) return r.keys.grain; // 横持ち: 行キー × 列軸 の2次元グレイン
+  const ks = r.keys?.keys ?? [];
+  if (ks.length === 0) return '（特定できていません）';
+  const primary = ks.filter(k => k.role === 'primary');
+  if (primary.length > 0) return capList(primary.map(k => k.column), '、');
+  if (ks.length > AXIS_ONLY_GIVEUP) return `（特定できていません／軸の候補 ${ks.length} 列）`;
+  return capList(ks.map(k => k.column), '、');
+}
+
+/** 「1行の単位」の説明文。断定できるのは主キーか2次元グレインがあるときだけ */
+function cappedGrain(r: Region): string {
+  if (r.keys?.grain) return r.keys.grain;
+  const ks = r.keys?.keys ?? [];
+  if (ks.length === 0) return '（特定できていません）';
+  const primary = ks.filter(k => k.role === 'primary');
+  if (primary.length > 0) return `${capList(primary.map(k => k.column), '・')} ごとに1行`;
+  if (ks.length > AXIS_ONLY_GIVEUP) return '（特定できていません）';
+  return `${capList(ks.map(k => k.column), ' × ')} の組合せで1行`;
 }
 
 /** ファイル役割を確定する（最終アウトプットの指定を反映してから流入・流出で分類） */
@@ -1217,12 +1434,20 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   let subNo = 0;
   const subH = (title: string) => `<h3 class="sub-h">${flowNo}-${++subNo}　${esc(title)}</h3>`;
 
-  const edgeTotal = graph.edgeTotal ?? edges.length;
   const dateStr = input.generatedAt.toISOString().slice(0, 10);
   const customer = input.customerName ? `${input.customerName}様` : 'ご担当者様';
 
   const sheetTotal = new Set(regions.map(r => `${r.file}\u0000${r.sheet}`)).size;
   const outStats = outputLabels.map(l => fileStats.get(l)!).filter(Boolean);
+  // 冒頭のタイルは「受領 → インプット → 最終アウトプット → 確認事項」の順で読ませる。
+  // 以前は「検出した表 465表」「表どうしの関係 423,321件」を出していたが、これは解析の規模で
+  // あって顧客の関心事ではない（「とても複雑そう」という印象だけが残る）。表数・関係数は
+  // まとめ文と 02 の図の中で、文脈が付いた形で触れる。
+  const srcFileCount = [...fileStats.values()].filter(s => s.role === '元データ').length;
+  const midFileCount = [...fileStats.values()].filter(s => s.role === '中間ファイル').length;
+  // 02 を「ロジック別ブロック」で説明するための分割。ER はブロックの結論として各ブロック内に出す。
+  const logicBlocks = buildLogicBlocks(regions, pairs, filePairs, outputFiles);
+  const isolatedFiles = [...fileStats.values()].filter(s => s.role === '独立');
 
   // ---- サマリ文（決定的に組み立てる） ----
   // 先頭に「この案件の重点」（アウトプット相談で指定された focus）を置く。読み合わせの目的を
@@ -1423,10 +1648,14 @@ ${secOn.inventory ? `
       <p class="sec-lede">いただいたファイル（ブック）と、その中の各シートがどういう役割かの一覧です。1つのシートに複数の表が含まれる場合は、表単位に分割して解析しています。</p>
     </div>
     <div class="tiles">
-      <div class="tile"><div class="tl">受領ファイル</div><div class="tv">${input.fileCount}<small>件</small></div></div>
-      <div class="tile"><div class="tl">検出した表</div><div class="tv">${regions.length}<small>表</small></div></div>
-      <div class="tile"><div class="tl">表どうしの関係</div><div class="tv">${edgeTotal.toLocaleString()}<small>件</small></div></div>
-      <div class="tile warn"><div class="tl">ご確認いただきたい点</div><div class="tv">${questions.length}<small>件</small></div></div>
+      <div class="tile"><div class="tl">受領ファイル</div><div class="tv">${input.fileCount}<small>件</small></div>
+        <div class="tsub">${sheetTotal} シート</div></div>
+      <div class="tile"><div class="tl">元データ（インプット）</div><div class="tv">${srcFileCount}<small>ファイル</small></div>
+        <div class="tsub">${midFileCount > 0 ? `経由するファイル ${midFileCount}` : '経由ファイルなし'}</div></div>
+      <div class="tile out"><div class="tl">最終アウトプット</div><div class="tv">${outStats.length}<small>ファイル</small></div>
+        <div class="tsub">${outStats.length > 0 ? esc(shortText(outStats.map(s => s.filename).join('、'), 38)) : '未特定'}</div></div>
+      <div class="tile warn"><div class="tl">ご確認いただきたい点</div><div class="tv">${questions.length}<small>件</small></div>
+        <div class="tsub">${noQuestions ? `${noQuestions} をご覧ください` : 'お打ち合わせでご相談'}</div></div>
     </div>
     <div class="summary">
       <div class="stitle">まとめ</div>
@@ -1492,16 +1721,7 @@ ${secOn.flow ? `
     <p class="sec-lede">ファイルをまたぐ関係は検出されませんでした。各ファイルが独立して管理されている可能性があります${refQuestions}。</p>`) : ''}
 
     ${map ? `
-    ${er ? `
-    ${subH('詳細関係図①　キー関係図（ER）')}
-    <ul class="graph-guide">
-      <li><b>ボックス＝表</b>。<span class="k">🔑</span>＝主キー（1行を一意に決める列）／<span class="k">◇</span>＝軸</li>
-      <li><b>線＝同じキー列での対応</b>。端の <b>1 / N</b> が1対多（<b>1</b>＝マスタ側／<b>N</b>＝明細側）</li>
-    </ul>
-    <div class="map-scroll er-scroll">${er.svg}</div>
-    ${er.omitted > 0 ? `<p class="tbl-note">※ キーでつながる表を優先表示（ほか ${er.omitted} 表は省略）。</p>` : ''}` : ''}
-
-    ${subH(er ? '詳細関係図②　最終アウトプットへの流れ（シート・表単位）' : '詳細関係図　最終アウトプットへの流れ（シート・表単位）')}
+    ${subH('最終アウトプットへの流れ（シート・表単位）')}
     <ul class="graph-guide">
       <li><b>ノード＝表</b>。<b>上＝元データ → 下＝最終アウトプット</b>、矢印の向きにデータが流れます</li>
       <li><b>線の色＝関係の種類</b>／<b>破線＝手作業コピー（要確認）</b></li>
@@ -1534,8 +1754,25 @@ ${secOn.flow ? `
       ? `<p class="tbl-note">※ 円の大きさ＝つながりの本数。つながりの多い表を優先表示（省略: 表 ${map.omittedNodes}・関係 ${map.omittedEdges}）。</p>`
       : '<p class="tbl-note">※ 円の大きさ＝つながりの本数。</p>'}
 
+    ${logicBlocks.length > 0 ? `
+    ${subH('ロジック別の説明 — 上の流れを部分ごとに分けて見ます')}
+    <p class="sec-lede">上の図の流れを、最終アウトプットへ流れ込むファイルごとに ${logicBlocks.length} 個に分けました。
+    関係の本数が多い（＝影響の大きい）ものから、<b>どういう計算か → 関係する表のキーと1行の定義 → キー関係図（ER）</b>の順にご説明します。</p>
+    ${logicBlocks.map((b, i) => renderLogicBlock(b, i + 1, regions, graph.keyLinks ?? [], labels, fileNameOf)).join('\n')}
+    ${isolatedFiles.length > 0 ? `<div class="lb iso">
+      <div class="lb-head"><span class="lb-no">—</span>
+        <div><b>つながりが検出できなかったファイル</b>
+          <div class="lb-sub">${isolatedFiles.map(s => esc(s.filename)).join('、')}</div></div>
+      </div>
+      <div class="lb-step"><span class="lb-st">状況</span>
+        <p>これらのファイルは、他のどのファイルとも数式・値の一致でつながりませんでした。
+        ${isolatedFiles.some(s => s.regionCount > 0) ? '数式を持たない（システムからの出力をそのまま貼った）ファイルの場合、' : ''}
+        どこへどうやって取り込まれているかが Excel 上に根拠として残りません。${refQuestions}</p>
+      </div>
+    </div>` : ''}` : ''}
+
     ${spec.items.detailLogic ? `
-    ${subH('詳細ロジック — どのシートが、どのキーで、どうつながっているか')}
+    ${subH('関係の一覧（付録）— どのシートが、どのキーで、どうつながっているか')}
     <div style="overflow-x:auto">
       <table class="ot dl">
         <tr><th>元（表・列）</th><th>キー</th><th>処理</th><th>先（表・列）</th><th>根拠（数式・一致）</th><th>確度</th></tr>
@@ -1545,7 +1782,8 @@ ${secOn.flow ? `
     </div>` : ''}
     <div class="callout info">
       <span class="mark">ℹ️</span>
-      <span>ピボットテーブル・INDIRECT関数・ファイル間の数式リンクは自動追跡の対象外です。図に出ていないつながりがあれば、お打ち合わせで補足をお願いします。</span>
+      <span>別ブックを参照する数式（外部リンク）は追跡していますが、参照先のファイルをいただいていない場合・リンクが切れている場合は追跡できません。
+      ピボットテーブルも自動追跡の対象外です。図に出ていないつながりがあれば、お打ち合わせで補足をお願いします。</span>
     </div>` : `
     <p class="sec-lede">表どうしをつなぐ数式・値一致の関係は検出されませんでした。各表が独立して管理されている可能性があります${refQuestions}。</p>`}
   </div>
@@ -1644,8 +1882,35 @@ h2{font-family:var(--disp);font-weight:700;font-size:26px;color:var(--ink);line-
 .tile .tl{font-size:12px;color:var(--sub);letter-spacing:.04em}
 .tile .tv{font-family:var(--mono);font-size:30px;color:var(--ink);line-height:1.4;margin-top:2px}
 .tile .tv small{font-size:14px;color:var(--sub);margin-left:2px}
+/* タイルの補足行。数字だけでは「で、それが何なのか」が伝わらないので、対象名や参照先を1行添える */
+.tile .tsub{font-size:11.5px;color:var(--sub);line-height:1.5;margin-top:4px;word-break:break-all}
 .tile.warn{border-top:4px solid var(--amber)}
 .tile.warn .tv{color:var(--amber)}
+/* 最終アウトプット＝kpiee で再現する対象。読み合わせの目的地なので色で際立たせる */
+.tile.out{border-top:4px solid var(--red)}
+.tile.out .tv{color:var(--red)}
+/* ---- ロジック別ブロック ---- */
+.lb{border:1px solid var(--line);border-radius:14px;padding:0 0 6px;margin:20px 0;background:#fff;overflow:hidden}
+.lb.iso{border-style:dashed}
+.lb-head{display:flex;gap:14px;align-items:flex-start;padding:16px 22px;background:var(--bg2);border-bottom:1px solid var(--line)}
+.lb-no{flex:0 0 auto;width:26px;height:26px;border-radius:50%;background:var(--ink);color:#fff;
+  font-family:var(--mono);font-size:13px;display:flex;align-items:center;justify-content:center}
+.lb-sub{font-size:12px;color:var(--sub);margin-top:3px}
+.lb-step{padding:14px 22px 4px}
+.lb-st{display:inline-block;font-size:11px;letter-spacing:.06em;color:var(--sub);
+  border:1px solid var(--line);border-radius:999px;padding:2px 10px;margin-bottom:8px}
+/* 数式の部位分解。数式そのものを色分けし、直下に「どこが何を指すか」を並べる */
+.fx{margin:10px 0 4px}
+.fx-code{font-family:var(--mono);font-size:15px;background:var(--bg2);border:1px solid var(--line);
+  border-radius:8px;padding:12px 14px;overflow-x:auto;white-space:nowrap}
+.fx-legend{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:6px}
+.fx-legend li{font-size:12.5px;color:var(--sub);display:flex;gap:8px;align-items:baseline}
+.fx-legend li>span{flex:0 0 auto;font-family:var(--mono);font-size:12px;border-radius:4px;padding:1px 6px}
+.fx1{background:#E6F1FB;color:#185FA5}
+.fx2{background:#EAF3DE;color:#3B6D11}
+.fx3{background:var(--amber-bg);color:var(--amber)}
+.fx-how{font-size:12.5px;line-height:1.7;margin:10px 0 0;padding:10px 12px;border-radius:8px;
+  background:var(--amber-bg);border:1px solid #F0D8B0;color:#7A5100}
 .summary{margin-top:26px;background:#fff;border:1px solid var(--line);border-radius:16px;padding:24px 28px}
 .summary .stitle{font-weight:700;color:var(--ink);font-size:14px;border-left:3px solid var(--blue);padding-left:10px;margin-bottom:10px}
 .summary ul{list-style:none;display:flex;flex-direction:column;gap:8px;font-size:13.5px}

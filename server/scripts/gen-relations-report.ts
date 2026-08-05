@@ -61,9 +61,11 @@ const html = buildRelationsReportHtml({
   generatedAt: new Date(),
   fileCount: inputs.length,
   graph,
+  // ファイル名は analyzeArtifacts へ渡したものと必ず揃える。ズレると buildFileStats が
+  // 「region を持たないファイル」として 0 行の幽霊行を一覧に足してしまう。
   artifacts: inputs.map(p => ({
-    filename: basename(p),
-    kind: finals.has(basename(p)) ? 'final_output' : 'input_data',
+    filename: originalName(p),
+    kind: finals.has(originalName(p)) ? 'final_output' : 'input_data',
   })),
   declaredFileRels: graph.declaredFileRels,
   fileRelAudit: graph.fileRelAudit,
