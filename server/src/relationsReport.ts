@@ -181,7 +181,9 @@ function keySummary(r: Region): string {
   const primary = ks.filter(k => k.role === 'primary');
   if (primary.length > 0) return primary.map(k => k.column).join('、');
   if (r.keys?.axisNote) return r.keys.axisNote;
-  return ks.map(k => k.column).join(' × ');
+  // 行を決める列（axis）だけを出す。照合列（join）は 1行を決めるとは限らないので混ぜない
+  const axis = ks.filter(k => k.role === 'axis');
+  return axis.length > 0 ? axis.map(k => k.column).join(' × ') : '（不明）';
 }
 
 /** 図のノード副題用の短いキー表記（axisNote のような文は使わず列名だけ） */
@@ -190,7 +192,8 @@ function keySummaryShort(r: Region): string {
   if (ks.length === 0) return '';
   const primary = ks.filter(k => k.role === 'primary');
   if (primary.length > 0) return primary.map(k => k.column).join('、');
-  return ks.map(k => k.column).join(' × ');
+  const axis = ks.filter(k => k.role === 'axis');
+  return axis.length > 0 ? axis.map(k => k.column).join(' × ') : '';
 }
 
 const rangeOf = (r: Region): string => `${colLetter(r.c0)}${r.r0}:${colLetter(r.c1)}${r.r1}`;
@@ -388,7 +391,10 @@ function buildQuestions(
   }
 
   // (4) 大きい表なのにキーが特定できない: まとめて1問
-  const noKey = regions.filter(r => r.dataRowCount >= 20 && (r.keys?.keys?.length ?? 0) === 0);
+  // 「1行を決める列が分からない表」。照合列（join）しか無い表もここに含める —
+  // 数式が条件に使っている列は分かっても、1行の単位が決まらなければ移行時に困るのは同じ。
+  const noKey = regions.filter(r => r.dataRowCount >= 20 && !r.keys?.grain
+    && !(r.keys?.keys ?? []).some(k => k.role !== 'join'));
   if (noKey.length > 0) {
     const names = noKey.slice(0, 3).map(r => `「${labels.get(r.id) ?? r.sheet}」`).join('、')
       + (noKey.length > 3 ? ` ほか${noKey.length - 3}表` : '');
@@ -670,6 +676,8 @@ function fitText(s: string, maxPx: number, fontPx: number): string {
 // 必ず聞かれるのは「どのキーで結合するのか」なので、キーの対応は別図として出す。
 // ============================================================
 const ER = { W: 226, HEAD: 30, ROW: 22, GX: 148, GY: 26, PAD: 16, CAP: 20 };
+/** ER のボックス1つに並べるキー行の上限。照合列が多い表でボックスが縦に伸び切るのを防ぐ */
+const ER_KEY_ROWS_CAP = 8;
 
 // ============================================================
 // ロジック別ブロック
@@ -850,7 +858,12 @@ function buildErDiagram(regions: Region[], keyLinks: KeyLink[], labels: Map<stri
   const connectedKeys = new Set(shownLinks.flatMap(l => [l.a, l.b]));
   const keysOf = (r: Region) => {
     const conn = r.keys!.keys.filter(k => connectedKeys.has(`${r.id}:${k.column}`));
-    return conn.length > 0 ? conn : r.keys!.keys;
+    if (conn.length > 0) return conn;
+    // つながっている列が無いときは全部出すが、照合列（join）が多い表では行数ぶん
+    // ボックスが縦に伸びて図が読めなくなるので、行を決めるキーを優先して上限で切る
+    const ks = r.keys!.keys;
+    const identity = ks.filter(k => k.role !== 'join');
+    return (identity.length > 0 ? identity : ks).slice(0, ER_KEY_ROWS_CAP);
   };
   // カーディナリティ: 列の値が全行一意なら 1（マスタ側）、繰り返しがあれば N（明細側）
   const cardOf = (key: string): string => {
@@ -1037,7 +1050,10 @@ function renderLogicBlock(
   const byId = new Map(regions.map(r => [r.id, r]));
   const ids = new Set([...b.srcRegionIds, ...b.dstRegionIds]);
   const mine = [...ids].map(id => byId.get(id)).filter((r): r is Region => !!r);
-  const keyed = mine.filter(r => (r.keys?.keys?.length ?? 0) > 0);
+  // 「キーが分かっている表」= 1行を決めるキー（主キー・複合軸・2次元グレイン）が取れた表。
+  // 照合列（join）しか無い表は行の単位が未特定なので、ここには数えない。
+  const keyed = mine.filter(r => !!r.keys?.grain
+    || (r.keys?.keys ?? []).some(k => k.role !== 'join'));
   // ER はこのブロックの表どうしのキー対応だけ
   const myLinks = keyLinks.filter(l => ids.has(regionIdOf(l.a)) && ids.has(regionIdOf(l.b)));
   const er = buildErDiagram(mine, myLinks, labels);
@@ -1053,6 +1069,7 @@ function renderLogicBlock(
     + `<td><b>${esc(sheetLabel(r))}</b><div class="rnote">${esc(rangeOf(r))}・${r.dataRowCount.toLocaleString()}行</div></td>`
     + `<td>${esc(cappedKeys(r))}</td>`
     + `<td>${esc(cappedGrain(r))}</td>`
+    + `<td>${esc(joinKeysOf(r))}</td>`
     + `</tr>`).join('\n        ');
 
   return `<div class="lb">
@@ -1071,9 +1088,11 @@ function renderLogicBlock(
 
     ${keyed.length > 0 ? `<div class="lb-step"><span class="lb-st">関係する表のキーと1行の定義</span>
       <div style="overflow-x:auto"><table class="ot">
-        <tr><th>表</th><th>キー（1行を決める列）</th><th>1行の単位</th></tr>
+        <tr><th>表</th><th>1行を決めるキー</th><th>1行の単位</th><th>数式が照合に使う列</th></tr>
         ${keyRows}
       </table></div>
+      <p class="tbl-note">※「1行を決めるキー」は値の一意性から確認できたものだけを載せています。
+      「照合に使う列」は VLOOKUP・SUMIFS 等の条件に現れる列で、結合キーの候補ですが1行を決めるとは限りません。</p>
       ${keyed.length > 8 ? `<p class="tbl-note">※ キーが特定できた ${keyed.length} 表のうち上位8表。</p>` : ''}
       ${keyed.length < mine.length ? `<p class="tbl-note">※ このブロックの ${mine.length} 表のうち ${mine.length - keyed.length} 表は、1行を決める列を特定できていません（03 でお伺いします）。</p>` : ''}
     </div>` : `<div class="lb-step"><span class="lb-st">関係する表のキーと1行の定義</span>
@@ -1104,26 +1123,39 @@ const capList = (names: string[], sep: string): string => names.length <= KEY_CO
  */
 const AXIS_ONLY_GIVEUP = 6;
 
-/** キー列の要約（列数が多い表でも1行に収まる長さにする） */
+/**
+ * 「1行を決めるキー」の要約。行を決めると言えるのは primary（単独一意）と axis（複合軸）だけ。
+ * join（数式が照合に使っている列）はここに混ぜない — 混ぜると横持ち帳票で数十列が並び、
+ * 「42列ごとに1行」という確定事実に見える誤った要約になっていた。
+ */
 function cappedKeys(r: Region): string {
   if (r.keys?.grain) return r.keys.grain; // 横持ち: 行キー × 列軸 の2次元グレイン
   const ks = r.keys?.keys ?? [];
-  if (ks.length === 0) return '（特定できていません）';
   const primary = ks.filter(k => k.role === 'primary');
   if (primary.length > 0) return capList(primary.map(k => k.column), '、');
-  if (ks.length > AXIS_ONLY_GIVEUP) return `（特定できていません／軸の候補 ${ks.length} 列）`;
-  return capList(ks.map(k => k.column), '、');
+  const axis = ks.filter(k => k.role === 'axis');
+  if (axis.length > 0) return capList(axis.map(k => k.column), ' × ');
+  return '（特定できていません）';
 }
 
-/** 「1行の単位」の説明文。断定できるのは主キーか2次元グレインがあるときだけ */
+/** 「1行の単位」の説明文。断定できるのは主キー・複合軸・2次元グレインがあるときだけ */
 function cappedGrain(r: Region): string {
   if (r.keys?.grain) return r.keys.grain;
   const ks = r.keys?.keys ?? [];
-  if (ks.length === 0) return '（特定できていません）';
   const primary = ks.filter(k => k.role === 'primary');
   if (primary.length > 0) return `${capList(primary.map(k => k.column), '・')} ごとに1行`;
-  if (ks.length > AXIS_ONLY_GIVEUP) return '（特定できていません）';
-  return `${capList(ks.map(k => k.column), ' × ')} の組合せで1行`;
+  const axis = ks.filter(k => k.role === 'axis');
+  if (axis.length > 0) return `${capList(axis.map(k => k.column), ' × ')} の組合せで1行`;
+  return '（特定できていません）';
+}
+
+/** 数式が照合・条件に使っている列（結合キーの候補）。行を決めるかは別問題なので分けて出す */
+function joinKeysOf(r: Region): string {
+  const js = (r.keys?.keys ?? []).filter(k => k.role === 'join');
+  if (js.length === 0) return '—';
+  const omitted = r.keys?.joinKeysOmitted ?? 0;
+  const base = capList(js.map(k => k.column), '、');
+  return omitted > 0 ? `${base}（ほか${omitted}列）` : base;
 }
 
 /** ファイル役割を確定する（最終アウトプットの指定を反映してから流入・流出で分類） */

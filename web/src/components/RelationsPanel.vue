@@ -592,8 +592,9 @@ function colLetterRef(c: number): string {
                 <td>
                   <template v-if="selectedSummary.keys">
                     <div v-for="(k, i) in selectedSummary.keys.keys" :key="i" class="key-item">
+                      <!-- join = 数式が照合に使う列。結合キーの候補だが1行を決めるとは限らないので言い分ける -->
                       <span class="key-chip" :class="k.role === 'primary' ? 'key-primary' : 'key-axis'">
-                        {{ k.role === 'primary' ? '🔑 主キー' : '軸' }}
+                        {{ k.role === 'primary' ? '🔑 主キー' : k.role === 'axis' ? '軸' : '照合' }}
                       </span>
                       <strong>{{ k.column }}</strong>
                       <ul class="key-evidence">

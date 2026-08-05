@@ -180,8 +180,14 @@ export interface ColumnStats { filled: number; uniq: number; text: number }
 export interface RegionColumn { c: number; name: string; hasFormula: boolean; mixedFormula: boolean; manualNumeric: number; stats?: ColumnStats }
 
 // ---- キー・軸（この表は何を軸に1行が決まるか） ----
-// role: primary=単独で行を一意に定める列 / axis=複合軸の構成列（例: 部署 × 月）
-export interface RegionKey { column: string; c: number; role: 'primary' | 'axis'; confidence: number; evidence: string[] }
+// role の意味は「1行を決めるか」で分かれる。混ぜると「42列ごとに1行」のような嘘になる:
+//   primary … 単独で行を一意に定める列（値の一意性が根拠）
+//   axis    … 複合軸の構成列。組合せで1行が決まる（例: 部署 × 月）
+//   join    … 数式が照合・条件に使っている列。結合キーではあるが行を決めるとは限らない。
+//             横持ちの帳票では SUMIFS の条件範囲が数十列あり、これを axis と同列に扱うと
+//             「1行を決める列が42本」という誤った要約になっていた。
+export type KeyRole = 'primary' | 'axis' | 'join';
+export interface RegionKey { column: string; c: number; role: KeyRole; confidence: number; evidence: string[] }
 // 列方向の軸（横持ち＝系列を列に展開した表）。行キー×この列軸でセルの粒度が決まる。
 // 縦持ち（long）へ unpivot する際の melt 対象列がそのまま columns になる。
 export interface RegionColAxis {
@@ -194,7 +200,13 @@ export interface RegionKeys {
   colAxis?: string;       // 列方向の軸（月次系列ヘッダー等）の要約（表示用の文）
   colAxisDim?: RegionColAxis; // 上記を構造化したもの（横持ち。unpivot 軸の特定に使う）
   grain?: string;         // 行キー × 列軸 を合成したセル粒度の要約（例: 「店舗 × 月次（横持ち）」）
+  joinKeysOmitted?: number; // 表示上限で落とした照合列（join）の本数。「ほか N 列」と出すため
 }
+
+/** 1表あたり保持する照合列（join）の上限。横持ち帳票では条件範囲が数十列になる */
+const JOIN_KEYS_CAP = 6;
+/** 主キーと認めるための充填率。「ほぼ全行に値がある」列でなければ行を決められない */
+const KEY_COVERAGE_RATIO = 0.9;
 
 export interface Region {
   id: string; file: string; sheet: string;
@@ -417,7 +429,7 @@ function detectStructuralKeys(
   // 多いので、最左列（ID が置かれる定位置）に限る。それ以外の一意列は文字列主体のみ。
   for (const col of columns) {
     const st = col.stats!;
-    if (st.filled >= Math.max(3, dataRowCount * 0.9) && st.uniq === st.filled && st.uniq >= 3
+    if (st.filled >= Math.max(3, dataRowCount * KEY_COVERAGE_RATIO) && st.uniq === st.filled && st.uniq >= 3
       && (st.text * 2 >= st.filled || col.c === columns[0].c)) {
       keys.push({
         column: col.name, c: col.c, role: 'primary', confidence: 0.85,
@@ -1361,11 +1373,17 @@ function enrichKeysWithUsage(regions: Region[], edges: Edge[], keyLinks: KeyLink
     let k = reg.keys.keys.find(x => x.column === colName);
     if (!k) {
       // 構造検出に無かった列でも、キー利用の根拠があれば追加する。
-      // 値が全行一意なら主キー、そうでなければ軸（結合キー）として登録
+      // 値が全行一意なら主キー。そうでなければ join（照合に使われる列）として登録する。
+      // ここを axis にすると「1行を決める列」に混ざり、横持ち帳票で数十列が並んでしまう。
+      //
+      // 主キーへ昇格させるには「表のほぼ全行が埋まっている」ことを要求する（構造検出 (a) と同じ基準）。
+      // これが無いと、247行の表で3行だけ埋まった列が「全3行で値がすべて異なる」だけを根拠に
+      // 主キーになり、1表に主キーが42本並ぶ（実データで発生）。埋まっていない列は行を決められない。
       const st = col.stats;
-      const uniquePrimary = !!st && st.uniq === st.filled && st.filled >= 3;
+      const covered = !!st && st.filled >= Math.max(3, reg.dataRowCount * KEY_COVERAGE_RATIO);
+      const uniquePrimary = !!st && covered && st.uniq === st.filled;
       k = {
-        column: colName, c: col.c, role: uniquePrimary ? 'primary' : 'axis',
+        column: colName, c: col.c, role: uniquePrimary ? 'primary' : 'join',
         confidence: uniquePrimary ? 0.9 : 0.7,
         evidence: uniquePrimary ? [`全${st!.filled}行で値がすべて異なる（重複なし）`] : [],
       };
@@ -1385,8 +1403,20 @@ function enrichKeysWithUsage(regions: Region[], edges: Edge[], keyLinks: KeyLink
       const leftmost = Math.min(...primaries.map(k => k.c));
       reg.keys!.keys = ks.filter(k => k.role !== 'primary' || k.c === leftmost || k.evidence.length > 1);
     }
-    // 列順で安定表示（主キー→軸、左の列から）
-    reg.keys!.keys.sort((a, b) => (a.role === b.role ? a.c - b.c : a.role === 'primary' ? -1 : 1));
+    // 照合に使われる列（join）は横持ち帳票で数十本立つ。全部持つと表示側で溢れ、ER の
+    // ボックスも列数ぶん縦に伸びて図が読めなくなるので、根拠の多い順に上限まで残す。
+    const joins = reg.keys!.keys.filter(k => k.role === 'join');
+    if (joins.length > JOIN_KEYS_CAP) {
+      const keep = new Set(
+        [...joins].sort((a, b) => (b.evidence.length - a.evidence.length) || (a.c - b.c))
+          .slice(0, JOIN_KEYS_CAP),
+      );
+      reg.keys!.keys = reg.keys!.keys.filter(k => k.role !== 'join' || keep.has(k));
+      reg.keys!.joinKeysOmitted = joins.length - JOIN_KEYS_CAP;
+    }
+    // 列順で安定表示（主キー → 軸 → 照合列、それぞれ左の列から）
+    const rank = (r: KeyRole) => (r === 'primary' ? 0 : r === 'axis' ? 1 : 2);
+    reg.keys!.keys.sort((a, b) => (rank(a.role) - rank(b.role)) || (a.c - b.c));
     // 行キー × 列軸 の2次元グレイン要約（横持ち表のときだけ付与）。セルは「行キー×列軸」で一意に決まる。
     if (reg.keys!.colAxisDim) {
       const rowPart = rowKeyLabel(reg.keys!.keys) || '（行キー不明）';

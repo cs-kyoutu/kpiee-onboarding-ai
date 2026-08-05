@@ -109,6 +109,9 @@ export interface SheetClassification {
   role: 'input_data' | 'master_data' | 'working_sheet' | 'final_output' | 'unknown'
   reason: string
   references: string[]
+  /** 取込時に保存した規模。古いデータには無い */
+  rows?: number
+  formulas?: number
 }
 
 export interface AnalysisRun {
@@ -249,8 +252,10 @@ export interface RelRegionColumn { c: number; name: string; hasFormula: boolean;
 /** decode の解読項目（AI解読の融合用） */
 export interface RelAiFinding { logic_type: string; kpiee_target: string; explanation: string; confidence: string; source_ref: string }
 /** キー・軸の推定。primary=単独で行を一意に定める列 / axis=複合軸の構成列（部署 × 月 等） */
-export interface RelRegionKey { column: string; c: number; role: 'primary' | 'axis'; confidence: number; evidence: string[] }
-export interface RelRegionKeys { keys: RelRegionKey[]; axisNote?: string; colAxis?: string }
+// role: primary=単独で1行を決める / axis=複合軸の構成列（組合せで1行） / join=数式が照合に使う列
+//（join は結合キーの候補だが1行を決めるとは限らない。relations.ts の KeyRole と揃える）
+export interface RelRegionKey { column: string; c: number; role: 'primary' | 'axis' | 'join'; confidence: number; evidence: string[] }
+export interface RelRegionKeys { keys: RelRegionKey[]; axisNote?: string; colAxis?: string; joinKeysOmitted?: number }
 export interface RelRegion {
   id: string; file: string; sheet: string
   r0: number; r1: number; c0: number; c1: number
@@ -459,7 +464,6 @@ export interface ReportSpecData {
   configured: boolean
   sectionLabels: Record<keyof ReportSpecSections, string>
   itemLabels: Record<keyof ReportSpecItems, string>
-  facts: ReportFacts
 }
 
 export interface ReportChatMessage {
@@ -479,6 +483,11 @@ export interface ReportChatState {
 
 export function getReportSpec(projectId: number): Promise<ReportSpecData> {
   return get<ReportSpecData>(`/projects/${projectId}/report-spec`)
+}
+
+/** 解析結果の要約。関係グラフを読むので重い。画面では1回だけ取る */
+export function getReportFacts(projectId: number): Promise<{ facts: ReportFacts }> {
+  return get<{ facts: ReportFacts }>(`/projects/${projectId}/report-facts`)
 }
 
 /** 部分指定で保存（省略した項目は現状維持） */
