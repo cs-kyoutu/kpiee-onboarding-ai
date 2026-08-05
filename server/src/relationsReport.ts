@@ -1045,7 +1045,7 @@ function promoteDeclaredOutputRegions(
  */
 function renderLogicBlock(
   b: LogicBlock, no: number, regions: Region[], keyLinks: KeyLink[],
-  labels: Map<string, string>, fileNameOf: (l: string) => string,
+  labels: Map<string, string>, fileNameOf: (l: string) => string, showEr: boolean,
 ): string {
   const byId = new Map(regions.map(r => [r.id, r]));
   const ids = new Set([...b.srcRegionIds, ...b.dstRegionIds]);
@@ -1056,7 +1056,7 @@ function renderLogicBlock(
     || (r.keys?.keys ?? []).some(k => k.role !== 'join'));
   // ER はこのブロックの表どうしのキー対応だけ
   const myLinks = keyLinks.filter(l => ids.has(regionIdOf(l.a)) && ids.has(regionIdOf(l.b)));
-  const er = buildErDiagram(mine, myLinks, labels);
+  const er = showEr ? buildErDiagram(mine, myLinks, labels) : null;
 
   // 表の呼び名はシート名だけにする。ファイル名はブロックの見出しで既に2回出ているので、
   // ここで繰り返すと1セルが100文字を超えて表が読めなくなる。
@@ -1102,9 +1102,9 @@ function renderLogicBlock(
     ${er ? `<div class="lb-step"><span class="lb-st">キー関係図（ER）— 上記の表だけ</span>
       <div class="map-scroll er-scroll">${er.svg}</div>
       ${er.omitted > 0 ? `<p class="tbl-note">※ キーでつながる表を優先表示（ほか ${er.omitted} 表は省略）。</p>` : ''}
-    </div>` : `<div class="lb-step"><span class="lb-st">キー関係図（ER）</span>
+    </div>` : showEr ? `<div class="lb-step"><span class="lb-st">キー関係図（ER）</span>
       <p class="tbl-note">このブロックには、キー列で結ばれる表の対がありません${b.byKey ? '' : '（セル位置での対応のため、結合キーが存在しません）'}。</p>
-    </div>`}
+    </div>` : ''}
   </div>`;
 }
 
@@ -1435,7 +1435,9 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   // 従来どおり表単位の関係図から入る。
   const multiFile = fileStats.size > 1;
   const map = buildMap('r', regions, pairs, labels, copyQuestionByPair, roles);
-  const er = spec.items.erDiagram ? buildErDiagram(regions, graph.keyLinks ?? [], labels) : null;
+  // ER はロジック別ブロックの結論として各ブロック内に出す（1枚の巨大な図としては出さない）。
+  // 「ER を出さない」指定はブロック側へ渡して尊重する — ここで図を作らないだけでは効かない。
+  const showEr = spec.items.erDiagram;
   const pairKeys = buildPairKeyIndex(graph.keyLinks ?? []);
   const { rows: detailRows, omitted: detailOmitted } = buildDetailRows(pairs, labels, pairKeys, copyQuestionByPair);
   // 担当者が登録したブック関係の説明。セグメントを廃したので、全体図の直下にまとめて出す。
@@ -1789,8 +1791,8 @@ ${secOn.flow ? `
     ${logicBlocks.length > 0 ? `
     ${subH('ロジック別の説明 — 上の流れを部分ごとに分けて見ます')}
     <p class="sec-lede">上の図の流れを、最終アウトプットへ流れ込むファイルごとに ${logicBlocks.length} 個に分けました。
-    関係の本数が多い（＝影響の大きい）ものから、<b>どういう計算か → 関係する表のキーと1行の定義 → キー関係図（ER）</b>の順にご説明します。</p>
-    ${logicBlocks.map((b, i) => renderLogicBlock(b, i + 1, regions, graph.keyLinks ?? [], labels, fileNameOf)).join('\n')}
+    関係の本数が多い（＝影響の大きい）ものから、<b>どういう計算か → 関係する表のキーと1行の定義${showEr ? ' → キー関係図（ER）' : ''}</b>の順にご説明します。</p>
+    ${logicBlocks.map((b, i) => renderLogicBlock(b, i + 1, regions, graph.keyLinks ?? [], labels, fileNameOf, showEr)).join('\n')}
     ${isolatedFiles.length > 0 ? `<div class="lb iso">
       <div class="lb-head"><span class="lb-no">—</span>
         <div><b>つながりが検出できなかったファイル</b>
