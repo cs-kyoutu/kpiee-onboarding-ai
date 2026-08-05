@@ -21,6 +21,7 @@ import { runDecode, runGenerate, runMatch, tableNameOf } from './pipeline/orches
 import { buildKpieePreview, buildImplReport } from './match/kpieePreview.js';
 import { gatherSummary, buildSummaryDocx, buildSummaryMarkdown } from './summaryDoc.js';
 import { buildRelationsReportHtml, summarizeReportQuestions } from './relationsReport.js';
+import { addProjectDoc, listProjectDocs, deleteProjectDoc } from './projectDocs.js';
 import {
   applyDeclaredFileRelations, proposeFileRelations, FILE_REL_TYPES, FILE_REL_LABELS,
   type DeclaredFileRel, type FileRelType,
@@ -1000,6 +1001,48 @@ app.post('/api/projects/:id/scripts', async (req, res) => {
 
 app.delete('/api/scripts/:id', async (req, res) => {
   await db.prepare(`DELETE FROM project_scripts WHERE id = ?`).run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---- 業務資料（要件定義書・運用手順書・引継ぎメモ等）----
+// データ（xlsx/csv）とは別の入り口。表構造を持たないので関係分析・シート役割判定には混ぜず、
+// 本文だけを AI の解読・提案の前提として渡す（<reference_docs>）。
+// 数式からは絶対に読み取れない業務ルール（読み替え・例外・手作業の手順）がここに書かれている。
+app.get('/api/projects/:id/docs', async (req, res) => {
+  const docs = await listProjectDocs(Number(req.params.id));
+  // 一覧では本文を返さない（数十万字になりうるため）。長さだけ添えて「効いているか」を示す
+  res.json(docs.map(d => ({
+    id: d.id, filename: d.filename, byte_size: d.byte_size,
+    text_length: d.content.length, extract_error: d.extract_error, created_at: d.created_at,
+  })));
+});
+
+app.post('/api/projects/:id/docs', upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'file は必須です' });
+  const projectId = Number(req.params.id);
+  const filename = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
+  try {
+    const id = await addProjectDoc(projectId, filename, req.file.buffer);
+    const doc = (await listProjectDocs(projectId)).find(d => d.id === id)!;
+    res.status(201).json({
+      id: doc.id, filename: doc.filename, byte_size: doc.byte_size,
+      text_length: doc.content.length, extract_error: doc.extract_error, created_at: doc.created_at,
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+/** 本文の確認用（画面で「何が読み取れたか」を見せて確認してもらう） */
+app.get('/api/docs/:id/text', async (req, res) => {
+  const row = await db.prepare(`SELECT filename, content, extract_error FROM project_docs WHERE id = ?`)
+    .get(req.params.id) as { filename: string; content: string; extract_error: string | null } | undefined;
+  if (!row) return res.status(404).json({ error: 'not found' });
+  res.json(row);
+});
+
+app.delete('/api/docs/:id', async (req, res) => {
+  await deleteProjectDoc(Number(req.params.id));
   res.json({ ok: true });
 });
 

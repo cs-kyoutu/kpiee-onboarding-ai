@@ -13,6 +13,7 @@ import {
 } from '../ai/schemas.js';
 import { mockDecode, mockGenerate, mockOverview } from '../ai/mock.js';
 import { scanQuery } from '../validator/queryScanner.js';
+import { docsBlock } from '../projectDocs.js';
 import { matchAgainstFinalOutput } from '../match/simulate.js';
 
 const MAX_REGENERATION = 3; // 検証 NG 時の自動再生成上限（設計書 §6.3）
@@ -52,6 +53,15 @@ async function scriptsBlock(projectId: number): Promise<string> {
   if (scripts.length === 0) return '';
   const payload = scripts.map(s => ({ name: s.name, code: s.code }));
   return `\n\n<apps_scripts>\n${JSON.stringify(payload)}\n</apps_scripts>`;
+}
+
+/**
+ * AI へ渡す前提資料（Apps Script 原文 ＋ 業務資料）。
+ * 業務資料には「末尾0の組織は局管理の課組織に読み替える。ただし 9970 は読み替えない」のような、
+ * 数式からは絶対に読み取れない業務ルールが書かれている。解読の精度はここで大きく変わる。
+ */
+async function contextBlocks(projectId: number): Promise<string> {
+  return `${await scriptsBlock(projectId)}${await docsBlock(projectId)}`;
 }
 
 async function loadArtifacts(projectId: number): Promise<{ row: ArtifactRow; parsed: ParsedArtifact }[]> {
@@ -166,7 +176,7 @@ export async function runDecode(projectId: number): Promise<{ runId: number; fin
         ({ parsed: a.parsed, roles: a.roles, kind: a.row.kind, filename: a.row.original_filename })));
       const result = await callStructured<{ findings: Finding[]; overview: StructureOverview }>(
         projectId, 'decode',
-        `${decodeInstruction(assetNames)}\n\n<artifacts>\n${JSON.stringify(payload)}\n</artifacts>${await scriptsBlock(projectId)}`,
+        `${decodeInstruction(assetNames)}\n\n<artifacts>\n${JSON.stringify(payload)}\n</artifacts>${await contextBlocks(projectId)}`,
         FINDINGS_SCHEMA as unknown as Record<string, unknown>,
       );
       findings = result.data.findings;
@@ -298,7 +308,7 @@ export async function runGenerate(projectId: number): Promise<{ runId: number; v
       ? `${generateInstruction(assetNames)}\n\n<approved_findings>\n${JSON.stringify(approved)}\n</approved_findings>\n\n<artifacts>\n${JSON.stringify(
           shapeArtifactsToBudget(collections.artifacts.map(a =>
             ({ parsed: a.parsed, roles: a.roles, kind: a.row.kind, filename: a.row.original_filename }))),
-        )}\n</artifacts>${await scriptsBlock(projectId)}`
+        )}\n</artifacts>${await contextBlocks(projectId)}`
       : '';
 
     // P3 検証 NG → エラーをコンテキストへ追加して P2 を再実行（最大 MAX_REGENERATION 回）

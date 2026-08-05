@@ -117,6 +117,23 @@ CREATE TABLE IF NOT EXISTS project_scripts (
   created_at ${ts}
 );
 
+-- 業務資料（要件定義書・運用手順書・引継ぎメモ等）。データそのものではなく「データがどう作られるか」
+-- を書いた文書を置く場所。artifacts（xlsx/csv）とは完全に別に持つ:
+--   - 関係分析・シート役割判定の対象にしない（構造を持たないので混ぜると判定を汚す）
+--   - 一方で内容は AI の解読・提案の前提として効かせたい
+-- 例: 「末尾0の組織は局管理の課組織に読み替える。ただし 9970 は読み替えない」のような、
+-- 数式からは絶対に読み取れない業務ルールがここに書かれている。
+CREATE TABLE IF NOT EXISTS project_docs (
+  id ${pk},
+  project_id INTEGER NOT NULL REFERENCES projects(id),
+  filename TEXT NOT NULL,
+  -- 抽出した本文。抽出できない形式は空になり、その旨を extract_error に残す
+  content TEXT NOT NULL DEFAULT '',
+  extract_error TEXT,
+  byte_size INTEGER NOT NULL DEFAULT 0,
+  created_at ${ts}
+);
+
 CREATE TABLE IF NOT EXISTS project_overviews (
   project_id INTEGER PRIMARY KEY REFERENCES projects(id),
   content TEXT NOT NULL,
