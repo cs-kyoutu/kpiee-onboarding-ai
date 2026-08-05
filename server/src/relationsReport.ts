@@ -86,14 +86,24 @@ interface DeclaredOutputIndex {
   files: Set<string>;
   /** そのシートが最終帳票として指定されているか */
   hasSheet: (fileLabel: string, sheet: string) => boolean;
+  /**
+   * そのシートに人が付けた役割（input_data / master_data / working_sheet / final_output）。
+   * 未指定なら undefined。「最終帳票ではないと明示されている」ことを知るために要る。
+   * これが無いと、最終アウトプットのファイル内にあるインプットシートまで最終アウトプット扱いになる。
+   */
+  roleOfSheet: (fileLabel: string, sheet: string) => string | undefined;
 }
 
 function buildDeclaredOutputIndex(artifacts: ReportArtifact[]): DeclaredOutputIndex {
   const files = new Set<string>();
   const sheets = new Set<string>();
   const wholeFile = new Set<string>();
+  const roles = new Map<string, string>();
   for (const a of artifacts) {
     const label = fileLabelOf(a.filename);
+    for (const [sheet, role] of Object.entries(a.sheetRoles ?? {})) {
+      roles.set(`${label}\u0000${sheet}`, role);
+    }
     const marked = Object.entries(a.sheetRoles ?? {})
       .filter(([, role]) => role === 'final_output')
       .map(([sheet]) => sheet);
@@ -109,6 +119,7 @@ function buildDeclaredOutputIndex(artifacts: ReportArtifact[]): DeclaredOutputIn
   }
   return {
     files,
+    roleOfSheet: (f, s) => roles.get(`${f}\u0000${s}`) ?? (wholeFile.has(f) ? 'final_output' : undefined),
     hasSheet: (f, s) => wholeFile.has(f) || sheets.has(`${f}\u0000${s}`),
   };
 }
@@ -1044,21 +1055,45 @@ function resolveOutputFiles(stats: Map<string, FileStat>): { labels: string[]; d
 /**
  * 表（region）の役割を「最終アウトプット」へ昇格させる。roles を直接書き換える。
  *
- * 2つの経路がある:
+ * 3つの経路がある:
  *  (a) 取込時に「最終帳票」と指定されたシートの表 … つながりが未検出でも昇格させる。
  *      出典が人の業務知識なので、自動検出の有無で覆さない（覆すと 03 で「出所不明の表」として
  *      指定済みのシートを問い直す形になり、実際にそうなっていた）。
- *  (b) 最終アウトプットファイル内で「他ファイルへ流れ出さない表」… これが無いと、ファイル内で
- *      相互参照している帳票シートが一律「中間集計」に見えてしまう。
+ *  (b) 「最終帳票ではない役割」を指定されたシートの表 … 昇格させないだけでなく、構造推定で
+ *      付いた「最終アウトプット」も指定どおりの役割へ引き下げる。これが無いと、最終アウトプットの
+ *      ファイル内にあるインプットシート（貼付元・修正計上など）まで赤く塗られ、図全体が
+ *      「どれが最終アウトプットか分からない」状態になっていた（実データで表 28 件すべてが赤）。
+ *  (c) 指定が無く、最終アウトプットファイル内で「他ファイルへ流れ出さない表」… これが無いと、
+ *      ファイル内で相互参照している帳票シートが一律「中間集計」に見えてしまう。
  */
 function promoteDeclaredOutputRegions(
   regions: Region[], pairs: PairAgg[], roles: Map<string, Role>,
-  declaredOut: DeclaredOutputIndex, outputFiles: Set<string>,
+  declaredOut: DeclaredOutputIndex, outputFiles: Set<string>, outputsDeclared: boolean,
 ): void {
   const fileOfRegion = new Map(regions.map(r => [r.id, r.file]));
+  // 人が指定した役割 → 表の役割。構造推定より優先する（指定は業務知識で、推定は当て推量）
+  const BY_DECLARED: Record<string, Role> = {
+    input_data: '元データ（明細）',
+    master_data: 'マスタ（参照元）',
+    working_sheet: '中間集計',
+  };
   for (const r of regions) {
-    if (declaredOut.hasSheet(r.file, r.sheet)) { roles.set(r.id, '最終アウトプット'); continue; }
-    if (!outputFiles.has(r.file)) continue;
+    const declaredRole = declaredOut.roleOfSheet(r.file, r.sheet);
+    if (declaredRole === 'final_output') { roles.set(r.id, '最終アウトプット'); continue; }
+    const mapped = declaredRole ? BY_DECLARED[declaredRole] : undefined;
+    if (mapped) {
+      // つながりが1本も無い表は「独立（つながりなし）」のままにする（確認事項として拾うため）
+      if (roles.get(r.id) !== '独立（つながりなし）') roles.set(r.id, mapped);
+      continue;
+    }
+    if (declaredRole) continue; // unknown 等。推定で最終アウトプットにはしない
+    if (!outputFiles.has(r.file)) {
+      // 最終アウトプットが指定されているなら、その外側の「行き止まりの表」は最終アウトプットでは
+      // ない。computeRoles は構造だけを見て終着点を最終アウトプットと呼ぶので、ここで引き下げる。
+      // これが無いと、指定と無関係なファイルの終端表まで赤くなり目的地が埋もれる。
+      if (outputsDeclared && roles.get(r.id) === '最終アウトプット') roles.set(r.id, '中間集計');
+      continue;
+    }
     if (roles.get(r.id) === '独立（つながりなし）') continue;
     const flowsOut = pairs.some(p => p.from === r.id && fileOfRegion.get(p.to) !== r.file);
     if (!flowsOut) roles.set(r.id, '最終アウトプット');
@@ -1419,7 +1454,8 @@ export function summarizeReportQuestions(input: RelationsReportInput): { count: 
   );
   const fileNameOf = (label: string) => fileStats.get(label)?.filename ?? label;
   // 本体と同じ役割昇格を通してから問いを数える（件数が本体とズレると相談画面の表示が食い違う）
-  promoteDeclaredOutputRegions(regions, pairs, roles, declaredOut, new Set(resolveOutputFiles(fileStats).labels));
+  const resolved = resolveOutputFiles(fileStats);
+  promoteDeclaredOutputRegions(regions, pairs, roles, declaredOut, new Set(resolved.labels), resolved.declared);
   const qs = buildQuestions(
     regions, pairs, graph.warnings ?? [], labels, roles, input.fileRelAudit ?? [], fileNameOf, declaredOut,
     graph.sharedTemplates ?? [],
@@ -1448,7 +1484,7 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   const outputFiles = new Set(outputLabels);
   assignFileRoles(fileStats, outputFiles, outputsDeclared);
   const fileNameOf = (label: string) => fileStats.get(label)?.filename ?? label;
-  promoteDeclaredOutputRegions(regions, pairs, roles, declaredOut, outputFiles);
+  promoteDeclaredOutputRegions(regions, pairs, roles, declaredOut, outputFiles, outputsDeclared);
 
   const declaredRels = input.declaredFileRels ?? [];
   const audit = input.fileRelAudit ?? [];
