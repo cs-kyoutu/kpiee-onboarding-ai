@@ -367,6 +367,10 @@ app.patch('/api/artifacts/:id/roles', async (req, res) => {
       // 役割を変えたときだけ印を付ける。自動判定のまま確定した行は理由をそのまま残す
       reason: base === '' ? MARK : changed || prev.reason.includes(MARK) ? `${base}${MARK}` : base,
       references: prev?.references ?? [],
+      // 規模（行数・数式数）は取込時に入れた値をそのまま残す。ここで落とすと画面が
+      // 原本を再パースして取り直すことになる
+      rows: prev?.rows,
+      formulas: prev?.formulas,
     };
   }
   await db.prepare(`UPDATE artifacts SET sheet_roles = ? WHERE id = ?`).run(JSON.stringify(current), req.params.id);
@@ -424,7 +428,7 @@ function sheetOfRef(ref: string): string {
 /**
  * ローカルの関係グラフ（骨格）に decode の findings を融合する。
  * - 各表領域(region)に、そのシートの AI解読項目を ai[] として添付（意味づけ）
- * - copy(値一致)辺には、提供先シートの AI解読をヒントとして添付（手コピー誤検出の見極め用）
+ * - copy(値一致)辺には、提供先シートの AI解読をヒントとして添付（手修正誤検出の見極め用）
  * findings は decode 実行後に増えるためキャッシュせず毎回新しく合成する。
  */
 async function attachAiFindings(base: LocalGraph, projectId: number): Promise<unknown> {
@@ -535,7 +539,7 @@ async function loadProjectRelationGraph(projectId: number): Promise<{ graph: Awa
  * 関係分析ワーカーへ渡す1ファイル分を用意する。
  * ネイティブ Google シートは原本バイトを持たないので、Drive からチャンク読みして格子を作る。
  * 行を絞ったシートはヘッダー＋標本＋数式行だけの格子になり、表領域（ノード）としては登録されるが
- * 手コピー指紋（列の値が長さ・順序込みで完全一致）は成立しないので計算対象から外す。
+ * 手修正指紋（列の値が長さ・順序込みで完全一致）は成立しないので計算対象から外す。
  * 実際の総行数は rowTotals で渡し、表の規模が実物どおり表示されるようにする。
  */
 async function relationSourceOf(r: { storage_key: string; original_filename: string }): Promise<WorkerFile> {
@@ -637,7 +641,7 @@ async function loadRelationGraphWithDeclarations(projectId: number) {
 }
 
 // プロジェクト全体のシート関係性グラフ。アップロード済みの全ファイル(xlsx/csv)を1パスで解析し、
-// ファイルをまたぐ手コピー関係も検出する。ファイルが1つなら自然にそのファイル単体の解析になる。
+// ファイルをまたぐ手修正関係も検出する。ファイルが1つなら自然にそのファイル単体の解析になる。
 app.get('/api/projects/:id/relations', async (req, res) => {
   const projectId = Number(req.params.id);
   try {
@@ -781,7 +785,11 @@ async function reportFacts(projectId: number): Promise<ProjectFacts> {
   };
 }
 
-/** 現在の構成指定＋項目カタログ＋解析結果の要約（画面のチェックリストがこれだけで描ける） */
+/**
+ * 現在の構成指定＋項目カタログ。DB を1行読むだけなので軽い。
+ * 解析結果の要約（facts）はここに含めない — 関係グラフの読み込みと確認事項の再計算が入り、
+ * チェックを1つ付け替えるたびに数秒待たされていた（画面は facts を別途1回だけ取る）。
+ */
 app.get('/api/projects/:id/report-spec', async (req, res) => {
   const projectId = Number(req.params.id);
   try {
@@ -790,8 +798,16 @@ app.get('/api/projects/:id/report-spec', async (req, res) => {
       configured: await reportSpecConfigured(projectId),
       sectionLabels: REPORT_SECTION_LABELS,
       itemLabels: REPORT_ITEM_LABELS,
-      facts: await reportFacts(projectId),
     });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+/** 解析結果の要約（重い。関係グラフを読む）。画面表示と AI 相談の前提に使う */
+app.get('/api/projects/:id/report-facts', async (req, res) => {
+  try {
+    res.json({ facts: await reportFacts(Number(req.params.id)) });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }

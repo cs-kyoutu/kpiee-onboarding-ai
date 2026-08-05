@@ -8,10 +8,10 @@
 // 「確定」は全ファイルの役割を明示的に保存し、roles_confirmed の印を立てる（人が見た証跡）。
 // 確定後は編集をロックする。後段（関係図・レポート）がこの分類を前提に作られるため、
 // 気づかず書き換わるのを防ぐ。直したいときは「確定を解除」で明示的に開けてもらう。
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
-  get, patch, setProjectFlag, clearProjectFlag,
-  type Artifact, type SheetClassification, type SheetPreview,
+  patch, setProjectFlag, clearProjectFlag,
+  type Artifact, type SheetClassification,
 } from '../../api'
 
 const props = defineProps<{ projectId: number; artifacts: Artifact[]; confirmed: boolean }>()
@@ -31,8 +31,8 @@ const ROLES = [
   { value: 'unknown', label: '未分類', hint: '判断がつかないもの。残すと確認待ちになる' },
 ] as const
 
-type Row = { sheet: string; role: string; reason: string; rowCount: number; formulaCount: number }
-type Book = { artifactId: number; filename: string; rows: Row[]; loading: boolean; error: string }
+type Row = { sheet: string; role: string; reason: string; rowCount: number | null; formulaCount: number | null }
+type Book = { artifactId: number; filename: string; rows: Row[] }
 
 const books = ref<Book[]>([])
 const saving = ref(false)
@@ -49,38 +49,33 @@ const unknownCount = computed(() =>
 const finalCount = computed(() =>
   books.value.reduce((n, b) => n + b.rows.filter(r => r.role === 'final_output').length, 0))
 
-// 読み込みの進捗。シート情報の取得はファイルごとに時間差があり、
-// 進んでいるか分からないと「先に確定を押す」ことになるので、必ず件数で見せる。
-const loadedCount = computed(() => books.value.filter(b => !b.loading).length)
-const loading = computed(() => books.value.some(b => b.loading))
-const loadPercent = computed(() =>
-  books.value.length === 0 ? 0 : Math.round((loadedCount.value / books.value.length) * 100))
-
-async function loadBooks() {
+/**
+ * 表は artifacts.sheet_roles（一覧取得で既に手元にある）から組む。
+ * 以前はファイルごとに /artifacts/:id/preview を叩いていたが、あれは原本を再パースする
+ * （無保存モードでは Drive 再取得まで走る）ため、ファイル数ぶんの重い待ちになっていた。
+ * 行数・数式数は取込時に sheet_roles へ入れてある（古いデータには無いので「—」表示）。
+ */
+function buildBooks() {
   error.value = ''
-  books.value = targets.value.map(a => ({
-    artifactId: a.id, filename: a.original_filename, rows: [], loading: true, error: '',
-  }))
-  await Promise.all(books.value.map(async book => {
+  books.value = targets.value.map(a => {
+    let roles: Record<string, SheetClassification> = {}
     try {
-      const p = await get<SheetPreview>(`/artifacts/${book.artifactId}/preview`)
-      const roles = p.sheetRoles ?? {}
-      book.rows = p.sheets.map(s => {
-        const c: SheetClassification | undefined = roles[s.name]
-        return {
-          sheet: s.name,
-          role: c?.role ?? 'unknown',
-          reason: c?.reason ?? '自動判定なし',
-          rowCount: s.rowCount,
-          formulaCount: s.formulaCellCount,
-        }
-      })
-    } catch (e) {
-      book.error = String(e)
-    } finally {
-      book.loading = false
+      roles = a.sheet_roles ? JSON.parse(a.sheet_roles) as Record<string, SheetClassification> : {}
+    } catch {
+      roles = {} // 壊れた保存値は空扱い（役割を選び直してもらう）
     }
-  }))
+    return {
+      artifactId: a.id,
+      filename: a.original_filename,
+      rows: Object.entries(roles).map(([sheet, c]) => ({
+        sheet,
+        role: c.role ?? 'unknown',
+        reason: c.reason ?? '自動判定なし',
+        rowCount: c.rows ?? null,
+        formulaCount: c.formulas ?? null,
+      })),
+    }
+  })
 }
 
 /** 1ファイルの全シートを同じ役割にする（部門別ブックのように役割が揃っている場合の近道） */
@@ -126,9 +121,8 @@ async function unlock() {
   }
 }
 
-onMounted(loadBooks)
-// ステップ1で取り込みが増減したら作り直す
-watch(() => targets.value.map(a => a.id).join(','), loadBooks)
+// 取り込みの増減・役割の保存で artifacts が変わったら組み直す（immediate で初回も作る）
+watch(() => targets.value.map(a => a.id + ':' + (a.sheet_roles ?? '').length).join(','), buildBooks, { immediate: true })
 </script>
 
 <template>
@@ -159,32 +153,18 @@ watch(() => targets.value.map(a => a.id).join(','), loadBooks)
       <button v-if="locked" @click="unlock">確定を解除して編集する</button>
     </div>
 
-    <!-- 読み込みの進捗。全部そろうまで確定できないので、残りが分かるようにする -->
-    <div v-if="loading" class="wz-progress">
-      <span class="spin"></span>
-      <span>シート情報を読み込んでいます</span>
-      <span class="bar"><i :style="{ width: loadPercent + '%' }"></i></span>
-      <span class="cnt">{{ loadedCount }} / {{ books.length }} ファイル</span>
-    </div>
-
     <div v-for="book in books" :key="book.artifactId" class="wz-card">
       <div class="wz-book-head">
         <h3 class="wz-h">{{ book.filename }}</h3>
-        <span v-if="book.loading" class="badge info">読み込み中</span>
-        <span v-else class="muted">{{ book.rows.length }} シート</span>
-        <span v-if="!book.loading && !locked" class="wz-bulk">
+        <span class="muted">{{ book.rows.length }} シート</span>
+        <span v-if="!locked" class="wz-bulk">
           一括:
           <button v-for="r in ROLES.slice(0, 4)" :key="r.value" class="link" @click="applyAll(book, r.value)">
             {{ r.label }}
           </button>
         </span>
       </div>
-      <div v-if="book.loading" class="sk-wrap">
-        <div v-for="i in 3" :key="i" class="sk-row">
-          <span class="sk"></span><span class="sk"></span><span class="sk"></span><span class="sk"></span>
-        </div>
-      </div>
-      <p v-else-if="book.error" class="error-box">{{ book.error }}</p>
+      <p v-if="book.rows.length === 0" class="muted">シート情報がありません。取り込み直してください。</p>
       <table v-else class="wz-table">
         <thead>
           <tr><th>シート</th><th>行数</th><th>数式セル</th><th>役割</th><th>自動判定の理由</th></tr>
@@ -192,8 +172,8 @@ watch(() => targets.value.map(a => a.id).join(','), loadBooks)
         <tbody>
           <tr v-for="r in book.rows" :key="r.sheet" :class="{ warn: r.role === 'unknown' }">
             <td class="nm">{{ r.sheet }}</td>
-            <td class="num">{{ r.rowCount.toLocaleString() }}</td>
-            <td class="num">{{ r.formulaCount.toLocaleString() }}</td>
+            <td class="num">{{ r.rowCount === null ? "—" : r.rowCount.toLocaleString() }}</td>
+            <td class="num">{{ r.formulaCount === null ? "—" : r.formulaCount.toLocaleString() }}</td>
             <td>
               <select v-model="r.role" :disabled="locked" @change="saved = false">
                 <option v-for="o in ROLES" :key="o.value" :value="o.value">{{ o.label }}</option>
@@ -209,12 +189,11 @@ watch(() => targets.value.map(a => a.id).join(','), loadBooks)
       <span v-if="unknownCount > 0" class="badge warn">未分類 {{ unknownCount }} シート</span>
       <span v-if="finalCount === 0" class="badge warn">最終アウトプットが未指定</span>
       <span v-else class="badge ok">最終アウトプット {{ finalCount }} シート</span>
-      <!-- 読み込み中は押させない（途中の状態で確定すると、まだ見ていないシートまで保存される） -->
-      <button class="primary" :disabled="saving || loading" @click="confirmAll">
-        {{ saving ? `保存中… ${savedCount} / ${books.length}` : saved ? '確定済み（再保存）' : 'この分類で確定する' }}
+      <button v-if="!locked" class="primary" :disabled="saving" @click="confirmAll">
+        {{ saving ? `保存中… ${savedCount} / ${books.length}` : 'この分類で確定する' }}
       </button>
-      <span v-if="loading" class="muted">読み込みが終わると確定できます</span>
-      <span v-else-if="saved" class="badge ok">保存しました</span>
+      <button v-else @click="unlock">確定を解除して編集する</button>
+      <span v-if="saved" class="badge ok">確定しました</span>
     </div>
   </div>
 </template>

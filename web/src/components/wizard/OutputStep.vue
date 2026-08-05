@@ -9,7 +9,7 @@
 // 何度作り直しても内容は指定だけで決まる。
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
-  getReportChat, sendReportChat, getReportSpec, saveReportSpec, reportUrl,
+  getReportChat, sendReportChat, getReportSpec, getReportFacts, saveReportSpec, reportUrl,
   type ReportChatMessage, type ReportFacts, type ReportSpec, type ReportSpecItems, type ReportSpecSections,
 } from '../../api'
 
@@ -87,7 +87,15 @@ async function loadSpec() {
   spec.value = d.spec
   sectionLabels.value = d.sectionLabels
   itemLabels.value = d.itemLabels
-  facts.value = d.facts
+}
+
+/** 解析結果の要約。重いので画面を開いたときの1回だけ（構成の保存では取り直さない） */
+async function loadFacts() {
+  try {
+    facts.value = (await getReportFacts(props.projectId)).facts
+  } catch {
+    facts.value = null // 取れなくても構成の編集は続けられる
+  }
 }
 
 async function loadChat() {
@@ -175,6 +183,7 @@ let timer: ReturnType<typeof setInterval> | null = null
 onMounted(async () => {
   await loadSpec()
   await loadChat()
+  void loadFacts() // 重いので待たない（届いたらタイルが埋まる）
   timer = setInterval(async () => {
     if (!pending.value) return
     const before = JSON.stringify(spec.value)

@@ -12,10 +12,10 @@
 // ステップの完了はサーバー側の状態から導く（画面のフラグに頼らない。別端末・再読込でも同じに見える）:
 //   ① 解析できたファイルが1件以上ある
 //   ② roles_confirmed の印が立っている（人が分類を確定した。自動分類だけでは立たない）
-//   ③ 関係グラフに表が1つ以上ある
+// 関係グラフ（重い処理）はこの画面では取らない。必要な「構造解析」の画面だけが取る。
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { get, getProjectRelations, type ProjectDetailData } from '../api'
+import { get, type ProjectDetailData } from '../api'
 import DrivePickStep from '../components/wizard/DrivePickStep.vue'
 import ClassifyStep from '../components/wizard/ClassifyStep.vue'
 import AnalyzeStep from '../components/wizard/AnalyzeStep.vue'
@@ -28,7 +28,6 @@ const route = useRoute()
 
 const project = ref<ProjectDetailData | null>(null)
 const step = ref(1)
-const regionCount = ref(0)
 const error = ref('')
 
 const STEPS = [
@@ -42,7 +41,7 @@ const parsedArtifacts = computed(() => project.value?.artifacts.filter(a => a.pa
 const done = computed(() => ({
   1: parsedArtifacts.value.length > 0,
   2: parsedArtifacts.value.length > 0 && (project.value?.flags ?? []).includes('roles_confirmed'),
-  3: regionCount.value > 0,
+  3: true, // 解析結果の確認。ここで止める条件は無い（表0件なら画面側で警告を出す）
   4: false, // 最終ステップ。ここは「終わり」ではなく何度でも作り直す場所
 }) as Record<number, boolean>)
 
@@ -56,7 +55,6 @@ const blockedReason = computed(() => {
   if (reachable(step.value)) return ''
   if (!done.value[1]) return 'まずファイルを取り込んでください。'
   if (!done.value[2]) return 'シートの分類を確定してください。'
-  if (!done.value[3]) return '表が検出されていません。取り込んだファイルを確認してください。'
   return ''
 })
 
@@ -64,12 +62,6 @@ async function load() {
   error.value = ''
   try {
     project.value = await get<ProjectDetailData>(`/projects/${props.projectId}`)
-    // 関係グラフと構成指定は解析対象が無ければ 404 になり得るので、失敗は「未達」として扱う
-    try {
-      regionCount.value = (await getProjectRelations(props.projectId)).regions.length
-    } catch {
-      regionCount.value = 0
-    }
   } catch (e) {
     error.value = String(e)
   }
@@ -93,6 +85,7 @@ onMounted(async () => {
     ? q
     : ([1, 2, 3].find(n => !done.value[n]) ?? 4)
   timer = setInterval(() => {
+    if (document.hidden) return
     if (project.value?.runs.some(r => r.status === 'running')) void load()
   }, 2500)
 })

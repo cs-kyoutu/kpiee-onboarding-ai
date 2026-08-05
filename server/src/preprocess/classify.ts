@@ -69,6 +69,13 @@ export interface SheetClassification {
   reason: string;
   /** このシートの数式が参照しているシート名 */
   references: string[];
+  /**
+   * 分類確認の画面に出す規模。取込時に一緒に残しておく。
+   * これが無いと画面が行数・数式数のために原本を再パース（無保存モードでは Drive 再取得まで）する必要があり、
+   * ファイル数ぶんの重い往復になっていた。既存データには無いので任意項目。
+   */
+  rows?: number;
+  formulas?: number;
 }
 
 /** 数式文字列からシート参照（`シート名!` / `'シート名'!`）を抽出する */
@@ -151,14 +158,17 @@ export function classifySheetRoles(parsed: ParsedArtifact): Record<string, Sheet
       role = 'unknown';
       reason = '数式も参照もなく判断がつかない（値貼り付けの可能性）';
     }
-    result[sheet.name] = { role, reason, references: [...out] };
+    result[sheet.name] = { role, reason, references: [...out], rows: sheet.rowCount, formulas: sheet.formulaCellCount };
   }
 
   // CSV は単一シートかつ数式を持たないため、グラフでは unknown になる。
   // 実務上 CSV は基幹システム出力（インプット）であることがほとんどなので既定を input_data にする
   if (parsed.fileType === 'csv') {
     for (const key of Object.keys(result)) {
-      result[key] = { role: 'input_data', reason: 'CSV ファイル', references: [] };
+      result[key] = {
+        ...result[key],
+        role: 'input_data', reason: 'CSV ファイル', references: [],
+      };
     }
   }
 
