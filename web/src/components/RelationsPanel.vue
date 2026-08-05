@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // シート関係ビュー（プロジェクト全体）。
 // アップロードされた全ファイル(xlsx/csv)を1つのグラフにまとめて表示する。
-// ファイルが1つならそのファイル単体、複数なら自動でファイル間の関係(手コピー等)も表示する。
+// ファイルが1つならそのファイル単体、複数なら自動でファイル間の関係(手修正等)も表示する。
 //   ① 関係の種類の凡例（平易な日本語）
 //   ② 表領域グラフ（SVG, 表どうしの繋がりを矢印で）
 //   ③ 根拠つき関係リスト
@@ -77,7 +77,7 @@ const REL_META: Record<RelType, { label: string; desc: string; color: string; da
   'passthrough': { label: '転記', desc: '別セルの値をそのまま持ってくる', color: '#00838f' },
   'derived': { label: '計算', desc: '四則演算で求める', color: '#e65100' },
   'filter-key': { label: '条件キー', desc: '集計・引き当ての「どの行か」を決めるキー列', color: '#9e9e9e' },
-  'copy': { label: '手コピー疑い', desc: '数式がないのに値が一致＝手で貼った可能性', color: '#c62828', dashed: true },
+  'copy': { label: '手修正疑い', desc: '数式がないのに値が一致＝手で貼った可能性', color: '#c62828', dashed: true },
 }
 const relMeta = (t: RelType) => REL_META[t]
 const mainTypes: RelType[] = ['filtered-agg', 'aggregation', 'lookup-join', 'passthrough', 'derived', 'copy']
@@ -244,7 +244,7 @@ function layerize(ids: string[], edges: { from: string; to: string }[]): Map<str
 }
 
 // ---- ① データフロー図（ファイル=箱、矢印=ファイルをまたぐデータの流れ） ----
-// 数式はファイルを跨げないため、ファイル間の流れは実質「手コピー（値一致）」の集約。
+// ファイル間の流れは、外部通合文書参照（別ブックを指す数式）と手修正（値一致）推定の集約。
 const FF = { W: 200, H: 48, GX: 150, GY: 28, PAD: 16 }
 const fileFlow = computed(() => {
   const g = graph.value
@@ -493,7 +493,7 @@ function colLetterRef(c: number): string {
               <h3>データフロー図 — ファイルどうしのデータの流れ</h3>
               <p class="sec-sub">
                 矢印＝あるファイルの値が別のファイルで使われている向き（数値は関係の件数<template v-if="graph.edgeCollapsed">・大規模のため代表値</template>）。
-                数式はファイルを跨げないため、ファイル間の流れは値の一致から推定した<strong>手コピー</strong>が中心です。
+                実線は<strong>数式</strong>（別ブックを参照する外部リンク）で裏が取れた流れ、破線は値の一致から推定した<strong>手修正</strong>です。
               </p>
             </div>
           </div>

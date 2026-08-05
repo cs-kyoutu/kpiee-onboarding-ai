@@ -5,7 +5,7 @@ import { analyzeGrids, analyzeArtifacts, buildGridsFromBuffer, colLetter, type R
 
 const buf = async (wb: ExcelJS.Workbook) => Buffer.from(await wb.xlsx.writeBuffer());
 
-// ---- 合成: 多表シート + SUMIF表またぎ + 手コピー報告 ----
+// ---- 合成: 多表シート + SUMIF表またぎ + 手修正報告 ----
 async function complex(): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
   const j = wb.addWorksheet('実績');
@@ -119,7 +119,7 @@ function dump(label: string, gr: RelationGraph) {
   console.log(`\n[数式リニージュ] ${fe.length}件`);
   for (const e of fe) console.log(`  ${e.from}  ──${e.type}(${(e.confidence * 100).toFixed(0)}%)──▶  ${e.to}   « ${e.evidence} »`);
   const ce = gr.edges.filter(e => e.type === 'copy');
-  console.log(`\n[手コピー推定] ${ce.length}件`);
+  console.log(`\n[手修正推定] ${ce.length}件`);
   for (const e of ce) console.log(`  ${e.from}  ┄copy(${(e.confidence * 100).toFixed(0)}%)${e.needsConfirmation ? '?要確認' : ''}┄▶  ${e.to}   « ${e.evidence} »`);
   if (gr.warnings.length) {
     console.log(`\n[警告] ${gr.warnings.length}件`);
@@ -129,7 +129,7 @@ function dump(label: string, gr: RelationGraph) {
 
 (async () => {
   dump('クロスファイル: 元データ.xlsx → 集計.xlsx → 報告.xlsx（ファイル間コピー）', await analyzeArtifacts(await crossFiles()))
-  dump('合成: 多表シート + SUMIF表またぎ + 手コピー報告', analyzeGrids(await buildGridsFromBuffer(await complex())));
+  dump('合成: 多表シート + SUMIF表またぎ + 手修正報告', analyzeGrids(await buildGridsFromBuffer(await complex())));
   dump('S1 配賦按分', analyzeGrids(await buildGridsFromBuffer(await s1())));
   dump('S3 汚い実務シート', analyzeGrids(await buildGridsFromBuffer(await s3())));
   dump('S4 数式列の手入力混入', analyzeGrids(await buildGridsFromBuffer(await s4())));

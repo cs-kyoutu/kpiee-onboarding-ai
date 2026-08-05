@@ -38,7 +38,7 @@ export const GROUP_META: Record<Group, { label: string; color: string; cls: stri
   ref:  { label: '参照・照合（VLOOKUP等）', color: '#1F5FAE', cls: 'lookup', dashed: false },
   agg:  { label: '集計（SUMIFS・SUM等）',   color: '#1E9E6A', cls: 'agg',    dashed: false },
   move: { label: '転記・計算（=参照・四則）', color: '#7B5EA7', cls: 'move',   dashed: false },
-  copy: { label: '手コピー推定（要確認）',   color: '#B96A00', cls: 'copy',   dashed: true },
+  copy: { label: '手修正推定（要確認）',   color: '#B96A00', cls: 'copy',   dashed: true },
 };
 export const GROUP_ORDER: Group[] = ['ref', 'agg', 'move', 'copy'];
 

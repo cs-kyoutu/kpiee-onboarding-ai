@@ -13,7 +13,9 @@
 //   04 今後の進め方
 // 02 は必ず「全体 → 詳細」の順に降りる。1ブックの案件ではブック間の図が1箱になって意味を持たないため、
 // 全体の段を省いて詳細関係図から入る（従来の構成と同じ）。
-import type { RelationGraph, Region, Edge, RelationWarning, KeyLink } from './preprocess/relations.js';
+import type {
+  RelationGraph, Region, Edge, RelationWarning, KeyLink, SharedTemplateColumn,
+} from './preprocess/relations.js';
 import { colLetter, fileLabelOf } from './preprocess/relations.js';
 import {
   regionIdOf, colNameOf, regionPairKey, filePairKey,
@@ -24,7 +26,11 @@ import {
 import { FILE_REL_LABELS, type DeclaredFileRel, type FileRelAudit } from './relations/declared.js';
 import { DEFAULT_REPORT_SPEC, type ReportSpec } from './reportSpec.js';
 
-/** 取込時のファイル情報。kind は運用担当者が指定した種別で、final_output が「最終アウトプット」の正解になる */
+/**
+ * 取込時のファイル情報。「最終アウトプットはどれか」は業務知識なので自動推定より優先する。
+ * その出典は kind（ファイル単位の種別指定）と sheetRoles（分類確認でのシート単位の役割）の両方。
+ * 片方だけを見ると、シートに「最終帳票」を付けた指定が判定に届かない（buildDeclaredOutputIndex 参照）。
+ */
 export interface ReportArtifact {
   filename: string;
   kind?: string;
@@ -65,6 +71,47 @@ const SHEET_ROLE_LABELS: Record<string, string> = {
   final_output: '最終帳票',
   unknown: '判定不能',
 };
+
+/**
+ * 取込時に「最終帳票」と指定された箇所を引くための索引。
+ *
+ * 以前はファイル単位の kind だけを最終アウトプットの出典にしていたため、分類確認の画面で
+ * シートに「最終帳票」を付けても判定に届かず、自動推定（流れの終着点＝他ファイルからの流入がある
+ * 終端）へ落ちていた。その結果「最終帳票のシートを持つファイル」が独立扱いになり、逆に
+ * 最終帳票シートを1つも持たないファイルが最終アウトプットと名指しされる状態になっていた。
+ * 最終アウトプットが何かは業務知識なので、シート単位の指定も同格の出典として扱う。
+ */
+interface DeclaredOutputIndex {
+  /** 最終帳票を含むファイル（ラベル） */
+  files: Set<string>;
+  /** そのシートが最終帳票として指定されているか */
+  hasSheet: (fileLabel: string, sheet: string) => boolean;
+}
+
+function buildDeclaredOutputIndex(artifacts: ReportArtifact[]): DeclaredOutputIndex {
+  const files = new Set<string>();
+  const sheets = new Set<string>();
+  const wholeFile = new Set<string>();
+  for (const a of artifacts) {
+    const label = fileLabelOf(a.filename);
+    const marked = Object.entries(a.sheetRoles ?? {})
+      .filter(([, role]) => role === 'final_output')
+      .map(([sheet]) => sheet);
+    if (marked.length > 0) {
+      files.add(label);
+      for (const s of marked) sheets.add(`${label}\u0000${s}`);
+    } else if (a.kind === 'final_output') {
+      // シート役割が未設定（sheet_roles を持たない旧データ）なら kind を全シートへ適用する。
+      // 本文の役割チップ（下部の roleChips）と同じ規則。
+      files.add(label);
+      wholeFile.add(label);
+    }
+  }
+  return {
+    files,
+    hasSheet: (f, s) => wholeFile.has(f) || sheets.has(`${f}\u0000${s}`),
+  };
+}
 
 // ============================================================
 // 表領域の役割
@@ -161,6 +208,7 @@ function buildQuestions(
   regions: Region[], pairs: PairAgg[], warnings: RelationWarning[],
   labels: Map<string, string>, roles: Map<string, Role>,
   fileRelAudit: FileRelAudit[], fileNameOf: (label: string) => string,
+  declaredOut: DeclaredOutputIndex, sharedTemplates: SharedTemplateColumn[],
 ): Question[] {
   const qs: Omit<Question, 'id'>[] = [];
 
@@ -198,7 +246,7 @@ function buildQuestions(
     });
   }
 
-  // (1) 手コピー推定（値一致）: 表ペア単位に1問。列数の多い順に最大3問。
+  // (1) 手修正推定（値一致）: 表ペア単位に1問。列数の多い順に最大3問。
   // ブック関係の登録で裏が取れた（matched）ファイル対は確認不要なので外す — 残った本当の論点だけを並べる。
   const confirmedFilePairs = new Set(
     fileRelAudit.filter(a => a.verdict === 'matched').map(a => filePairKey(a.fromFile, a.toFile)),
@@ -218,11 +266,11 @@ function buildQuestions(
     const n = p.counts.copy ?? 0;
     const undirected = rep?.needsConfirmation;
     qs.push({
-      priority: 'high', kind: '手コピーの確認', refPair: `${p.from}\u0000${p.to}`,
+      priority: 'high', kind: '手修正の確認', refPair: `${p.from}\u0000${p.to}`,
       title: undirected
         ? `「${from}」と「${to}」で値が一致する列があります。どちらが元データですか？`
         : `「${to}」の一部の列は「${from}」からの手作業転記ですか？`,
-      analysis: `数式が無いのに値が完全一致する列を ${n} 組検出しました（${rep ? shortText(rep.evidence, 40) : '値一致'}）。手作業のコピーと推定しています。`,
+      analysis: `数式が無いのに値が完全一致する列を ${n} 組検出しました（${rep ? shortText(rep.evidence, 40) : '値一致'}）。手修正と推定しています。`,
       ask: undirected
         ? '①どちらの表が元（正）ですか？ ②転記のタイミングと担当の方を教えてください。'
         : '①この理解で合っていますか？ ②転記のタイミングと担当の方は？ ③両者が一致しない場合はどちらが正ですか？',
@@ -231,10 +279,29 @@ function buildQuestions(
   }
   if (copyPairs.length > 3) {
     qs.push({
-      priority: 'high', kind: '手コピーの確認',
-      title: `ほか ${copyPairs.length - 3} 組の表ペアでも手コピーの可能性を検出しています。`,
+      priority: 'high', kind: '手修正の確認',
+      title: `ほか ${copyPairs.length - 3} 組の表ペアでも手修正の可能性を検出しています。`,
       analysis: '個別の一覧はお打ち合わせで画面をご覧いただきながら確認させてください。',
       ask: '主要なものから順に、転記の有無と方向を確認させてください。',
+    });
+  }
+
+  // (1b) 同じ列が3ブック以上に同一の値で存在する（共通様式・マスタの使い回し）。
+  // 表ペアの総当たりで「手修正疑い」を出すと N*(N-1)/2 本のノイズになり確認事項が水増しされるため、
+  // 辺は出さずにここで1問にまとめる。件数が消えたことを見えなくしないための出口でもある。
+  if (sharedTemplates.length > 0) {
+    const top = [...sharedTemplates].sort((a, b) => b.places.length - a.places.length);
+    const names = top.slice(0, 3)
+      .map(t => `「${t.columnName}」（${new Set(t.places.map(p => p.file)).size}ブック・${t.rowCount.toLocaleString()}行）`)
+      .join('、') + (top.length > 3 ? ` ほか${top.length - 3}列` : '');
+    qs.push({
+      priority: 'mid', kind: '共通マスタの確認',
+      title: `${names} は、複数のブックに同じ値で入っています。共通の元（マスタ・様式）はどれですか？`,
+      analysis: '同じ値の列が3ブック以上にあり、いずれも数式を持ちません。'
+        + '同じ様式を使い回している（部署コード・勘定科目などのマスタ）状態と見て、'
+        + '個別の転記としては数えていません。',
+      ask: '①この一覧の「正」はどこで管理されていますか？ ②追加・変更があったとき、各ブックへどう反映していますか？',
+      kpiee: 'マスタを1か所に集約できれば、各ブックへの反映作業そのものが不要になります。',
     });
   }
 
@@ -272,7 +339,41 @@ function buildQuestions(
     });
   }
 
+  // (2b) 最終帳票と指定されたのに、他ファイルからの流入が見つからないシート。
+  // 「出所不明の表」に混ぜると、人が「最終帳票です」と答えたシートを「これは何ですか」と
+  // 問い直す形になってしまう（実際にそうなっていた）。最終帳票の元データが辿れていないのは
+  // 移行の前提が欠けている状態なので、専用の問いとして優先度を上げて出す。
+  {
+    const inflowSheets = new Set<string>();
+    const fileOf = new Map(regions.map(r => [r.id, r.file]));
+    for (const p of pairs) {
+      const to = regions.find(r => r.id === p.to);
+      if (!to) continue;
+      if (fileOf.get(p.from) !== to.file) inflowSheets.add(`${to.file}\u0000${to.sheet}`);
+    }
+    const declaredSheets = new Map<string, { file: string; sheet: string }>();
+    for (const r of regions) {
+      if (!declaredOut.hasSheet(r.file, r.sheet)) continue;
+      declaredSheets.set(`${r.file}\u0000${r.sheet}`, { file: r.file, sheet: r.sheet });
+    }
+    const untraced = [...declaredSheets].filter(([k]) => !inflowSheets.has(k)).map(([, v]) => v);
+    if (untraced.length > 0) {
+      const names = untraced.slice(0, 4).map(v => `「${v.sheet}」`).join('、')
+        + (untraced.length > 4 ? ` ほか${untraced.length - 4}シート` : '');
+      qs.push({
+        priority: 'high', kind: '最終帳票の元データ',
+        title: `${names} は最終帳票とお伺いしていますが、この帳票を作る元データが受領データの中に見つかりませんでした。`,
+        analysis: '他ファイルからこの帳票へ流れ込む数式・値の一致を検出できませんでした。'
+          + '別ブックからの参照（リンク切れ・別フォルダのファイル）や、基幹システムからの手貼りが考えられます。',
+        ask: '①この帳票の数値はどこから作られていますか？（別Excel／基幹システム／手入力）'
+          + ' ②元になるファイルがあれば、そちらもご提供いただけますか？',
+        kpiee: '最終帳票をkpieeで再現するには元データが必要です。ここが最優先の確認事項になります。',
+      });
+    }
+  }
+
   // (3) どの表ともつながらない表: まとめて1問
+  // 最終帳票と指定された表は上の (2b) で扱うので、役割昇格により自然にここから外れる。
   const orphans = regions.filter(r => roles.get(r.id) === '独立（つながりなし）' && r.dataRowCount >= 3);
   if (orphans.length > 0) {
     const names = orphans.slice(0, 4).map(r => `「${labels.get(r.id) ?? r.sheet}」`).join('、')
@@ -489,7 +590,7 @@ function buildMap(
     parts.push(`<path d="M${sx.toFixed(1)},${sy.toFixed(1)} Q${mx.toFixed(1)},${my.toFixed(1)} ${ex.toFixed(1)},${ey.toFixed(1)}" fill="none" stroke="${meta.color}" stroke-width="1.3" stroke-opacity="0.5"${dash} marker-end="url(#arr-${uid}-${g})"/>`);
     const qid = g === 'copy' ? copyQuestionByPair.get(`${p.from}\u0000${p.to}`) : undefined;
     if (showEdgeLabels || qid) {
-      const text = qid ? `手コピー推定 → ${qid}` : `${meta.label.split('（')[0]}${p.total > 1 ? ` ×${p.total}` : ''}`;
+      const text = qid ? `手修正推定 → ${qid}` : `${meta.label.split('（')[0]}${p.total > 1 ? ` ×${p.total}` : ''}`;
       // 線に対して垂直へ逃がす。線の上や中点に置くと円とラベルに重なって読めない
       // （操作版はラベルを持たず右パネルで見せるが、静止画では Q 番号を図に出したい）。
       const side = cv >= 0 ? 1 : -1;
@@ -717,7 +818,7 @@ type FileRole = '元データ' | '中間ファイル' | '最終アウトプッ�
 interface FileStat {
   label: string;                    // region.file と同じラベル（拡張子なし）
   filename: string;                 // 表示用の元ファイル名（判明していれば拡張子込み）
-  declaredOutput: boolean;          // 取込時に「最終帳票」として指定されたか
+  declaredOutput: boolean;          // 取込時に「最終帳票」として指定されたか（kind／シート役割のどちらでも）
   sheets: string[];
   regionCount: number;
   rowTotal: number;
@@ -729,6 +830,7 @@ interface FileStat {
 
 function buildFileStats(
   regions: Region[], filePairs: FilePair[], artifacts: ReportArtifact[],
+  declaredOut: DeclaredOutputIndex,
 ): Map<string, FileStat> {
   // 取込時の種別指定をラベル（拡張子なし）で引けるようにする
   const declared = new Map<string, ReportArtifact>();
@@ -741,7 +843,8 @@ function buildFileStats(
       const a = declared.get(label);
       s = {
         label, filename: a?.filename ?? label,
-        declaredOutput: a?.kind === 'final_output',
+        // ファイル単位の kind と、シート単位の「最終帳票」指定のどちらでも最終アウトプットと見なす
+        declaredOutput: declaredOut.files.has(label),
         sheets: [], regionCount: 0, rowTotal: 0,
         inFiles: new Map(), outFiles: new Map(), role: '独立',
       };
@@ -780,6 +883,30 @@ function resolveOutputFiles(stats: Map<string, FileStat>): { labels: string[]; d
     .sort((a, b) => b.inFiles.size - a.inFiles.size)
     .map(s => s.label);
   return { labels: sinks, declared: false };
+}
+
+/**
+ * 表（region）の役割を「最終アウトプット」へ昇格させる。roles を直接書き換える。
+ *
+ * 2つの経路がある:
+ *  (a) 取込時に「最終帳票」と指定されたシートの表 … つながりが未検出でも昇格させる。
+ *      出典が人の業務知識なので、自動検出の有無で覆さない（覆すと 03 で「出所不明の表」として
+ *      指定済みのシートを問い直す形になり、実際にそうなっていた）。
+ *  (b) 最終アウトプットファイル内で「他ファイルへ流れ出さない表」… これが無いと、ファイル内で
+ *      相互参照している帳票シートが一律「中間集計」に見えてしまう。
+ */
+function promoteDeclaredOutputRegions(
+  regions: Region[], pairs: PairAgg[], roles: Map<string, Role>,
+  declaredOut: DeclaredOutputIndex, outputFiles: Set<string>,
+): void {
+  const fileOfRegion = new Map(regions.map(r => [r.id, r.file]));
+  for (const r of regions) {
+    if (declaredOut.hasSheet(r.file, r.sheet)) { roles.set(r.id, '最終アウトプット'); continue; }
+    if (!outputFiles.has(r.file)) continue;
+    if (roles.get(r.id) === '独立（つながりなし）') continue;
+    const flowsOut = pairs.some(p => p.from === r.id && fileOfRegion.get(p.to) !== r.file);
+    if (!flowsOut) roles.set(r.id, '最終アウトプット');
+  }
 }
 
 /** ファイル役割を確定する（最終アウトプットの指定を反映してから流入・流出で分類） */
@@ -1003,10 +1130,16 @@ export function summarizeReportQuestions(input: RelationsReportInput): { count: 
   const pairs = aggregatePairs((graph.edges ?? []) as Edge[]);
   const labels = buildLabels(regions);
   const roles = computeRoles(regions, pairs);
-  const fileStats = buildFileStats(regions, aggregateFilePairs(regions, pairs), input.artifacts ?? []);
+  const declaredOut = buildDeclaredOutputIndex(input.artifacts ?? []);
+  const fileStats = buildFileStats(
+    regions, aggregateFilePairs(regions, pairs), input.artifacts ?? [], declaredOut,
+  );
   const fileNameOf = (label: string) => fileStats.get(label)?.filename ?? label;
+  // 本体と同じ役割昇格を通してから問いを数える（件数が本体とズレると相談画面の表示が食い違う）
+  promoteDeclaredOutputRegions(regions, pairs, roles, declaredOut, new Set(resolveOutputFiles(fileStats).labels));
   const qs = buildQuestions(
-    regions, pairs, graph.warnings ?? [], labels, roles, input.fileRelAudit ?? [], fileNameOf,
+    regions, pairs, graph.warnings ?? [], labels, roles, input.fileRelAudit ?? [], fileNameOf, declaredOut,
+    graph.sharedTemplates ?? [],
   );
   return { count: qs.length, titles: qs.map(q => `${q.id} ${q.title}`) };
 }
@@ -1026,25 +1159,19 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
 
   // ---- ファイル層（一覧・流れ図の土台）と最終アウトプットの確定 ----
   const filePairs = aggregateFilePairs(regions, pairs);
-  const fileStats = buildFileStats(regions, filePairs, input.artifacts ?? []);
+  const declaredOut = buildDeclaredOutputIndex(input.artifacts ?? []);
+  const fileStats = buildFileStats(regions, filePairs, input.artifacts ?? [], declaredOut);
   const { labels: outputLabels, declared: outputsDeclared } = resolveOutputFiles(fileStats);
   const outputFiles = new Set(outputLabels);
   assignFileRoles(fileStats, outputFiles);
-  const fileOfRegion = new Map(regions.map(r => [r.id, r.file]));
   const fileNameOf = (label: string) => fileStats.get(label)?.filename ?? label;
-  // 最終アウトプットファイル内で「他ファイルへ流れ出さない表」を最終アウトプット表として扱う。
-  // これがないと、ファイル内で相互参照している帳票シートが一律「中間集計」に見えてしまう。
-  const outRegionIds = new Set<string>();
-  for (const r of regions) {
-    if (!outputFiles.has(r.file)) continue;
-    if (roles.get(r.id) === '独立（つながりなし）') continue;
-    const flowsOut = pairs.some(p => p.from === r.id && fileOfRegion.get(p.to) !== r.file);
-    if (!flowsOut) { outRegionIds.add(r.id); roles.set(r.id, '最終アウトプット'); }
-  }
+  promoteDeclaredOutputRegions(regions, pairs, roles, declaredOut, outputFiles);
 
   const declaredRels = input.declaredFileRels ?? [];
   const audit = input.fileRelAudit ?? [];
-  const questions = buildQuestions(regions, pairs, warnings, labels, roles, audit, fileNameOf);
+  const questions = buildQuestions(
+    regions, pairs, warnings, labels, roles, audit, fileNameOf, declaredOut, graph.sharedTemplates ?? [],
+  );
   const copyQuestionByPair = new Map<string, string>();
   for (const q of questions) if (q.refPair) copyQuestionByPair.set(q.refPair, q.id);
   const fileFlow = buildFileFlow(fileStats, filePairs, outputFiles);
@@ -1115,7 +1242,7 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
     const copyCount = pairs.filter(p => (p.counts.copy ?? 0) > 0).length;
     const formulaCount = pairs.length - copyCount;
     if (formulaCount > 0) bullets.push(`表をつなぐ関係の大半は数式（SUMIFS・VLOOKUP等）で、<b>構造は自動で追跡できました</b>。`);
-    if (copyCount > 0) bullets.push(`一方、<b>数式ではなく手作業の転記と推定されるつながりが ${copyCount} 組</b>あります（値の一致から逆推定）。ここが今回確認したい中心です。`);
+    if (copyCount > 0) bullets.push(`一方、<b>数式ではなく手修正と推定されるつながりが ${copyCount} 組</b>あります（値の一致から逆推定）。ここが今回確認したい中心です。`);
     else if (warnings.length > 0) bullets.push(`数式列への手入力の上書きなど、確認したい箇所が ${warnings.length} 件あります。`);
     else bullets.push('手作業転記の疑いは検出されませんでした。');
     // 案件固有の前提（アウトプット相談で足したメモ）

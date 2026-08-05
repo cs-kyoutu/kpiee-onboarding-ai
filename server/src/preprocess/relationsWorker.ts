@@ -1,4 +1,4 @@
-// 関係グラフ解析ワーカー本体。CPU 重量級（exceljs パース + 数式リネージュ + 手コピー推定）を
+// 関係グラフ解析ワーカー本体。CPU 重量級（exceljs パース + 数式リネージュ + 手修正推定）を
 // メインのイベントループから隔離するための worker_threads エントリ。
 // メイン側で原本バイトを取得（Drive/ディスク I/O）して workerData で渡し、ここでは解析だけ行う。
 import { parentPort, workerData } from 'node:worker_threads';

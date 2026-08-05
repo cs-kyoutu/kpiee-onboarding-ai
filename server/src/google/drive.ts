@@ -451,7 +451,7 @@ export type DriveRelationSource =
       grids: DriveGrid[];
       /** シート名 → 実際の総行数。絞り込んだシートの Region.dataRowCount を補正する */
       rowTotals: Record<string, number>;
-      /** 絞り込んだシート名。手コピー指紋（列の全値一致）は成り立たないので計算を省く */
+      /** 絞り込んだシート名。手修正指紋（列の全値一致）は成り立たないので計算を省く */
       truncatedSheets: string[];
     }
   | { kind: 'buffer'; buffer: Buffer };
@@ -459,7 +459,7 @@ export type DriveRelationSource =
 /**
  * 関係分析用にドライブから取得する。
  * ネイティブシートはチャンク読みで格子を作る。絞り込んだシートはヘッダー＋標本＋数式行だけの
- * 格子になるので、表領域(Region)はノードとして登録されるが手コピー指紋は計算しない。
+ * 格子になるので、表領域(Region)はノードとして登録されるが手修正指紋は計算しない。
  */
 export async function fetchDriveForRelations(urlOrId: string, file: string): Promise<DriveRelationSource> {
   const id = extractSpreadsheetId(urlOrId);

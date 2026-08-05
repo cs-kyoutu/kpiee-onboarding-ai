@@ -3,7 +3,7 @@
 //   (A) classify.ts の決定論的参照グラフ（ワークブック内）
 //   (B) AI 解読の意味的説明
 // R1: 深い分岐チェーン + 紛らわしいシート名（名前に頼れない）→ グラフが純粋に参照方向だけで当てられるか
-// R2: R1 のチェーン中間リンクを「値貼り付け」で切断 → リネージュが壊れるか（手コピー混入の最重要ケース）
+// R2: R1 のチェーン中間リンクを「値貼り付け」で切断 → リネージュが壊れるか（手修正混入の最重要ケース）
 import ExcelJS from 'exceljs';
 import { parseXlsx } from '../src/preprocess/parse.js';
 import { classifySheetRoles } from '../src/preprocess/classify.js';

@@ -2,7 +2,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import {
-  gridsFromArtifact, detectRegions, formulaEdges, valueCopyEdges,
+  gridsFromArtifact, detectRegions, formulaEdges, valueCopyEdges, buildCopyContext,
   type RawGrid, type Region, type Edge,
 } from '../src/preprocess/relations.js';
 
@@ -26,9 +26,8 @@ void (async () => {
   log(`formulaEdges: ${ms(t)} edges=${fEdges.length}`);
 
   t = Date.now();
-  const unordered = (a: string, b: string) => a < b ? `${a}::${b}` : `${b}::${a}`;
-  const formulaLinked = new Set(fEdges.map(e => unordered(e.from, e.to)));
-  const cEdges: Edge[] = valueCopyEdges(grids, regions, formulaLinked);
-  log(`valueCopyEdges: ${ms(t)} edges=${cEdges.length}`);
+  const copy = valueCopyEdges(grids, regions, buildCopyContext(fEdges));
+  const cEdges: Edge[] = copy.edges;
+  log(`valueCopyEdges: ${ms(t)} edges=${cEdges.length} sharedTemplates=${copy.sharedTemplates.length}`);
   log('ALL DONE');
 })();

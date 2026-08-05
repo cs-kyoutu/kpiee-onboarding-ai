@@ -1,7 +1,7 @@
 // シート関係グラフの永続キャッシュ。
 //
 // 関係グラフは「完成した派生結果物」であり、原本の数値そのものは含まない（辺の evidence は数式テキスト、
-// 手コピー辺は一致件数、region は見出し・構造のみ）。findings / match_results と同じ「保存してよい派生結果」
+// 手修正辺は一致件数、region は見出し・構造のみ）。findings / match_results と同じ「保存してよい派生結果」
 // の等級なので DB に保存し、次回以降はアーティファクト集合が変わらない限り再計算せず即返す。
 // 原本そのもの（raw バイト・全構造化 JSON）は保存しない方針（C3/C5）は不変で、キャッシュミス時に
 // analyzeArtifacts が都度 Drive から取り直す。
@@ -12,7 +12,10 @@ import type { RelationGraph } from './preprocess/relations.js';
 export interface CacheableArtifact { id: number; storage_key: string; original_filename: string }
 
 /** 解析ロジックの版。relations.ts の判定（警告・辺・領域）を変えたら +1 して旧キャッシュを自然失効させる */
-const ANALYZER_VERSION = 6; // v6: 列方向軸の構造化（colAxisDim）と行キー×列軸の2次元グレイン（grain）を追加
+// v7: 外部通合文書参照（`[1]Sheet!A1`）を実ファイルへ解決してファイル間の数式辺を作るようにした。
+//     併せて 3D参照（top:end!）の展開、数式で連結済みの表ペアの手修正辺の抑制、
+//     共通様式の使い回し（sharedTemplates）の切り出しを入れており、辺・警告の内容が変わる。
+const ANALYZER_VERSION = 7;
 
 /**
  * アーティファクト集合の署名。追加・削除・再取込（storage_key 変化）に加え、

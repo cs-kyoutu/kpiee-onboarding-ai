@@ -1,10 +1,10 @@
 // 関係性分析の「ロジック実現可能性」検証プローブ（UI なし）。
 // 検証したい難所は2つ:
 //   (1) 1シート内に表が複数あるケース → シート単位でなく「表領域(region)」単位で捉えられるか
-//   (2) 手コピー(値貼り付け=数式なし)シート → 参照グラフが切れる。値そのものから関係を逆推定できるか
+//   (2) 手修正(値貼り付け=数式なし)シート → 参照グラフが切れる。値そのものから関係を逆推定できるか
 //
 // ここでは production コードに触れず、自己完結のアルゴリズムを実装して
-// 複雑ワークブック（多表シート＋手コピー列）に対して関係辺が取れるかを実証する。
+// 複雑ワークブック（多表シート＋手修正列）に対して関係辺が取れるかを実証する。
 import ExcelJS from 'exceljs';
 
 // ---------- 生グリッド読み込み（parse.ts は行圧縮するので領域検出用に生で読む） ----------
@@ -193,7 +193,7 @@ function formulaEdges(grids: Grid[], regions: Region[]): Edge[] {
   return [...edges.values()];
 }
 
-// ---------- (2b) 値フィンガープリント → 手コピー リニージュ推定 ----------
+// ---------- (2b) 値フィンガープリント → 手修正 リニージュ推定 ----------
 interface ColVals { key: string; region: Region; name: string; values: (string | number)[]; hasFormula: boolean }
 
 function collectColumns(grids: Grid[], regions: Region[]): ColVals[] {
@@ -214,7 +214,7 @@ function collectColumns(grids: Grid[], regions: Region[]): ColVals[] {
   return out;
 }
 
-// 数式を持たない列が、別の(計算結果を含む)列と値一致 → 手コピー辺
+// 数式を持たない列が、別の(計算結果を含む)列と値一致 → 手修正辺
 function valueCopyEdges(cols: ColVals[]): Edge[] {
   const edges: Edge[] = [];
   const fp = (v: (string | number)[]) => v.map(x => typeof x === 'number' ? x.toFixed(4) : String(x).trim()).join('|');
@@ -226,9 +226,9 @@ function valueCopyEdges(cols: ColVals[]): Edge[] {
       if (src.region.id === dst.region.id) continue;
       // 完全一致（順序込み）
       if (dst.values.length === src.values.length && fp(dst.values) === fp(src.values)) {
-        const direction = src.hasFormula ? 0.85 : 0.6; // 計算列→手コピーは方向確度が高い
+        const direction = src.hasFormula ? 0.85 : 0.6; // 計算列→手修正は方向確度が高い
         edges.push({ from: src.key, to: dst.key, type: 'passthrough',
-          evidence: `値完全一致(${dst.values.length}件, 数式なし=手コピー疑い)`, confidence: direction });
+          evidence: `値完全一致(${dst.values.length}件, 数式なし=手修正疑い)`, confidence: direction });
         continue;
       }
       // 集合包含（順序違い/部分コピー）
@@ -247,7 +247,7 @@ function valueCopyEdges(cols: ColVals[]): Edge[] {
 // ---------- テスト用の複雑ワークブック ----------
 // ・"実績": 1シートに2つの表(売上表/費用表)を縦積み(空行区切り) → 多表検出
 // ・"集計": SUMIF で実績の各表を集計 + 利益を四則演算 → 数式リニージュ(表またぎ)
-// ・"報告": 集計の結果を手で貼り付け(数式なし) → 値フィンガープリントで手コピー検出
+// ・"報告": 集計の結果を手で貼り付け(数式なし) → 値フィンガープリントで手修正検出
 async function buildComplex(): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
 
@@ -298,12 +298,12 @@ async function analyze(label: string, buf: Buffer) {
 
   const cols = collectColumns(grids, regions);
   const ve = valueCopyEdges(cols);
-  console.log(`\n[3] 値フィンガープリント(手コピー)推定辺: ${ve.length}件`);
+  console.log(`\n[3] 値フィンガープリント(手修正)推定辺: ${ve.length}件`);
   for (const e of ve) console.log(`  ${e.from}  ┄┄copy?(${(e.confidence * 100).toFixed(0)}%)┄┄▶  ${e.to}   « ${e.evidence} »`);
 }
 
 (async () => {
-  await analyze('合成ケース: 多表シート + SUMIF表またぎ + 手コピー報告', await buildComplex());
+  await analyze('合成ケース: 多表シート + SUMIF表またぎ + 手修正報告', await buildComplex());
 
   // 既存サンプル(混在ワークブック)でも実データ確認
   try {

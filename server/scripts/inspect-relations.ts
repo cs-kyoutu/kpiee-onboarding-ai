@@ -1,15 +1,19 @@
 // 関係グラフの内訳を点検する診断スクリプト（シート内 vs シート間の比率など）。
 // 使い方: npx tsx scripts/inspect-relations.ts "<xlsx の絶対パス>"
 import { readFileSync } from 'node:fs';
-import { buildGridsFromBuffer, detectRegions, formulaEdges, valueCopyEdges } from '../src/preprocess/relations.js';
+import {
+  buildGridsFromBuffer, detectRegions, formulaEdges, valueCopyEdges, buildCopyContext,
+} from '../src/preprocess/relations.js';
 
 const buf = readFileSync(process.argv[2]);
 const grids = await buildGridsFromBuffer(buf, 'f');
 const regions = grids.flatMap(detectRegions);
 const fEdges = formulaEdges(grids, regions);
-const up = (a: string, b: string) => (a < b ? `${a}::${b}` : `${b}::${a}`);
-const fl = new Set(fEdges.map(e => up(e.from, e.to)));
-const vEdges = valueCopyEdges(grids, regions, fl);
+const copy = valueCopyEdges(grids, regions, buildCopyContext(fEdges));
+const vEdges = copy.edges;
+if (copy.sharedTemplates.length > 0) {
+  console.log(`共通様式の使い回しと判定して辺を出さなかった列: ${copy.sharedTemplates.length} 件`);
+}
 const all = [...fEdges, ...vEdges];
 const rid = (k: string) => k.slice(0, k.indexOf(':'));
 

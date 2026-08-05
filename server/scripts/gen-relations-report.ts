@@ -22,8 +22,13 @@ if (!out || inputs.length === 0) {
   process.exit(1);
 }
 
+// storage 上のファイル名は「<timestamp>-<元の名前>」。本番は artifacts.original_filename（元の名前）を
+// 渡すので、ここでも接頭辞を落として合わせる。外部通合文書参照の解決は参照先ファイル名で
+// 突き合わせるため、接頭辞が付いたままだと本番と違ってリンクが解決できない。
+const originalName = (p: string) => basename(p).replace(/^\d{10,}-/, '');
+
 const baseGraph = await analyzeArtifacts(
-  inputs.map(p => ({ filename: basename(p), load: async () => readFileSync(p) })),
+  inputs.map(p => ({ filename: originalName(p), load: async () => readFileSync(p) })),
 );
 
 /** FILE_RELATIONS を DeclaredFileRel[] へ解釈する（不正な指定はその場で止める＝黙って無視しない） */

@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
 
 -- ブック（ファイル）どうしの関係。運用担当者が「この Excel はあの Excel へ集約されている」という
 -- 業務知識を入れる場所で、シート単位の自動解析より上位の入力になる。
--- 自動検出（値の一致による手コピー推定）は初期案として提示するだけで、確定するのは人。
+-- 自動検出（値の一致による手修正推定）は初期案として提示するだけで、確定するのは人。
 -- ファイルの識別は artifact_id（FK）で持つ。関係グラフ側のキーである fileLabelOf(original_filename)
 -- はラベルなのでリネームで壊れる。ラベルへの解決は読み出し時に行う。
 CREATE TABLE IF NOT EXISTS file_relations (

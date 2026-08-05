@@ -35,7 +35,7 @@ export const FINDINGS_SCHEMA = {
                 description: '構成元のシート名。入力シート（手入力・取込）は空配列',
                 items: { type: 'string' },
               },
-              method: { type: 'string', description: '構成元からの作られ方。例: 3-D参照 SUM(top:end!〃) による同一位置セルの合算 / SUMIF集計 / 値の手コピー。入力シートは「手入力」等' },
+              method: { type: 'string', description: '構成元からの作られ方。例: 3-D参照 SUM(top:end!〃) による同一位置セルの合算 / SUMIF集計 / 値の手修正。入力シートは「手入力」等' },
               description: { type: 'string', description: 'このシートが何の表かを平易に1文で' },
             },
             required: ['sheet', 'role', 'composed_of', 'method', 'description'],

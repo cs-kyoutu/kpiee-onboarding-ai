@@ -1,21 +1,29 @@
 // シート関係性分析モジュール（設計書の §6.1 前処理を「関係把握」方向に拡張）。
 //
-// classify.ts は「シート単位」の役割推定だが、本モジュールは現場の難所2点に対応する:
+// classify.ts は「シート単位」の役割推定だが、本モジュールは現場の難所3点に対応する:
 //   (1) 1シート内に複数の表 → 「表領域(region)」単位で捉える
-//   (2) 手コピー(値貼り付け=数式なし) → 参照グラフが切れる箇所を値の一致から逆推定する
+//   (2) 手修正(値貼り付け=数式なし) → 参照グラフが切れる箇所を値の一致から逆推定する
+//   (3) ファイルをまたぐ集計 → 外部通合文書参照（`=SUM([1]top:end!E6)`）を実ファイルへ解決する
+//       （externalLinks.ts。解決できない外部参照は捨てる = 自シート参照に落として偽の辺を作らない）
 //
 // 出力は「ノード=表領域の列 / 辺=関係(集計・参照・コピー等)」のグラフ。
-// 数式由来の辺は確定的・高確信、値由来(手コピー推定)の辺は確率的でノイズ抑制ゲートを掛ける。
+// 数式由来の辺は確定的・高確信、値由来(手修正推定)の辺は確率的でノイズ抑制ゲートを掛ける。
 import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
 import { parseCsv } from './parse.js';
+import { readExternalBooks, basenameOf, type ExternalBook } from './externalLinks.js';
 
 // ============================================================
 // 生グリッド（領域検出には行圧縮しない生の格子が要る）
 // ============================================================
 export interface RawCell { r: number; c: number; value: string | number | null; formula?: string }
 // file: どのファイル由来か（複数ファイル横断解析でシート名衝突・ファイル間関係を扱うため）
-export interface RawGrid { file: string; name: string; cells: RawCell[]; maxR: number; maxC: number }
+// externalBooks: そのファイルの外部通合文書参照（`[1]` 等）の索引。同一ファイルの全グリッドで同じ配列を共有する。
+//   Drive のネイティブシート経路では外部参照の概念が無いので未設定になる。
+export interface RawGrid {
+  file: string; name: string; cells: RawCell[]; maxR: number; maxC: number;
+  externalBooks?: ExternalBook[];
+}
 
 function normalizeValue(v: ExcelJS.CellValue): string | number | null {
   if (v === null || v === undefined) return null;
@@ -132,10 +140,21 @@ export function fileLabelOf(filename: string): string {
   return filename.replace(/\.[^.]+$/, '') || filename;
 }
 
-/** 1 アーティファクト（xlsx/csv）→ グリッド群（file ラベル付き） */
+/**
+ * 1 アーティファクト（xlsx/csv）→ グリッド群（file ラベル付き）。
+ * xlsx は外部通合文書参照の索引も読み、全グリッドに同じ配列を持たせる
+ * （数式リネージュが `[n]` を実ファイルへ解決するのに使う）。
+ */
 export async function gridsFromArtifact(filename: string, buffer: Buffer): Promise<RawGrid[]> {
   const label = fileLabelOf(filename);
-  if (/\.(xlsx|xlsm)$/i.test(filename)) return buildGridsFromBuffer(buffer, label);
+  if (/\.(xlsx|xlsm)$/i.test(filename)) {
+    const [grids, externalBooks] = await Promise.all([
+      buildGridsFromBuffer(buffer, label),
+      readExternalBooks(buffer),
+    ]);
+    if (externalBooks.length > 0) for (const g of grids) g.externalBooks = externalBooks;
+    return grids;
+  }
   if (/\.csv$/i.test(filename)) return [gridFromCsv(buffer, label)];
   return [];
 }
@@ -470,7 +489,7 @@ export type RelType =
   | 'aggregation'    // SUM 等の単純集計
   | 'passthrough'    // 単一セルの転記リンク
   | 'derived'        // 四則演算による派生
-  | 'copy';          // 値一致による手コピー推定（数式由来でない）
+  | 'copy';          // 値一致による手修正推定（数式由来でない）
 
 export interface Edge {
   from: string; to: string; type: RelType;
@@ -480,12 +499,80 @@ export interface Edge {
   conflictsDeclared?: boolean;
 }
 
-interface Ref { sheet: string; c0: number; c1: number; r0: number | null; r1: number | null; argIndex: number }
+// file: 参照先ファイルのラベル。外部通合文書参照（`[1]…`）を解決できたときだけ現在のファイル以外になる。
+interface Ref { file: string; sheet: string; c0: number; c1: number; r0: number | null; r1: number | null; argIndex: number }
 
-/** 数式から参照を抽出。SUMIF/SUMIFS/VLOOKUP は引数位置(argIndex)も付ける */
-function extractRefs(formula: string, curSheet: string): Ref[] {
+/** 3D参照（`top:end!E6`）を展開するシート数の上限。病的な指定でノードが爆発しないための蓋 */
+const SHEET_RANGE_CAP = 64;
+
+/**
+ * `!` の手前のシート指定部を解釈する。返す sheets は「そのブック内で参照されるシート名」の並び。
+ *
+ * 対応する形:
+ *   `Sheet`                     … 同一ブックの単一シート
+ *   `top:end`                   … 同一ブックのシート範囲（3D参照）
+ *   `[1]Sheet` / `[1]top:end`   … 外部通合文書（番号はブックの externalReferences 順）
+ *   `C:\dir\[book.xlsx]Sheet`   … リンク未解決の絶対パス形式（引用符付きで現れる）
+ *
+ * 解決できない外部参照は unresolved を立てて返す。呼び出し側はその参照を捨てる — 以前は
+ * ここで落ちた残骸（`E6` だけ）が「シート指定なし＝自シート」として解決され、実在しない
+ * 自ファイル内の辺を確信度 0.95 で作っていた。
+ */
+function parseSheetSpec(
+  spec: string, curFile: string, curSheetNames: string[], externalBooks: ExternalBook[] | undefined,
+): { file: string; sheets: string[]; unresolved: boolean } {
+  let body = spec;
+  let book: ExternalBook | undefined;
+  let external = false;
+
+  const byIndex = /^\[(\d+)\](.*)$/.exec(body);
+  const byPath = /^(?:.*[\\/])?\[([^[\]]+\.xls[xmb]?)\](.*)$/i.exec(body);
+  if (byIndex) {
+    external = true;
+    body = byIndex[2];
+    book = externalBooks?.find(b => b.index === Number(byIndex[1]));
+  } else if (byPath) {
+    external = true;
+    body = byPath[2];
+    const base = basenameOf(byPath[1]);
+    book = externalBooks?.find(b => b.filename === base)
+      ?? { index: -1, filename: base, sheetNames: [] };
+  }
+  if (external && !book) return { file: curFile, sheets: [], unresolved: true };
+
+  const file = external ? fileLabelOf(book!.filename) : curFile;
+  const order = external ? book!.sheetNames : curSheetNames;
+
+  // シート範囲（3D参照）。Excel のシート名に ':' は使えないので分割は安全
+  const colon = body.indexOf(':');
+  if (colon < 0) return { file, sheets: [body], unresolved: false };
+  const [a, b] = [body.slice(0, colon), body.slice(colon + 1)];
+  const ia = order.indexOf(a), ib = order.indexOf(b);
+  // 並びが分からない（外部ブックのキャッシュが無い等）ときは両端だけ見る。
+  // 中間シートを取りこぼすが、でっち上げよりは取りこぼしのほうが安全。
+  if (ia < 0 || ib < 0) return { file, sheets: [a, b].filter(s => s !== ''), unresolved: false };
+  const [lo, hi] = ia <= ib ? [ia, ib] : [ib, ia];
+  return { file, sheets: order.slice(lo, Math.min(hi + 1, lo + SHEET_RANGE_CAP)), unresolved: false };
+}
+
+/**
+ * 数式から参照を抽出。SUMIF/SUMIFS/VLOOKUP は引数位置(argIndex)も付ける。
+ * curSheetNames は同一ブックのシート順（3D参照の展開に使う。grids の並び＝ブックのシート順）。
+ */
+function extractRefs(
+  formula: string, curSheet: string, curFile: string,
+  curSheetNames: string[], externalBooks: ExternalBook[] | undefined,
+): Ref[] {
   const refs: Ref[] = [];
-  const reRef = /(?:(?:'([^']+)'|([A-Za-z0-9_À-鿿぀-ヿ＀-￯]+))!)?\$?([A-Za-z]{1,3})\$?(\d+)?(?::\$?([A-Za-z]{1,3})\$?(\d+)?)?/g;
+  // シート指定部は「引用符付き（空白・記号を含む名前／絶対パス形式）」と「引用符なし」の2形。
+  // 引用符なしでは先頭の `[n]` とシート範囲 `a:b` も1トークンとして丸ごと食う（食わないと
+  // `top:end` が「TOP列〜END列」の巨大列範囲に、`[1]` が脱落した残骸に化ける）。
+  const SHEET_CHARS = 'A-Za-z0-9_.À-鿿぀-ヿ＀-￯';
+  const reRef = new RegExp(
+    `(?:(?:'([^']+)'|((?:\\[\\d+\\])?[${SHEET_CHARS}]+(?::[${SHEET_CHARS}]+)?))!)?`
+    + `\\$?([A-Za-z]{1,3})\\$?(\\d+)?(?::\\$?([A-Za-z]{1,3})\\$?(\\d+)?)?`,
+    'g',
+  );
 
   // トップレベル関数名と、各参照が何番目の引数にあるかを把握するため、
   // 括弧深度1のカンマ位置を見て argIndex を割り当てる簡易パーサ
@@ -512,17 +599,24 @@ function extractRefs(formula: string, curSheet: string): Ref[] {
     if (!cA) continue;
     const after = formula[m.index + m[0].length];
     if (after === '(') continue; // 関数名を列参照と誤認しない
-    // 直後が '!' のトークンはセルでなくシート名。`top:end!E6`（シート範囲の3D参照）を
-    // 「TOP列〜END列」という巨大列範囲と誤認していた（実測 1万列幅×62万件→数十億反復で凍結）。
-    // ここでスキップすれば、続く本物のセル参照 E6 は次の照合で正しく拾われる。
-    if (after === '!') continue;
-    const sheet = m[1] ?? m[2] ?? curSheet;
+    // 直後が '!' のトークンはセルでなくシート名（上の正規表現で拾えなかった形の名前）。
+    // ここで捨てないと巨大列範囲と誤認する（実測 1万列幅×62万件→数十億反復で凍結）。
+    // ただし後続の残骸を自シート参照として拾わせないため、`!` の直後まで読み飛ばす。
+    if (after === '!') { reRef.lastIndex = m.index + m[0].length + 1; continue; }
+    const spec = m[1] ?? m[2];
     const c0 = colNum(cA), c1 = m[5] ? colNum(m[5]) : c0;
     const r0 = m[4] ? Number(m[4]) : null;
     const r1 = m[6] ? Number(m[6]) : (m[4] ? Number(m[4]) : null);
     // 防御策: 異常に広い列範囲（誤パース疑い）は辺を作らない。実表で1参照が数百列を超えることは稀。
     if (Math.abs(c1 - c0) > 1024) continue;
-    refs.push({ sheet, c0: Math.min(c0, c1), c1: Math.max(c0, c1), r0, r1, argIndex: fname ? argIndexAt(m.index) : -1 });
+    const argIndex = fname ? argIndexAt(m.index) : -1;
+    const base = {
+      c0: Math.min(c0, c1), c1: Math.max(c0, c1), r0, r1, argIndex,
+    };
+    if (spec === undefined) { refs.push({ file: curFile, sheet: curSheet, ...base }); continue; }
+    const t = parseSheetSpec(spec, curFile, curSheetNames, externalBooks);
+    if (t.unresolved) continue; // 解決できない外部参照は捨てる（自シートへ落とさない）
+    for (const sheet of t.sheets) refs.push({ file: t.file, sheet, ...base });
   }
   return refs;
 }
@@ -690,7 +784,8 @@ function resolveIndirectRef(formula: string, curFile: string, curSheet: string, 
   const c1 = rm[5] ? colNum(rm[5]) : c0;
   const r0 = rm[4] ? Number(rm[4]) : null;
   const r1 = rm[6] ? Number(rm[6]) : r0;
-  return { sheet, c0: Math.min(c0, c1), c1: Math.max(c0, c1), r0, r1, argIndex: -1 };
+  // INDIRECT は同一ブック内のシート名を組み立てる用途しか扱わない（外部ブック名の組立は非対応）
+  return { file: curFile, sheet, c0: Math.min(c0, c1), c1: Math.max(c0, c1), r0, r1, argIndex: -1 };
 }
 
 /** (file, sheet, row, col) → セル値。resolveIndirectRef が実値を読むための索引 */
@@ -704,14 +799,68 @@ class CellIndex {
   }
 }
 
-export function formulaLineage(grids: RawGrid[], regions: Region[]): { edges: Edge[]; keyLinks: KeyLink[] } {
+/**
+ * 他ファイルの表を指す数式参照。参照先ファイルの region がまだ手元に無い段階で作り、
+ * 全ファイルの region が揃ってから辺に変換する（resolvePendingRefs）。
+ *
+ * analyzeArtifacts はメモリのピークを「最大単一ファイル」に抑えるためファイルを1つずつ処理して
+ * 原本グリッドを捨てる。ファイル間の数式参照はその場では解決できないので、指紋（手修正推定）と
+ * 同じ考え方で「解決に必要な最小情報だけ」を持ち越す。
+ */
+export interface PendingRef {
+  /** 数式が書かれた列（`regionId:colName`）。こちらは解決済み */
+  to: string;
+  file: string; sheet: string; c: number; r: number | null;
+  type: RelType;
+  evidence: string;
+}
+
+/** 持ち越した外部参照を、全ファイルの region が揃った状態で辺へ変換する */
+export function resolvePendingRefs(pending: PendingRef[], allRegions: Region[]): Edge[] {
+  if (pending.length === 0) return [];
+  const locate = buildLocator(allRegions);
+  // 参照先ファイル名の大文字小文字が受領ファイルと違うことがある（Windows は区別しないため、
+  // リンク作成時と保存時で揺れる）。完全一致で引けなかったときだけ、この索引で寄せる。
+  const canonicalFile = new Map<string, string>();
+  for (const r of allRegions) if (!canonicalFile.has(r.file.toLowerCase())) canonicalFile.set(r.file.toLowerCase(), r.file);
+  const edges = new Map<string, Edge>();
+  for (const p of pending) {
+    const canon = canonicalFile.get(p.file.toLowerCase());
+    const src = locate(p.file, p.sheet, p.c, p.r)
+      ?? (canon && canon !== p.file ? locate(canon, p.sheet, p.c, p.r) : null);
+    // 参照先ファイルが未受領・解析対象外なら辺を作らない。ここで捨てるのが正しい
+    //（以前は解決できない参照を自シート参照へ落として、実在しない辺を作っていた）
+    if (!src) continue;
+    const from = `${src.region.id}:${src.colName}`;
+    if (from === p.to) continue;
+    const key = `${from}->${p.to}:${p.type}`;
+    if (edges.has(key)) continue;
+    const confidence = p.type === 'filter-key' ? 0.6 : 0.95;
+    edges.set(key, { from, to: p.to, type: p.type, evidence: p.evidence, confidence });
+  }
+  return [...edges.values()];
+}
+
+export function formulaLineage(
+  grids: RawGrid[], regions: Region[],
+): { edges: Edge[]; keyLinks: KeyLink[]; pending: PendingRef[] } {
   const edges = new Map<string, Edge>();
   const keyLinks = new Map<string, KeyLink>();
+  const pending: PendingRef[] = [];
   const locate = buildLocator(regions); // region をシート単位に索引化（呼び出しごとの全件探索を回避）
   const cellIndex = new CellIndex(grids);
+  // 同一ブックのシート順（grids の並び＝ブックのシート順）。`top:end` のような
+  // シート範囲（3D参照）を実シートへ展開するのに使う。
+  const sheetOrderOf = new Map<string, string[]>();
+  for (const g of grids) {
+    const arr = sheetOrderOf.get(g.file) ?? [];
+    arr.push(g.name);
+    sheetOrderOf.set(g.file, arr);
+  }
   // フィルダウンで構造的に同一な数式セルの重複処理を避けるための既処理指紋集合。
   const seen = new Set<string>();
   for (const g of grids) {
+    const sheetNames = sheetOrderOf.get(g.file) ?? [g.name];
     for (const cell of g.cells) {
       if (!cell.formula) continue;
       const dst = locate(g.file, g.name, cell.c, cell.r);
@@ -724,7 +873,7 @@ export function formulaLineage(grids: RawGrid[], regions: Region[]): { edges: Ed
       // 誤った辺を作ってしまうため、その区間を無害化してから通常抽出にかけ、解決できた実参照を足す。
       const indirectRef = /INDIRECT\s*\(/i.test(cell.formula) ? resolveIndirectRef(cell.formula, g.file, g.name, cellIndex) : null;
       const formulaForRefs = indirectRef ? cell.formula.replace(/INDIRECT\s*\([^)]*\)/i, 'INDIRECT()') : cell.formula;
-      const refs = extractRefs(formulaForRefs, g.name);
+      const refs = extractRefs(formulaForRefs, g.name, g.file, sheetNames, g.externalBooks);
       if (indirectRef) refs.push(indirectRef);
       for (const ref of refs) {
         const baseType = classifyRef(cell.formula, ref);
@@ -733,12 +882,17 @@ export function formulaLineage(grids: RawGrid[], regions: Region[]): { edges: Ed
           //（テーブルが1列だけなら、キー自身が戻り値なので lookup-join のまま）
           const type: RelType = (fname === 'VLOOKUP' && ref.argIndex === 1 && c === ref.c0 && ref.c1 > ref.c0)
             ? 'filter-key' : baseType;
-          // 数式参照は同一ファイル内で解決（Excel 数式はファイルをまたがない）
+          const to = `${dst.region.id}:${dst.colName}`;
+          // 他ファイルを指す参照（外部通合文書参照 `[1]…`）は、参照先ファイルの region が
+          // 揃うまで解決できないので持ち越す。同一ファイル内はその場で解決する。
+          if (ref.file !== g.file) {
+            pending.push({ to, file: ref.file, sheet: ref.sheet, c, r: ref.r0, type, evidence: cell.formula });
+            continue;
+          }
           const src = locate(g.file, ref.sheet, c, ref.r0);
           if (!src) continue;
           if (src.region.id === dst.region.id && src.colName === dst.colName) continue;
           const from = `${src.region.id}:${src.colName}`;
-          const to = `${dst.region.id}:${dst.colName}`;
           const key = `${from}->${to}:${type}`;
           if (!edges.has(key)) {
             // filter-key はデータフローでなく結合キーなので確信度を下げて区別
@@ -753,6 +907,9 @@ export function formulaLineage(grids: RawGrid[], regions: Region[]): { edges: Ed
       const resolveArg = (ai: number) => {
         for (const r of refs) {
           if (r.argIndex !== ai) continue;
+          // キーの対応は同一ファイル内に限る（ファイルをまたぐキー対応は ER 図側の未対応項目。
+          // 他ファイル参照を混ぜると自ファイルの region に誤って引き当たる）
+          if (r.file !== g.file) continue;
           // 範囲は先頭列＝キー列（VLOOKUP テーブル・SUMIFS 条件範囲とも先頭列が照合対象）
           const loc = locate(g.file, r.sheet, r.c0, r.r0);
           if (loc) return loc;
@@ -779,16 +936,24 @@ export function formulaLineage(grids: RawGrid[], regions: Region[]): { edges: Ed
   }
   // 病的に多い場合は利用回数の多い対だけ残す（表示・転送とも上位で十分）
   const links = [...keyLinks.values()].sort((x, y) => y.count - x.count);
-  return { edges: [...edges.values()], keyLinks: links.length > KEY_LINK_CAP ? links.slice(0, KEY_LINK_CAP) : links };
+  return {
+    edges: [...edges.values()],
+    keyLinks: links.length > KEY_LINK_CAP ? links.slice(0, KEY_LINK_CAP) : links,
+    pending,
+  };
 }
 
-/** 後方互換ラッパ（既存スクリプト・検証ツール用）。新規コードは formulaLineage を使う */
+/**
+ * 後方互換ラッパ（既存スクリプト・検証ツール用）。新規コードは formulaLineage を使う。
+ * 渡された grids の範囲で外部参照も解決する（単一パス用途なので region が全部揃っている前提）。
+ */
 export function formulaEdges(grids: RawGrid[], regions: Region[]): Edge[] {
-  return formulaLineage(grids, regions).edges;
+  const { edges, pending } = formulaLineage(grids, regions);
+  return [...edges, ...resolvePendingRefs(pending, regions)];
 }
 
 // ============================================================
-// (2b) 値フィンガープリント → 手コピー推定（ノイズ抑制ゲート付き）
+// (2b) 値フィンガープリント → 手修正推定（ノイズ抑制ゲート付き）
 // ============================================================
 interface ColVals { key: string; region: Region; col: RegionColumn; values: (string | number)[] }
 
@@ -836,13 +1001,16 @@ function isInformative(v: (string | number)[]): boolean {
   return uniqRatio(v) >= 0.8;
 }
 
-// 列の「指紋」レコード。手コピー推定に必要なのは値の完全一致判定だけなので、
+// 列の「指紋」レコード。手修正推定に必要なのは値の完全一致判定だけなので、
 // 生の値配列ではなく (指紋文字列 + メタ情報) だけを保持する。これにより
 // ファイル単位解析で「そのファイルの指紋」だけを次ファイルへ持ち越せる
 // （＝原本グリッドをファイル境界で捨ててもクロスファイルのコピー辺を失わない）。
 export interface ColFingerprint {
   key: string;        // `${region.id}:${col.name}`（辺の from/to になる）
   regionId: string;   // 同一表内ペアの除外に使う
+  file: string;       // 共通様式の使い回し（同じ列が何ブックにも居る）を見分けるのに使う
+  sheet: string;      // 上記を報告するときの表示用
+  colName: string;    // 同上
   hasFormula: boolean;// 向き判定（数式列=source）に使う
   length: number;     // 一致件数（evidence 表示用）
   fp: string;         // 長さ + 値連結。完全一致判定の鍵（元実装のバケット鍵と同一）
@@ -855,6 +1023,9 @@ export function fingerprintColumns(grids: RawGrid[], regions: Region[]): ColFing
     .map(c => ({
       key: c.key,
       regionId: c.region.id,
+      file: c.region.file,
+      sheet: c.region.sheet,
+      colName: c.col.name,
       hasFormula: c.col.hasFormula,
       length: c.values.length,
       // 長さも鍵に含めることで、区切り文字の衝突等による誤一致を元実装と同様に防ぐ
@@ -863,13 +1034,61 @@ export function fingerprintColumns(grids: RawGrid[], regions: Region[]): ColFing
 }
 
 /**
- * 指紋レコード群から手コピー辺を作る。
+ * 手修正推定のノイズ抑制・向き判定に使う「既に分かっている数式の関係」。
+ * 数式辺が確定した後に buildCopyContext で作る。
+ */
+export interface CopyContext {
+  /** 数式で直接つながっている列ペア（無向） */
+  columnPairs: Set<string>;
+  /** 数式でつながっている表ペア（無向） */
+  regionPairs: Set<string>;
+}
+
+/**
+ * 同じ値の列が複数ブックに存在する状態（共通様式・マスタの使い回し）。
+ * 点対点の手修正とは性質が違うので、辺ではなくこの形で1件にまとめて報告する。
+ */
+export interface SharedTemplateColumn {
+  columnName: string;
+  rowCount: number;
+  places: { file: string; sheet: string; column: string }[];
+}
+
+/** 「共通様式の使い回し」と見なすブック数の下限。2 ブックなら点対点の転記の可能性が十分ある */
+const SHARED_TEMPLATE_MIN_FILES = 3;
+
+const regionOfKey = (key: string): string => key.slice(0, key.lastIndexOf(':'));
+
+export function buildCopyContext(formulaEdgeList: Edge[]): CopyContext {
+  const columnPairs = new Set<string>();
+  const regionPairs = new Set<string>();
+  for (const e of formulaEdgeList) {
+    columnPairs.add(unorderedPair(e.from, e.to));
+    regionPairs.add(unorderedPair(regionOfKey(e.from), regionOfKey(e.to)));
+  }
+  return { columnPairs, regionPairs };
+}
+
+/**
+ * 指紋レコード群から手修正辺を作る。
  * 採用条件は「値列が完全一致（順序・長さ込み）」のみ。同一指紋の列だけをバケットに
  * まとめて比較すればよく、元実装の全列ペア総当たり O(列^2) を ≈O(列) に削減する。
- * 方向: 数式列(=計算)を source、値のみ列を dst とする。両方とも値のみなら needsConfirmation。
- * 指紋の入力順を保てば辺の向き・src/dst は元実装と一致する。
+ *
+ * 向きは「数式列＝計算した側＝コピー元（計算結果を手で貼った）」。両方とも値だけなら
+ * 向きを断定せず needsConfirmation を立てる（03 の問いも「どちらが元データですか？」になる）。
+ *
+ * 逆向きの辺について: 外部参照が解決できない間は、ファイル間集計の集計先（例: 法人合計）だけが
+ * 数式を持つため「法人合計 → 各事業部」という実際と逆の辺が出ていた。これは外部参照を
+ * 解決できるようになった結果、その列ペア・表ペアが数式で連結済みになり下の2つのゲートで
+ * 落ちる（＝向きの規則を変えずに解消する）。規則側に「導出列は元にしない」を足すと、
+ * 「中間集計の計算結果を帳票へ貼った」という正しい断定まで曖昧にしてしまうため入れない。
+ *
+ * sharedTemplates には「共通様式の使い回し」と判定して辺を出さなかった列群を入れて返す
+ * （黙って捨てると、重複していること自体が誰にも見えなくなるため）。
  */
-export function valueCopyEdgesFromFingerprints(fps: ColFingerprint[], formulaLinked: Set<string>): Edge[] {
+export function valueCopyEdgesFromFingerprints(
+  fps: ColFingerprint[], ctx: CopyContext,
+): { edges: Edge[]; sharedTemplates: SharedTemplateColumn[] } {
   const buckets = new Map<string, ColFingerprint[]>();
   for (const c of fps) {
     let arr = buckets.get(c.fp);
@@ -878,14 +1097,40 @@ export function valueCopyEdgesFromFingerprints(fps: ColFingerprint[], formulaLin
   }
 
   const edges: Edge[] = [];
+  const sharedTemplates: SharedTemplateColumn[] = [];
   for (const group of buckets.values()) {
     if (group.length < 2) continue; // 完全一致の相手がいない列はコピー候補にならない
+
+    // 共通様式の使い回し。次の3つが揃ったときだけ「同じ様式を各ブックが持っている状態」と見る:
+    //   (a) 3ブック以上に居る
+    //   (b) 同じ値が1つのブックの中で複数箇所に出る … 決定的なのはここ。ブック自身の様式が
+    //       その一覧（部署コード・勘定科目）を何枚ものシートに抱えている形で、どれかが「元」に
+    //       なる関係ではない。逆に各ブックに1箇所ずつなら、原本の列を複数ブックへ貼った転記の
+    //       可能性が高く、それは確認すべき本物の論点なので残す（実データで確認: 共通様式の
+    //       部署コードは1ブックに 2〜26 箇所、原本CSVからの転記は各ブック 1 箇所ずつだった）。
+    //   (c) どれも数式を持たない … 数式列が混じるなら「計算結果を複数箇所へ貼った」意味のある広がり。
+    // 総当たりで辺を出すと N*(N-1)/2 本のノイズになり確認事項が水増しされる
+    //（実データでは部署コード 242 行の1列が 24 本の「手修正疑い」を生んでいた）。
+    const files = new Set(group.map(c => c.file));
+    const repeatsWithinAFile = group.length > files.size;
+    if (files.size >= SHARED_TEMPLATE_MIN_FILES && repeatsWithinAFile && group.every(c => !c.hasFormula)) {
+      sharedTemplates.push({
+        columnName: group[0].colName,
+        rowCount: group[0].length,
+        places: group.map(c => ({ file: c.file, sheet: c.sheet, column: c.colName })),
+      });
+      continue;
+    }
+
     for (let i = 0; i < group.length; i++) {
       for (let j = i + 1; j < group.length; j++) {
         const a = group[i], b = group[j];
         if (a.regionId === b.regionId) continue;
         // 既に数式で連結済みの列ペアは、その数式が本当の関係。コピー辺は重複ノイズなので出さない
-        if (formulaLinked.has(unorderedPair(a.key, b.key))) continue;
+        if (ctx.columnPairs.has(unorderedPair(a.key, b.key))) continue;
+        // 表どうしが数式で結ばれているなら、別の列で値が一致してもそれは集計の副産物と見る。
+        // 「別の手作業転記が同じ表の間にもある」より確度が高く、確認事項の水増しを防ぐ。
+        if (ctx.regionPairs.has(unorderedPair(a.regionId, b.regionId))) continue;
         // ここに来た時点で「長さ・値列が完全一致」は保証済み（バケット化済み）
 
         // 方向: 数式列があればそれを source（計算結果を手で貼った）。両方値のみなら確認要。
@@ -897,23 +1142,25 @@ export function valueCopyEdgesFromFingerprints(fps: ColFingerprint[], formulaLin
 
         edges.push({
           from: src.key, to: dst.key, type: 'copy',
-          evidence: `値完全一致(${dst.length}件, 手コピー疑い)`,
+          evidence: `値完全一致(${dst.length}件, 手修正疑い)`,
           confidence: needsConfirmation ? 0.55 : 0.9,
           needsConfirmation,
         });
       }
     }
   }
-  return edges;
+  return { edges, sharedTemplates };
 }
 
 /**
- * 数式を持たない情報量のある列が、他列(計算結果含む)と値一致 → 手コピー辺。
+ * 数式を持たない情報量のある列が、他列(計算結果含む)と値一致 → 手修正辺。
  * 単一パス（全グリッドを同時保持できる小規模）向けの薄いラッパ。
  * 大規模はファイル単位で指紋を貯める analyzeArtifacts を使う。
  */
-export function valueCopyEdges(grids: RawGrid[], regions: Region[], formulaLinked: Set<string>): Edge[] {
-  return valueCopyEdgesFromFingerprints(fingerprintColumns(grids, regions), formulaLinked);
+export function valueCopyEdges(
+  grids: RawGrid[], regions: Region[], ctx: CopyContext,
+): { edges: Edge[]; sharedTemplates: SharedTemplateColumn[] } {
+  return valueCopyEdgesFromFingerprints(fingerprintColumns(grids, regions), ctx);
 }
 
 const unorderedPair = (a: string, b: string) => a < b ? `${a}::${b}` : `${b}::${a}`;
@@ -947,7 +1194,7 @@ function structRole(layer: number, types: RelType[]): string {
   if (types.includes('filtered-agg') || types.includes('aggregation')) return '集計';
   if (types.includes('lookup-join')) return '引き当て';
   if (types.includes('passthrough')) return '転記';
-  if (types.includes('copy')) return '手コピー';
+  if (types.includes('copy')) return '手修正';
   return '計算';
 }
 
@@ -1059,6 +1306,8 @@ export interface RelationGraph {
   warnings: RelationWarning[];
   sheetStructures: SheetStructure[];
   keyLinks?: KeyLink[]; // 表と表を結ぶキー列の対応（VLOOKUP/SUMIFS 等の引数位置から抽出）
+  /** 共通様式の使い回しと判定して手修正辺を出さなかった列群（レポートで1件にまとめて確認する） */
+  sharedTemplates?: SharedTemplateColumn[];
   // 巨大グラフでは保存前に辺を領域ペア単位へ集約する（メイン側の JSON.parse / 集約コストを抑えるため）。
   // その際に元の総辺数と集約済みフラグを添える（UI 表示・キャッシュ再利用の双方で使う）。
   edgeTotal?: number;
@@ -1150,7 +1399,10 @@ function enrichKeysWithUsage(regions: Region[], edges: Edge[], keyLinks: KeyLink
  * 領域・数式辺・コピー辺からグラフを組み立てる共通処理。
  * analyzeGrids（単一パス）と analyzeArtifacts（ファイル単位）で結果を一致させるため共通化する。
  */
-function assembleGraph(regions: Region[], fEdges: Edge[], copyEdges: Edge[], keyLinks: KeyLink[] = []): RelationGraph {
+function assembleGraph(
+  regions: Region[], fEdges: Edge[], copyEdges: Edge[], keyLinks: KeyLink[] = [],
+  sharedTemplates: SharedTemplateColumn[] = [],
+): RelationGraph {
   const edges = [...fEdges, ...copyEdges];
   enrichKeysWithUsage(regions, edges, keyLinks);
   const warnings: RelationWarning[] = [];
@@ -1167,16 +1419,18 @@ function assembleGraph(regions: Region[], fEdges: Edge[], copyEdges: Edge[], key
   }
   // シート内部の階層フロー構造（一目で構造把握用）。既算出の辺からの後処理なので軽い
   const sheetStructures = buildSheetStructures(regions, edges);
-  return { regions, edges, warnings, sheetStructures, keyLinks };
+  return { regions, edges, warnings, sheetStructures, keyLinks, sharedTemplates };
 }
 
 export function analyzeGrids(grids: RawGrid[]): RelationGraph {
   const regions = grids.flatMap(detectRegions);
-  const { edges: fEdges, keyLinks } = formulaLineage(grids, regions);
-  // 数式で連結済みの列ペア（無向）。コピー推定の重複ノイズ抑制に使う
-  const formulaLinked = new Set(fEdges.map(e => unorderedPair(e.from, e.to)));
-  const copyEdges = valueCopyEdges(grids, regions, formulaLinked);
-  return assembleGraph(regions, fEdges, copyEdges, keyLinks);
+  const { edges, keyLinks, pending } = formulaLineage(grids, regions);
+  // 単一パスでは全ファイルの region が既に揃っているので、外部参照もその場で解決できる
+  const fEdges = [...edges, ...resolvePendingRefs(pending, regions)];
+  // コピー推定のノイズ抑制・向き判定に使う文脈。外部参照由来の辺も含めてから作ること —
+  // 含めないと、数式でつながっている列対を重複して「手修正疑い」に出してしまう（しかも逆向きで）。
+  const copy = valueCopyEdges(grids, regions, buildCopyContext(fEdges));
+  return assembleGraph(regions, fEdges, copy.edges, keyLinks, copy.sharedTemplates);
 }
 
 export async function analyzeBuffer(buffer: Buffer): Promise<RelationGraph> {
@@ -1185,8 +1439,10 @@ export async function analyzeBuffer(buffer: Buffer): Promise<RelationGraph> {
 
 /**
  * 複数アーティファクト（xlsx/csv）をファイル単位で処理する。
- * 表領域検出・数式リネージュはファイル内で完結するので1ファイルずつ計算し、
- * ファイルをまたぐ手コピー推定は「列の指紋」だけを貯めて最後にまとめて突き合わせる。
+ * 表領域検出と「同一ファイル内の」数式リネージュはファイル内で完結するので1ファイルずつ計算し、
+ * ファイルをまたぐものは最小情報だけ貯めて最後にまとめて解決する:
+ *   - 手修正推定 … 「列の指紋」を貯めて突き合わせる
+ *   - 外部通合文書参照（ファイル間の数式）… PendingRef を貯めて resolvePendingRefs で辺にする
  *
  * これにより同時にメモリへ載る原本グリッドは常に1ファイル分だけになり、
  * ピークメモリが「全ファイルの合計」ではなく「最も大きい単一ファイル」に抑えられる
@@ -1212,8 +1468,8 @@ export interface RelationInput {
   /** シート名 → 実際の総行数。取り込み時に行を絞ったシートの dataRowCount を実際の規模へ補正する */
   rowTotals?: Record<string, number>;
   /**
-   * 手コピー指紋の計算を省くシート名。
-   * 手コピー判定は「列の値が長さ・順序込みで完全一致」なので、行を絞ったシートでは成立しない
+   * 手修正指紋の計算を省くシート名。
+   * 手修正判定は「列の値が長さ・順序込みで完全一致」なので、行を絞ったシートでは成立しない
    * （絞った標本同士が偶然一致すると誤検出にもなる）。ノードとしての Region 登録は行うので
    * 関係タブ・関係レポートには raw の出発点として表示される。
    */
@@ -1225,6 +1481,7 @@ export async function analyzeArtifacts(arts: RelationInput[]): Promise<RelationG
   const fEdgesAll: Edge[] = [];
   const keyLinksAll: KeyLink[] = [];
   const fpsAll: ColFingerprint[] = [];
+  const pendingAll: PendingRef[] = [];
   for (const a of arts) {
     // バッファはここで初めて取得する（Drive 等からの遅延ロード）。前ファイルの原本を保持したまま
     // 全ファイルをメモリに載せないため、ピークを最大単一ファイルに抑える設計を fetch 経路でも保つ。
@@ -1245,18 +1502,25 @@ export async function analyzeArtifacts(arts: RelationInput[]): Promise<RelationG
     }
     regionsAll.push(...regions);
     await yieldToEventLoop();
-    // 数式参照はファイル内で解決するのでファイル単位で確定（キーの対応も同様にファイル内で閉じる）
+    // 同一ファイル内の数式参照はここで確定（キーの対応も同様にファイル内で閉じる）。
+    // 他ファイルを指す外部参照は参照先の region が揃っていないので pending に積み、ループ後に解決する。
     const lineage = formulaLineage(grids, regions);
     fEdgesAll.push(...lineage.edges);
     keyLinksAll.push(...lineage.keyLinks);
+    pendingAll.push(...lineage.pending);
     await yieldToEventLoop();
     const skip = new Set(a.skipFingerprintSheets ?? []);
     const fpRegions = skip.size === 0 ? regions : regions.filter(r => !skip.has(r.sheet));
     if (fpRegions.length > 0) fpsAll.push(...fingerprintColumns(grids, fpRegions)); // 生の値は捨て、指紋だけ持ち越す
     await yieldToEventLoop(); // 次ファイルへ進む前に譲る
   }
-  // 数式で連結済みの列ペア（無向）。コピー推定の重複ノイズ抑制に使う
-  const formulaLinked = new Set(fEdgesAll.map(e => unorderedPair(e.from, e.to)));
-  const copyEdges = valueCopyEdgesFromFingerprints(fpsAll, formulaLinked);
-  return assembleGraph(regionsAll, fEdgesAll, copyEdges, keyLinksAll);
+  // 全ファイルの region が揃ったので、持ち越した外部参照（ファイル間の数式）を辺へ変換する。
+  // 参照先が未受領のものはここで落ちる（存在しないファイルへの辺は作らない）。
+  fEdgesAll.push(...resolvePendingRefs(pendingAll, regionsAll));
+  await yieldToEventLoop();
+  // コピー推定のノイズ抑制・向き判定に使う文脈。外部参照由来の辺を足した後に作ること
+  //（順序を逆にすると、数式でつながっているファイル間の列対を「手修正疑い」として
+  // 二重に、しかも逆向きで出してしまう）。
+  const copy = valueCopyEdgesFromFingerprints(fpsAll, buildCopyContext(fEdgesAll));
+  return assembleGraph(regionsAll, fEdgesAll, copy.edges, keyLinksAll, copy.sharedTemplates);
 }
