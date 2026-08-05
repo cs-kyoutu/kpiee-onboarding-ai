@@ -694,6 +694,8 @@ function fitText(s: string, maxPx: number, fontPx: number): string {
 // 必ず聞かれるのは「どのキーで結合するのか」なので、キーの対応は別図として出す。
 // ============================================================
 const ER = { W: 226, HEAD: 30, ROW: 22, GX: 148, GY: 26, PAD: 16, CAP: 20 };
+/** 最終アウトプットの見出しに付ける番号。①②… は読み合わせで「②の話」と口頭で指せる */
+const OUT_NO = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩'];
 /** ER のボックス1つに並べるキー行の上限。照合列が多い表でボックスが縦に伸び切るのを防ぐ */
 const ER_KEY_ROWS_CAP = 8;
 
@@ -1101,6 +1103,70 @@ function promoteDeclaredOutputRegions(
 }
 
 /**
+ * 最終アウトプット1つぶんの説明のかたまり。
+ *
+ * 02 は「最終アウトプットごとに、関係図 → ロジック」を1セットにして並べる。以前は関係図を
+ * 全体で1枚だけ描き、ロジックを「流れ込む上流ファイル」で切っていたため、図には
+ * プロモーション部門しか出ていないのに下の説明には別の帳票の話が混ざり、どの帳票の説明を
+ * 読んでいるのか分からなくなっていた。読み手の関心は「この帳票はどう作られるか」なので、
+ * 帳票を単位にする。
+ */
+interface OutputSection {
+  file: string;                  // 最終アウトプットのファイルラベル
+  filename: string;              // 表示名
+  finalSheets: string[];         // その中で最終帳票として指定されたシート
+  regionIds: Set<string>;        // この帳票に関わる表（帳票自身 ＋ 上流をたどったもの）
+  blocks: LogicBlock[];          // この帳票へ流れ込むロジックブロック
+}
+
+/**
+ * 最終アウトプットから上流へ辿って、その帳票に関わる表だけを集める。
+ * 全体図から「この帳票の部分」を切り出すのが目的なので、経路上の表はすべて含める。
+ */
+function collectUpstream(startIds: string[], pairs: PairAgg[]): Set<string> {
+  const incoming = new Map<string, string[]>();
+  for (const p of pairs) {
+    const arr = incoming.get(p.to) ?? [];
+    arr.push(p.from);
+    incoming.set(p.to, arr);
+  }
+  const seen = new Set<string>(startIds);
+  const queue = [...startIds];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    for (const up of incoming.get(id) ?? []) {
+      if (seen.has(up)) continue;
+      seen.add(up);
+      queue.push(up);
+    }
+  }
+  return seen;
+}
+
+function buildOutputSections(
+  regions: Region[], pairs: PairAgg[], roles: Map<string, Role>,
+  outputFiles: Set<string>, blocks: LogicBlock[],
+  declaredOut: DeclaredOutputIndex, fileNameOf: (l: string) => string,
+): OutputSection[] {
+  const sections: OutputSection[] = [];
+  for (const file of outputFiles) {
+    const own = regions.filter(r => r.file === file && roles.get(r.id) === '最終アウトプット');
+    if (own.length === 0) continue;
+    const finalSheets = [...new Set(regions.filter(r => r.file === file
+      && declaredOut.hasSheet(r.file, r.sheet)).map(r => r.sheet))];
+    sections.push({
+      file, filename: fileNameOf(file),
+      finalSheets: finalSheets.length > 0 ? finalSheets : [...new Set(own.map(r => r.sheet))],
+      regionIds: collectUpstream(own.map(r => r.id), pairs),
+      blocks: blocks.filter(b => b.toFile === file),
+    });
+  }
+  // 関係の本数が多い（＝説明の重みが大きい）帳票から並べる
+  return sections.sort((a, b) =>
+    b.blocks.reduce((s, x) => s + x.total, 0) - a.blocks.reduce((s, x) => s + x.total, 0));
+}
+
+/**
  * 1ブロックの本文。① どの部分か → ② その計算 → ③ キーと定義 → ④ ER の順で組む。
  * ER はこのブロックに登場する表だけに絞って描くので、直前の説明と1対1で対応する。
  */
@@ -1493,6 +1559,9 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   );
   const copyQuestionByPair = new Map<string, string>();
   for (const q of questions) if (q.refPair) copyQuestionByPair.set(q.refPair, q.id);
+  // 「元データが辿れない最終アウトプット」を 03 の該当設問へ結ぶ。番号を書かないと
+  // 図に「つながり未検出」とだけ出て、どこで確認すればよいのか読み手に伝わらない。
+  const srcQuestionRef = questions.find(q => q.kind === '最終帳票の元データ')?.id ?? '';
   const fileFlow = buildFileFlow(fileStats, filePairs, outputFiles);
 
   // ---- 何を載せるか（アウトプット相談の指定）----
@@ -1552,6 +1621,10 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   // 02 を「ロジック別ブロック」で説明するための分割。ER はブロックの結論として各ブロック内に出す。
   const logicBlocks = buildLogicBlocks(regions, pairs, filePairs, outputFiles);
   const isolatedFiles = [...fileStats.values()].filter(s => s.role === '独立');
+  // 02 は最終アウトプットごとに「関係図 → ロジック」を1セットで並べる
+  const outputSections = buildOutputSections(
+    regions, pairs, roles, outputFiles, logicBlocks, declaredOut, fileNameOf,
+  );
 
   // ---- サマリ文（決定的に組み立てる） ----
   // 先頭に「この案件の重点」（アウトプット相談で指定された focus）を置く。読み合わせの目的を
@@ -1821,7 +1894,6 @@ ${secOn.flow ? `
     <p class="sec-lede">ファイルをまたぐ関係は検出されませんでした。各ファイルが独立して管理されている可能性があります${refQuestions}。</p>`) : ''}
 
     ${map ? `
-    ${subH('最終アウトプットへの流れ（シート・表単位）')}
     <ul class="graph-guide">
       <li><b>ノード＝表</b>。<b>上＝元データ → 下＝最終アウトプット</b>、矢印の向きにデータが流れます</li>
       <li><b>線の色＝関係の種類</b>／<b>破線＝手作業コピー（要確認）</b></li>
@@ -1829,7 +1901,6 @@ ${secOn.flow ? `
       <li class="only-screen">右上のボタン：<span class="k">＋ －</span> 拡大縮小／<span class="k">▤</span> レイアウト／<span class="k">☾</span> 配色／<span class="k">⤢</span> 全画面（Escで戻る）／<span class="k">⟳</span> リセット。背景ドラッグで移動</li>` : ''}
     </ul>
     ${spec.items.interactiveGraph ? '<p class="graph-guide only-print">※ 本紙は静止画です。操作版はブラウザでご覧ください。</p>' : ''}
-    <div class="map-static map-scroll">${map.svg}</div>
     ${spec.items.interactiveGraph ? `<div class="map-interactive relgraph-wrap" id="relgraph-wrap">
       <figure class="relgraph-stage lightmode" id="relgraph" aria-label="表どうしの関係グラフ（操作可能）"></figure>
       <aside class="relgraph-panel">
@@ -1850,36 +1921,51 @@ ${secOn.flow ? `
       <span class="li"><span class="nrole out"></span>最終アウトプット</span>
       <span class="li"><span class="nrole iso"></span>独立（つながりなし・要確認）</span>
     </div>
-    ${map.omittedNodes > 0 || map.omittedEdges > 0
-      ? `<p class="tbl-note">※ 円の大きさ＝つながりの本数。つながりの多い表を優先表示（省略: 表 ${map.omittedNodes}・関係 ${map.omittedEdges}）。</p>`
-      : '<p class="tbl-note">※ 円の大きさ＝つながりの本数。</p>'}
+    <p class="tbl-note">※ 円の大きさ＝つながりの本数。以下、最終アウトプットごとに「関係図 → その計算」の順にご説明します。</p>
 
-    ${logicBlocks.length > 0 ? `
-    ${subH('ロジック別の説明 — 上の流れを部分ごとに分けて見ます')}
-    <p class="sec-lede">上の図の流れを、最終アウトプットへ流れ込むファイルごとに ${logicBlocks.length} 個に分けました。
-    関係の本数が多い（＝影響の大きい）ものから、<b>どういう計算か → 関係する表のキーと1行の定義${showEr ? ' → キー関係図（ER）' : ''}</b>の順にご説明します。</p>
-    ${logicBlocks.map((b, i) => renderLogicBlock(b, i + 1, regions, graph.keyLinks ?? [], labels, fileNameOf, showEr)).join('\n')}
-    ${isolatedFiles.length > 0 ? `<div class="lb iso">
+    ${outputSections.map((sec, si) => {
+      const secMap = buildMap(`o${si}`, regions.filter(r => sec.regionIds.has(r.id)),
+        pairs.filter(p => sec.regionIds.has(p.from) && sec.regionIds.has(p.to)),
+        labels, copyQuestionByPair, roles);
+      return `
+    ${subH(`最終アウトプット${OUT_NO[si] ?? `(${si + 1})`}　${sec.filename}`)}
+    <p class="sec-lede">この帳票を kpiee で再現します。対象シートは
+      <b>${esc(shortText(sec.finalSheets.join('、'), 90))}</b> です。
+      ${sec.blocks.length > 0
+        ? 'まず関係図で全体のどの部分かを見ていただき、続けてその計算をご説明します。'
+        : `<b>この帳票へ流れ込む元データを自動検出できませんでした。</b>`
+          + `${srcQuestionRef ? `確認事項の <b>${srcQuestionRef}</b> に記載しています。` : 'お打ち合わせでご確認させてください。'}`}</p>
+    ${secMap ? `<div class="map-static map-scroll">${secMap.svg}</div>
+    ${secMap.omittedNodes > 0 ? `<p class="tbl-note">※ つながりの多い表を優先表示（省略: 表 ${secMap.omittedNodes}）。</p>` : ''}` : ''}
+    ${sec.blocks.map((b, i) => renderLogicBlock(b, i + 1, regions, graph.keyLinks ?? [], labels, fileNameOf, showEr)).join('\n')}`;
+    }).join('\n')}
+
+    ${isolatedFiles.length > 0 ? `
+    ${subH('つながりが検出できなかったファイル')}
+    <div class="lb iso">
       <div class="lb-head"><span class="lb-no">—</span>
-        <div><b>つながりが検出できなかったファイル</b>
-          <div class="lb-sub">${isolatedFiles.map(s => esc(s.filename)).join('、')}</div></div>
+        <div><b>${isolatedFiles.map(s => esc(s.filename)).join('、')}</b></div>
       </div>
       <div class="lb-step"><span class="lb-st">状況</span>
         <p>これらのファイルは、他のどのファイルとも数式・値の一致でつながりませんでした。
         ${isolatedFiles.some(s => s.regionCount > 0) ? '数式を持たない（システムからの出力をそのまま貼った）ファイルの場合、' : ''}
         どこへどうやって取り込まれているかが Excel 上に根拠として残りません。${refQuestions}</p>
       </div>
-    </div>` : ''}` : ''}
+    </div>` : ''}
 
     ${spec.items.detailLogic ? `
     ${subH('関係の一覧（付録）— どのシートが、どのキーで、どうつながっているか')}
+    <!-- 付録は行数が多く、読み合わせでは普段たたんでおきたい。既定は閉じる -->
+    <details class="fileblk">
+      <summary><b>関係の一覧を開く</b><span class="rows">${detailRows.length} 件</span></summary>
     <div style="overflow-x:auto">
       <table class="ot dl">
         <tr><th>元（表・列）</th><th>キー</th><th>処理</th><th>先（表・列）</th><th>根拠（数式・一致）</th><th>確度</th></tr>
         ${detailRows.join('\n        ')}
       </table>
       ${detailOmitted > 0 ? `<p class="tbl-note">※ 関係が多いため流れの順に上位 ${DETAIL_ROWS_CAP} 件を掲載しています（全 ${pairs.length} 件）。残りはお打ち合わせで画面をご覧いただけます。</p>` : ''}
-    </div>` : ''}
+    </div>
+    </details>` : ''}
     <div class="callout info">
       <span class="mark">ℹ️</span>
       <span>別ブックを参照する数式（外部リンク）は追跡していますが、参照先のファイルをいただいていない場合・リンクが切れている場合は追跡できません。
