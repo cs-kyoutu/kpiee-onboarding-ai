@@ -76,6 +76,44 @@ const SYNTH: { file: string; sheets: { name: string; cols: string[]; rows: numbe
     file: 'エリマネ部門施設_営業成績表',
     sheets: [{ name: 'FY25_実績', cols: ['対象月', '部CD', '組織コード', '組織名略称', '成績表科目', '当月', '累計'], rows: 12400 }],
   },
+  {
+    // 経営会議用資料。2025年度_実績表_value（単月・累計が縦に並んだデータ）と
+    // Netsuite の当月計上データから作る。全体構造の一覧に載る以上、図にも出す。
+    file: '経営会議用_営業実績表',
+    sheets: [{ name: '営業実績表', cols: ['組織コード', '成績表科目', '当月', '累計', '案件番号'], rows: 9600 }],
+  },
+];
+
+// ---- 財務・外部システムからの入手元データ（表構造を持たない、または未入手のため実物が無い）----
+// これらは xlsx/csv のような「表」ではなく、取込前の生データや外部システム出力そのもの。
+// 実際のパイプラインが表領域を要求するため、ここでは「1列だけの受け皿」として最小限に表現する
+// （＝内容を推定しているのではなく、あくまで「ここから何かが入ってくる」という接続点を示すだけ）。
+const RAW_SOURCES: { file: string; sheet: string; cols: string[]; rows: number; into: string; intoSheet: string; note: string }[] = [
+  {
+    file: '[Fusion]BS_PL仕訳XML', sheet: '仕訳データ', cols: ['仕訳データ(XML)'], rows: 1,
+    into: fileLabelOf(REAL.find(f => f.startsWith('仕訳汎用検索'))!), intoSheet: '元データ',
+    note: 'BOM付UTF-8で保存 → 外部データのインポート → 元データへ値貼り付け',
+  },
+  {
+    file: '[Fusion]補助科目集計表_全社CSV', sheet: '全社', cols: ['補助科目集計表(全社)'], rows: 1,
+    into: '補助科目集計表の変換用2601', intoSheet: '補助科目集計表(全社)',
+    note: 'CSV(.txt) をそのまま取込',
+  },
+  {
+    file: '[Fusion]補助科目集計表_末端組織CSV', sheet: '末端組織', cols: ['補助科目集計表(末端組織)'], rows: 1,
+    into: '補助科目集計表の変換用2601', intoSheet: '補助科目集計表(末端組織)',
+    note: 'CSV(.txt) をそのまま取込',
+  },
+  {
+    file: '[ZERO]前年データ', sheet: '前年実績', cols: ['前年実績(ZERO出力形式)'], rows: 1,
+    into: '仕訳汎用検索-変換-2026-0212', intoSheet: 'データ変換',
+    note: '2025年3月まで使用のZEROデータ。Fusionデータをこの形式に変換し、累計から単月を出力',
+  },
+  {
+    file: '[Netsuite]過去案件当月計上', sheet: '当月計上', cols: ['過去案件_当月計上'], rows: 1,
+    into: '経営会議用_営業実績表', intoSheet: '営業実績表',
+    note: '財務から入手した当月計上データ',
+  },
 ];
 
 const col = (name: string, i: number): RegionColumn => ({
@@ -88,6 +126,12 @@ const synthRegions: Region[] = SYNTH.flatMap(f => f.sheets.map((s, i) => ({
   headerRow: 1, dataRowCount: s.rows,
   columns: s.cols.map(col),
 })));
+const rawSourceRegions: Region[] = RAW_SOURCES.map(r => ({
+  id: `${r.file}／${r.sheet}#1`, file: r.file, sheet: r.sheet,
+  r0: 1, r1: 2, c0: 1, c1: r.cols.length,
+  headerRow: 1, dataRowCount: r.rows,
+  columns: r.cols.map(col),
+}));
 
 // ---- 実ファイルを解析 ----
 const arts: RelationInput[] = REAL.map(f => ({ filename: f, load: async () => readFileSync(D + f) }));
@@ -95,7 +139,7 @@ console.log(`実ファイル ${REAL.length} 件を解析中…`);
 const real = await analyzeArtifacts(arts);
 console.log(`  表 ${real.regions.length} / 辺 ${real.edges.length}`);
 
-const allRegions: Region[] = [...real.regions, ...synthRegions];
+const allRegions: Region[] = [...real.regions, ...synthRegions, ...rawSourceRegions];
 
 // ---- ご説明のブック関係（R1〜R22 のうちファイル同士のもの） ----
 const L = (n: string) => fileLabelOf(n);
@@ -116,8 +160,15 @@ const rels: [string, string, FileRelType, string][] = [
     'FY25_実績 を 対象月=当月／部CD=6600／組織名略称「SB局」除外 でフィルタしてコピペ'],
   ['2601_実績表_Base_局別', '2025年度_実績表_value', 'transcribe',
     '各組織を縦に並べて値化'],
+  ['2025年度_実績表_value', '経営会議用_営業実績表', 'aggregate',
+    '単月・累計が縦に並んだデータを使って営業実績表を作成'],
 ];
-const declared: DeclaredFileRel[] = rels.map(([f, t, relType, note], i) => ({
+// 財務・外部システムからの入手（表構造を持たない生データの取込）。宛先シートまで指定できるので
+// 下の rels とは別枠にし、copyEdges もこちらは専用の対応（1列だけ）で作る。
+const rawRels: [string, string, FileRelType, string][] =
+  RAW_SOURCES.map(r => [r.file, r.into, 'transcribe', r.note]);
+const allDeclaredTuples = [...rels, ...rawRels];
+const declared: DeclaredFileRel[] = allDeclaredTuples.map(([f, t, relType, note], i) => ({
   id: i + 1, fromFile: f, toFile: t, relType, note, origin: 'manual' as const,
 }));
 
@@ -142,6 +193,7 @@ const IN_SHEET: Record<string, string[]> = {
   'エリマネ部門施設_営業成績表': ['FY25_実績'],
   '2601_全社_営業成績表': ['累計_全社'],
   '2601_プロモーション部門_営業成績表': ['累計_PR1'],
+  '経営会議用_営業実績表': ['営業実績表'],
 };
 const copyEdges = rels.flatMap(([f, t, , note]) => {
   const src = repRegion(f, OUT_SHEET[f] ?? []);
@@ -155,6 +207,19 @@ const copyEdges = rels.flatMap(([f, t, , note]) => {
     evidence: `値完全一致(${dst.dataRowCount.toLocaleString()}件, 手修正疑い)｜${note}`,
     confidence: 0.9,
   }));
+});
+// 入手元データ（生データ）→ 最初の受け皿。宛先シートを明示できるので1列だけ確実につなぐ
+const rawCopyEdges = RAW_SOURCES.flatMap(r => {
+  const src = allRegions.find(x => x.file === r.file && x.sheet === r.sheet);
+  const dst = repRegion(r.into, [r.intoSheet]);
+  if (!src || !dst) return [];
+  return [{
+    from: `${src.id}:${src.columns[0].name}`,
+    to: `${dst.id}:${dst.columns[0].name}`,
+    type: 'copy' as const,
+    evidence: `外部入手データの取込｜${r.note}`,
+    confidence: 0.9,
+  }];
 });
 
 // ---- シート役割（資料 7 章の指定） ----
@@ -188,16 +253,24 @@ const roleOf = (file: string): Record<string, string> | undefined => {
   if (file.startsWith('2025-総勘定元帳')) return { '総勘定元帳': 'working_sheet' };
   if (file.startsWith('2025年度_実績表_value')) return { '実績value': 'working_sheet' };
   if (file.startsWith('エリマネ部門施設')) return { 'FY25_実績': 'working_sheet' };
+  if (file.startsWith('経営会議用_営業実績表')) return { '営業実績表': 'working_sheet' };
+  // 入手元データ（生データ）は表構造を持たないので「インプット」扱い。最終アウトプットには絶対にしない
+  const raw = RAW_SOURCES.find(r => r.file === file);
+  if (raw) return { [raw.sheet]: 'input_data' };
   return undefined;
 };
-const allFiles = [...REAL.map(f => f), ...SYNTH.map(s => `${s.file}.xlsx`)];
+const allFiles = [
+  ...REAL.map(f => f),
+  ...SYNTH.map(s => `${s.file}.xlsx`),
+  ...RAW_SOURCES.map(r => r.file), // 表構造を持たないデータなので拡張子は付けない
+];
 const artifacts: ReportArtifact[] = allFiles.map(f => ({ filename: f, kind: 'mixed', sheetRoles: roleOf(fileLabelOf(f)) }));
 
 // ---- 宣言を重ねてレポート ----
 const graph: RelationGraph = {
   ...real,
   regions: allRegions,
-  edges: [...real.edges, ...copyEdges],
+  edges: [...real.edges, ...copyEdges, ...rawCopyEdges],
 };
 const merged = applyDeclaredFileRelations(graph, declared);
 const html = buildRelationsReportHtml({

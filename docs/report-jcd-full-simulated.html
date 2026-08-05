@@ -321,10 +321,10 @@ body.relgraph-noscroll{overflow:hidden}
       <p class="sec-lede">いただいたファイル（ブック）と、その中の各シートがどういう役割かの一覧です。1つのシートに複数の表が含まれる場合は、表単位に分割して解析しています。</p>
     </div>
     <div class="tiles">
-      <div class="tile"><div class="tl">受領ファイル</div><div class="tv">11<small>件</small></div>
-        <div class="tsub">89 シート</div></div>
-      <div class="tile"><div class="tl">元データ（インプット）</div><div class="tv">2<small>ファイル</small></div>
-        <div class="tsub">経由するファイル 2</div></div>
+      <div class="tile"><div class="tl">受領ファイル</div><div class="tv">17<small>件</small></div>
+        <div class="tsub">95 シート</div></div>
+      <div class="tile"><div class="tl">元データ（インプット）</div><div class="tv">5<small>ファイル</small></div>
+        <div class="tsub">経由するファイル 8</div></div>
       <div class="tile out"><div class="tl">最終アウトプット</div><div class="tv">3<small>ファイル</small></div>
         <div class="tsub">2601_全社_営業成績表.xlsx、2601_プロモーション部門_営業成績…</div></div>
       <div class="tile warn"><div class="tl">ご確認いただきたい点</div><div class="tv">8<small>件</small></div>
@@ -333,11 +333,11 @@ body.relgraph-noscroll{overflow:hidden}
     <div class="summary">
       <div class="stitle">まとめ</div>
       <ul>
-        <li>受領した <b>11 ファイル</b>（89 シート／433 表）を解析しました。内訳は 01 のとおりです。</li>
+        <li>受領した <b>17 ファイル</b>（95 シート／439 表）を解析しました。内訳は 01 のとおりです。</li>
         <li>最終アウトプットは <b>3 種</b>（「2601_全社_営業成績表.xlsx」、「2601_プロモーション部門_営業成績表.xlsx」、「2025年度【売総および損益実績】2601.xlsx」）です（取込時のご指定にもとづきます）。</li>
-        <li>ブックどうしの関係を <b>8 件</b>ご登録いただいており、うち 8 件は自動解析でも同じつながりを確認できました。</li>
+        <li>ブックどうしの関係を <b>14 件</b>ご登録いただいており、うち 14 件は自動解析でも同じつながりを確認できました。</li>
         <li>表をつなぐ関係の大半は数式（SUMIFS・VLOOKUP等）で、<b>構造は自動で追跡できました</b>。</li>
-        <li>一方、<b>数式ではなく手修正と推定されるつながりが 1972 組</b>あります（値の一致から逆推定）。ここが今回確認したい中心です。</li>
+        <li>一方、<b>数式ではなく手修正と推定されるつながりが 1978 組</b>あります（値の一致から逆推定）。ここが今回確認したい中心です。</li>
       </ul>
     </div>
 
@@ -345,18 +345,24 @@ body.relgraph-noscroll{overflow:hidden}
     <h3 class="sub-h">ブック（ファイル）別</h3>
     <div style="overflow-x:auto">
       <table class="ot">
-        <tr><th>ファイル</th><th>シート</th><th>表</th><th>行数（合計）</th><th>役割</th><th>流れ込む元ファイル</th><th>ご登録の関係</th></tr>
-        <tr><td><b>仕訳汎用検索-変換-2026-0212.xlsx</b></td><td class="r">7</td><td class="r">7</td><td class="r">1,745,600</td><td><span class="nrole mid"></span> 中間ファイル</td><td>仕訳汎用検索_2602.xlsx</td><td>→ 2025-総勘定元帳-2601までP.xlsx（転記）／→ 2601_実績表_Bas…</td></tr>
-        <tr><td><b>2601_実績表_Base_局別.xlsx</b></td><td class="r">8</td><td class="r">8</td><td class="r">186,342</td><td><span class="nrole mid"></span> 中間ファイル</td><td>仕訳汎用検索-変換-2026-0212.xlsx、補助科目集計表の変換用2601.xls…</td><td>→ 2601_全社_営業成績表.xlsx（転記）／→ 2601_プロモーション部門_営業…</td></tr>
-        <tr><td><b>仕訳汎用検索_2602.xlsx</b></td><td class="r">2</td><td class="r">3</td><td class="r">77,615</td><td><span class="nrole src"></span> 元データ</td><td>—</td><td>→ 仕訳汎用検索-変換-2026-0212.xlsx（転記）</td></tr>
-        <tr><td><b>補助科目集計表の変換用2601.xlsx</b></td><td class="r">3</td><td class="r">3</td><td class="r">59,400</td><td><span class="nrole src"></span> 元データ</td><td>—</td><td>→ 2601_実績表_Base_局別.xlsx（転記）</td></tr>
-        <tr><td><b>000まとめ_2025年度利益計画改定(2025-0725).xlsx</b></td><td class="r">41</td><td class="r">284</td><td class="r">54,401</td><td><span class="nrole iso"></span> 独立</td><td>—</td><td><span class="dl-none">—</span></td></tr>
-        <tr><td><b>2025-総勘定元帳-2601までP.xlsx</b></td><td class="r">1</td><td class="r">1</td><td class="r">480,000</td><td><span class="nrole out"></span> 最終アウトプット</td><td>仕訳汎用検索-変換-2026-0212.xlsx</td><td><span class="dl-none">—</span></td></tr>
-        <tr><td><b>2025年度_実績表_value.xlsx</b></td><td class="r">1</td><td class="r">1</td><td class="r">372,000</td><td><span class="nrole out"></span> 最終アウトプット</td><td>2601_実績表_Base_局別.xlsx</td><td><span class="dl-none">—</span></td></tr>
-        <tr><td><b>エリマネ部門施設_営業成績表.xlsx</b></td><td class="r">1</td><td class="r">1</td><td class="r">12,400</td><td><span class="nrole out"></span> 最終アウトプット</td><td>2601_実績表_Base_局別.xlsx</td><td><span class="dl-none">—</span></td></tr>
-        <tr><td><b>2025年度【売総および損益実績】2601.xlsx</b><div class="rnote">取込時に「最終帳票」として指定</div></td><td class="r">8</td><td class="r">92</td><td class="r">8,736</td><td><span class="nrole out"></span> 最終アウトプット</td><td>—</td><td><span class="dl-none">—</span></td></tr>
-        <tr><td><b>2601_プロモーション部門_営業成績表.xlsx</b><div class="rnote">取込時に「最終帳票」として指定</div></td><td class="r">15</td><td class="r">29</td><td class="r">1,885</td><td><span class="nrole out"></span> 最終アウトプット</td><td>2601_実績表_Base_局別.xlsx</td><td><span class="dl-none">—</span></td></tr>
-        <tr><td><b>2601_全社_営業成績表.xlsx</b><div class="rnote">取込時に「最終帳票」として指定</div></td><td class="r">2</td><td class="r">4</td><td class="r">264</td><td><span class="nrole out"></span> 最終アウトプット</td><td>2601_実績表_Base_局別.xlsx</td><td><span class="dl-none">—</span></td></tr>
+        <tr><th>ファイル</th><th>役割</th><th class="r">規模</th></tr>
+        <tr><td><b>[Fusion]BS_PL仕訳XML</b></td><td><span class="nrole src"></span> 元データ</td><td class="r">1 シート<br><span class="dl-none">1 行</span></td></tr>
+        <tr><td><b>[Fusion]補助科目集計表_全社CSV</b></td><td><span class="nrole src"></span> 元データ</td><td class="r">1 シート<br><span class="dl-none">1 行</span></td></tr>
+        <tr><td><b>[Fusion]補助科目集計表_末端組織CSV</b></td><td><span class="nrole src"></span> 元データ</td><td class="r">1 シート<br><span class="dl-none">1 行</span></td></tr>
+        <tr><td><b>[ZERO]前年データ</b></td><td><span class="nrole src"></span> 元データ</td><td class="r">1 シート<br><span class="dl-none">1 行</span></td></tr>
+        <tr><td><b>[Netsuite]過去案件当月計上</b></td><td><span class="nrole src"></span> 元データ</td><td class="r">1 シート<br><span class="dl-none">1 行</span></td></tr>
+        <tr><td><b>仕訳汎用検索-変換-2026-0212.xlsx</b></td><td><span class="nrole mid"></span> 中間ファイル</td><td class="r">7 シート<br><span class="dl-none">1,745,600 行</span></td></tr>
+        <tr><td><b>2025-総勘定元帳-2601までP.xlsx</b></td><td><span class="nrole mid"></span> 中間ファイル</td><td class="r">1 シート<br><span class="dl-none">480,000 行</span></td></tr>
+        <tr><td><b>2025年度_実績表_value.xlsx</b></td><td><span class="nrole mid"></span> 中間ファイル</td><td class="r">1 シート<br><span class="dl-none">372,000 行</span></td></tr>
+        <tr><td><b>2601_実績表_Base_局別.xlsx</b></td><td><span class="nrole mid"></span> 中間ファイル</td><td class="r">8 シート<br><span class="dl-none">186,342 行</span></td></tr>
+        <tr><td><b>仕訳汎用検索_2602.xlsx</b></td><td><span class="nrole mid"></span> 中間ファイル</td><td class="r">2 シート<br><span class="dl-none">77,615 行</span></td></tr>
+        <tr><td><b>補助科目集計表の変換用2601.xlsx</b></td><td><span class="nrole mid"></span> 中間ファイル</td><td class="r">3 シート<br><span class="dl-none">59,400 行</span></td></tr>
+        <tr><td><b>エリマネ部門施設_営業成績表.xlsx</b></td><td><span class="nrole mid"></span> 中間ファイル</td><td class="r">1 シート<br><span class="dl-none">12,400 行</span></td></tr>
+        <tr><td><b>経営会議用_営業実績表.xlsx</b></td><td><span class="nrole mid"></span> 中間ファイル</td><td class="r">1 シート<br><span class="dl-none">9,600 行</span></td></tr>
+        <tr><td><b>2025年度【売総および損益実績】2601.xlsx</b><div class="rnote">対象シート: 損益実全社、売総実全局</div></td><td><span class="nrole out"></span> 最終アウトプット</td><td class="r">8 シート<br><span class="dl-none">8,736 行</span></td></tr>
+        <tr><td><b>2601_プロモーション部門_営業成績表.xlsx</b><div class="rnote">対象シート: 成績の一部分抜粋用、単月_PR1、累計_PR1、単月_PR2、累計_PR2、単月_PR3、累計_PR3、単月_P…</div></td><td><span class="nrole out"></span> 最終アウトプット</td><td class="r">15 シート<br><span class="dl-none">1,885 行</span></td></tr>
+        <tr><td><b>2601_全社_営業成績表.xlsx</b><div class="rnote">対象シート: 単月_全社、累計_全社</div></td><td><span class="nrole out"></span> 最終アウトプット</td><td class="r">2 シート<br><span class="dl-none">264 行</span></td></tr>
+        <tr><td><b>000まとめ_2025年度利益計画改定(2025-0725).xlsx</b><div class="rnote">他のファイルとのつながりが見つかっていません</div></td><td><span class="nrole iso"></span> 独立</td><td class="r">41 シート<br><span class="dl-none">54,401 行</span></td></tr>
       </table>
     </div>
 
@@ -374,7 +380,7 @@ body.relgraph-noscroll{overflow:hidden}
           <div class="colchips"><span class="colchip">仕訳</span><span class="colchip">会計日</span><span class="colchip">組織コード</span><span class="colchip">勘定科目</span><span class="colchip">ソース</span><span class="colchip">借方_入力_明細</span><span class="colchip">貸方_入力_明細</span></div>
         </div>
 <div class="rblock">
-          <div class="rhead"><b>データ変換</b><span class="loc">A1:F1001</span><span class="rows">620,000行 × 6列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="rhead"><b>データ変換</b><span class="loc">A1:F1001</span><span class="rows">620,000行 × 6列</span><span class="rrole">最終アウトプット</span></div>
           <div class="colchips"><span class="colchip">組織コード</span><span class="colchip">局管理読替後</span><span class="colchip">勘定科目</span><span class="colchip">成績表科目</span><span class="colchip">PL/BS</span><span class="colchip">金額</span></div>
         </div>
 <div class="rblock">
@@ -420,7 +426,7 @@ body.relgraph-noscroll{overflow:hidden}
         <div class="srchips"><span class="sr mid">実績value<em>中間シート</em></span></div>
         <p class="sub-lede">表と列の構成</p>
         <div class="rblock">
-          <div class="rhead"><b>実績value</b><span class="loc">A1:E1001</span><span class="rows">372,000行 × 5列</span><span class="rrole">最終アウトプット</span></div>
+          <div class="rhead"><b>実績value</b><span class="loc">A1:E1001</span><span class="rows">372,000行 × 5列</span><span class="rrole">中間集計</span></div>
           <div class="colchips"><span class="colchip">組織コード</span><span class="colchip">成績表科目</span><span class="colchip">区分</span><span class="colchip">当月</span><span class="colchip">累計</span></div>
         </div>
         
@@ -474,7 +480,7 @@ body.relgraph-noscroll{overflow:hidden}
         <div class="srchips"><span class="sr unk">元データ<em>未指定</em></span><span class="sr unk">ZERO科目<em>未指定</em></span></div>
         <p class="sub-lede">表と列の構成</p>
         <div class="rblock">
-          <div class="rhead"><b>元データ</b><span class="loc">A1:CV76764</span><span class="rows">76,763行 × 100列</span><span class="rrole">元データ（明細）</span></div>
+          <div class="rhead"><b>元データ</b><span class="loc">A1:CV76764</span><span class="rows">76,763行 × 100列</span><span class="rrole">中間集計</span></div>
           <div class="colchips"><span class="colchip">仕訳バッチ</span><span class="colchip">摘要_バッチ</span><span class="colchip">残高タイプ</span><span class="colchip">会計期間</span><span class="colchip">添付_バッチ</span><span class="colchip">ソース</span><span class="colchip">承認ステータス</span><span class="colchip">バッチ_ステータス</span><span class="colchip">完了ステータス</span><span class="colchip">管理合計_バッチ</span><span class="colchip manual">入力済借方合計_バッチ</span><span class="colchip manual">入力済貸方合計_バッチ</span><span class="colchip manual">計上済借方合計_バッチ</span><span class="colchip manual">計上済貸方合計_バッチ</span><span class="colchip manual">最終更新日_バッチ</span><span class="colchip">最終更新者_バッチ</span><span class="colchip manual">作成日_バッチ</span><span class="colchip">作成者_バッチ</span><span class="colchip">仕訳</span><span class="colchip">摘要_ヘッダー</span><span class="colchip">元帳</span><span class="colchip">会計日</span><span class="colchip">カテゴリ</span><span class="colchip">添付_ヘッダー</span><span class="colchip">…他76列</span></div>
         </div>
 <div class="rblock">
@@ -495,7 +501,7 @@ body.relgraph-noscroll{overflow:hidden}
         <div class="srchips"><span class="sr src">補助科目集計表(全社)<em>インプット（raw）</em></span><span class="sr src">補助科目集計表(末端組織)<em>インプット（raw）</em></span><span class="sr mid">変換用シート<em>中間シート</em></span></div>
         <p class="sub-lede">表と列の構成</p>
         <div class="rblock">
-          <div class="rhead"><b>補助科目集計表(末端組織)</b><span class="loc">A1:D1001</span><span class="rows">28,000行 × 4列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="rhead"><b>補助科目集計表(末端組織)</b><span class="loc">A1:D1001</span><span class="rows">28,000行 × 4列</span><span class="rrole">最終アウトプット</span></div>
           <div class="colchips"><span class="colchip">組織コード</span><span class="colchip">勘定科目コード</span><span class="colchip">補助科目コード</span><span class="colchip">累計残高</span></div>
         </div>
 <div class="rblock">
@@ -503,7 +509,7 @@ body.relgraph-noscroll{overflow:hidden}
           <div class="colchips"><span class="colchip">組織コード</span><span class="colchip">成績表科目</span><span class="colchip">当月</span><span class="colchip">累計</span><span class="colchip">前年当月</span><span class="colchip">前年累計</span></div>
         </div>
 <div class="rblock">
-          <div class="rhead"><b>補助科目集計表(全社)</b><span class="loc">A1:D1001</span><span class="rows">3,400行 × 4列</span><span class="rrole">独立（つながりなし）</span></div>
+          <div class="rhead"><b>補助科目集計表(全社)</b><span class="loc">A1:D1001</span><span class="rows">3,400行 × 4列</span><span class="rrole">最終アウトプット</span></div>
           <div class="colchips"><span class="colchip">勘定科目コード</span><span class="colchip">勘定科目名</span><span class="colchip">補助科目コード</span><span class="colchip">累計残高</span></div>
         </div>
         
@@ -559,6 +565,19 @@ body.relgraph-noscroll{overflow:hidden}
         <div class="rblock">
           <div class="rhead"><b>FY25_実績</b><span class="loc">A1:G1001</span><span class="rows">12,400行 × 7列</span><span class="rrole">最終アウトプット</span></div>
           <div class="colchips"><span class="colchip">対象月</span><span class="colchip">部CD</span><span class="colchip">組織コード</span><span class="colchip">組織名略称</span><span class="colchip">成績表科目</span><span class="colchip">当月</span><span class="colchip">累計</span></div>
+        </div>
+        
+      </div>
+    </details>
+<details class="fileblk">
+      <summary><b>経営会議用_営業実績表.xlsx</b><span class="rows">1シート ／ 1表 ／ 9,600行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr mid">営業実績表<em>中間シート</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>営業実績表</b><span class="loc">A1:E1001</span><span class="rows">9,600行 × 5列</span><span class="rrole">最終アウトプット</span></div>
+          <div class="colchips"><span class="colchip">組織コード</span><span class="colchip">成績表科目</span><span class="colchip">当月</span><span class="colchip">累計</span><span class="colchip">案件番号</span></div>
         </div>
         
       </div>
@@ -670,6 +689,71 @@ body.relgraph-noscroll{overflow:hidden}
         
       </div>
     </details>
+<details class="fileblk">
+      <summary><b>[Fusion]BS_PL仕訳XML</b><span class="rows">1シート ／ 1表 ／ 1行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr src">仕訳データ<em>インプット（raw）</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>仕訳データ</b><span class="loc">A1:A2</span><span class="rows">1行 × 1列</span><span class="rrole">元データ（明細）</span></div>
+          <div class="colchips"><span class="colchip">仕訳データ(XML)</span></div>
+        </div>
+        
+      </div>
+    </details>
+<details class="fileblk">
+      <summary><b>[Fusion]補助科目集計表_全社CSV</b><span class="rows">1シート ／ 1表 ／ 1行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr src">全社<em>インプット（raw）</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>全社</b><span class="loc">A1:A2</span><span class="rows">1行 × 1列</span><span class="rrole">元データ（明細）</span></div>
+          <div class="colchips"><span class="colchip">補助科目集計表(全社)</span></div>
+        </div>
+        
+      </div>
+    </details>
+<details class="fileblk">
+      <summary><b>[Fusion]補助科目集計表_末端組織CSV</b><span class="rows">1シート ／ 1表 ／ 1行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr src">末端組織<em>インプット（raw）</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>末端組織</b><span class="loc">A1:A2</span><span class="rows">1行 × 1列</span><span class="rrole">元データ（明細）</span></div>
+          <div class="colchips"><span class="colchip">補助科目集計表(末端組織)</span></div>
+        </div>
+        
+      </div>
+    </details>
+<details class="fileblk">
+      <summary><b>[ZERO]前年データ</b><span class="rows">1シート ／ 1表 ／ 1行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr src">前年実績<em>インプット（raw）</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>前年実績</b><span class="loc">A1:A2</span><span class="rows">1行 × 1列</span><span class="rrole">元データ（明細）</span></div>
+          <div class="colchips"><span class="colchip">前年実績(ZERO出力形式)</span></div>
+        </div>
+        
+      </div>
+    </details>
+<details class="fileblk">
+      <summary><b>[Netsuite]過去案件当月計上</b><span class="rows">1シート ／ 1表 ／ 1行</span></summary>
+      <div class="rbody">
+        <p class="sub-lede">シートの役割（取込時にご指定・ご確認いただいた内容です）</p>
+        <div class="srchips"><span class="sr src">当月計上<em>インプット（raw）</em></span></div>
+        <p class="sub-lede">表と列の構成</p>
+        <div class="rblock">
+          <div class="rhead"><b>当月計上</b><span class="loc">A1:A2</span><span class="rows">1行 × 1列</span><span class="rrole">元データ（明細）</span></div>
+          <div class="colchips"><span class="colchip">過去案件_当月計上</span></div>
+        </div>
+        
+      </div>
+    </details>
 
     
     <h3 class="sub-h">ご登録いただいたブック関係と、自動解析の突き合わせ</h3>
@@ -685,6 +769,12 @@ body.relgraph-noscroll{overflow:hidden}
         <tr><td>2601_実績表_Base_局別.xlsx → 2601_プロモーション部門_営業成績表.xlsx</td><td>転記</td><td><span class="av ok">一致</span></td><td class="r">3</td><td>同上（30部署×2＝60シートを部門別へ配布）</td></tr>
         <tr><td>2601_実績表_Base_局別.xlsx → エリマネ部門施設_営業成績表.xlsx</td><td>転記</td><td><span class="av ok">一致</span></td><td class="r">3</td><td>FY25_実績 を 対象月=当月／部CD=6600／組織名略称「SB局」除外 でフィルタして…</td></tr>
         <tr><td>2601_実績表_Base_局別.xlsx → 2025年度_実績表_value.xlsx</td><td>転記</td><td><span class="av ok">一致</span></td><td class="r">3</td><td>各組織を縦に並べて値化</td></tr>
+        <tr><td>2025年度_実績表_value.xlsx → 経営会議用_営業実績表.xlsx</td><td>集計</td><td><span class="av ok">一致</span></td><td class="r">3</td><td>単月・累計が縦に並んだデータを使って営業実績表を作成</td></tr>
+        <tr><td>[Fusion]BS_PL仕訳XML → 仕訳汎用検索_2602.xlsx</td><td>転記</td><td><span class="av ok">一致</span></td><td class="r">1</td><td>BOM付UTF-8で保存 → 外部データのインポート → 元データへ値貼り付け</td></tr>
+        <tr><td>[Fusion]補助科目集計表_全社CSV → 補助科目集計表の変換用2601.xlsx</td><td>転記</td><td><span class="av ok">一致</span></td><td class="r">1</td><td>CSV(.txt) をそのまま取込</td></tr>
+        <tr><td>[Fusion]補助科目集計表_末端組織CSV → 補助科目集計表の変換用2601.xlsx</td><td>転記</td><td><span class="av ok">一致</span></td><td class="r">1</td><td>CSV(.txt) をそのまま取込</td></tr>
+        <tr><td>[ZERO]前年データ → 仕訳汎用検索-変換-2026-0212.xlsx</td><td>転記</td><td><span class="av ok">一致</span></td><td class="r">1</td><td>2025年3月まで使用のZEROデータ。Fusionデータをこの形式に変換し、累計から単月を…</td></tr>
+        <tr><td>[Netsuite]過去案件当月計上 → 経営会議用_営業実績表.xlsx</td><td>転記</td><td><span class="av ok">一致</span></td><td class="r">1</td><td>財務から入手した当月計上データ</td></tr>
       </table>
     </div>
   </div>
@@ -696,7 +786,7 @@ body.relgraph-noscroll{overflow:hidden}
     <div class="sec-head">
       <div class="eyebrow">02 ── FLOW &amp; LOGIC</div>
       <h2>全体の流れと詳細ロジック</h2>
-      <p class="sec-lede">まず<b>ブックどうしの全体関係図</b>で流れをご覧いただき、続けて<b>シート・表単位の詳細関係図</b>と、その処理内容（キー・数式）へ降りていきます。</p>
+      <p class="sec-lede">まず<b>ブックどうしの全体関係図</b>で流れをご覧いただき、続けて<b>最終アウトプットへの流れ</b>を表・シート単位で確認し、そのうえで<b>ロジック別に区切って</b>計算の中身・キーをご説明します。</p>
     </div>
     
     <h3 class="sub-h">2-1　全体関係図（ブックどうしの流れ）</h3>
@@ -704,40 +794,54 @@ body.relgraph-noscroll{overflow:hidden}
       <li><b>ボックス＝ファイル</b>。左が起点、<b style="color:#C24141">右端が最終アウトプット</b>で、矢印の向きにデータが流れます</li>
       <li><b>線の色＝関係の種類</b>／<b>破線の線＝手作業コピー（要確認）</b>／<b>破線の枠＝つながりが自動検出できなかった最終アウトプット</b></li>
     </ul>
-    <div class="map-scroll"><svg viewBox="0 0 1280 754" role="img" aria-label="ブックどうしの関係図（ノード形式）">
+    <div class="map-scroll"><svg viewBox="0 0 1280 1054" role="img" aria-label="ブックどうしの関係図（ノード形式）">
 <defs>
 <marker id="ff-ref" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1F5FAE" fill-opacity="0.85"/></marker>
 <marker id="ff-agg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1E9E6A" fill-opacity="0.85"/></marker>
 <marker id="ff-move" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7B5EA7" fill-opacity="0.85"/></marker>
 <marker id="ff-copy" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B96A00" fill-opacity="0.85"/></marker>
 </defs>
-<rect x="0" y="0" width="1280" height="754" fill="#FCFDFE"/>
+<rect x="0" y="0" width="1280" height="1054" fill="#FCFDFE"/>
 <pattern id="dot-ff" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#E4EBF3"/></pattern>
-<rect x="0" y="0" width="1280" height="754" fill="url(#dot-ff)"/>
+<rect x="0" y="0" width="1280" height="1054" fill="url(#dot-ff)"/>
 <text x="64" y="56.0" font-size="11" font-weight="700" fill="#7A8794" letter-spacing=".04em">受領データ（起点）</text>
-<text x="64" y="196.0" font-size="11" font-weight="700" fill="#7A8794" letter-spacing=".04em">経由ファイル</text>
-<text x="64" y="336.0" font-size="11" font-weight="700" fill="#7A8794" letter-spacing=".04em">経由ファイル</text>
-<text x="64" y="476.0" font-size="11" font-weight="700" fill="#7A8794" letter-spacing=".04em">経由ファイル</text>
-<text x="64" y="616.0" font-size="11" font-weight="700" fill="#C24141" letter-spacing=".04em">最終アウトプット</text>
-<path d="M397.5,99.4 Q510.0,160.0 613.6,215.8" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
-<path d="M623.0,248.3 Q575.0,300.0 526.9,351.8" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
-<path d="M657.0,248.3 Q705.0,300.0 746.2,344.4" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
-<path d="M648.4,108.0 Q705.0,230.0 755.3,338.3" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
-<path d="M782.6,397.2 Q835.0,510.0 889.5,627.4" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
-<path d="M757.4,397.2 Q705.0,510.0 650.5,627.4" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
-<path d="M770.0,400.0 Q770.0,440.0 770.0,485.1" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
-<path d="M743.6,384.2 Q640.0,440.0 531.9,498.2" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
-<g><circle cx="380.0" cy="90.0" r="17.9" fill="#1E9E6A" stroke="#FCFDFE" stroke-width="1.5"/><text x="380.0" y="121.9" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">仕訳汎用検索_2602.xlsx</text><text x="380.0" y="135.9" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">2シート ／ 3表 ／ 77,615行</text></g>
-<g><circle cx="900.0" cy="650.0" r="22.9" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="900.0" cy="650.0" r="17.9" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="900.0" y="681.9" font-size="11.5" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 2601_全社_営業成績表.xlsx</text><text x="900.0" y="695.9" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">2シート ／ 4表 ／ 264行</text></g>
-<g><circle cx="640.0" cy="650.0" r="22.9" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="640.0" cy="650.0" r="17.9" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="640.0" y="681.9" font-size="11.5" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 2601_プロモーション部門_営業成績表.xls…</text><text x="640.0" y="695.9" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">15シート ／ 29表 ／ 1,885行</text></g>
-<g><circle cx="380.0" cy="650.0" r="21.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2" stroke-dasharray="5 4"/><circle cx="380.0" cy="650.0" r="16" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="380.0" y="680.0" font-size="11.5" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 2025年度【売総および損益実績】2601.xl…</text><text x="380.0" y="694.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">8シート ／ 92表 ／ 8,736行（つながり未検出）</text></g>
-<g><circle cx="900.0" cy="90.0" r="11" fill="#9AA7B4" stroke="#FCFDFE" stroke-width="1.5"/><text x="900.0" y="115.0" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">000まとめ_2025年度利益計画改定(2025-072…</text><text x="900.0" y="129.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">41シート ／ 284表 ／ 54,401行</text></g>
-<g><circle cx="640.0" cy="230.0" r="23" fill="#7B5EA7" stroke="#FCFDFE" stroke-width="1.5"/><text x="640.0" y="267.0" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">仕訳汎用検索-変換-2026-0212.xlsx</text><text x="640.0" y="281.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">7シート ／ 7表 ／ 1,745,600行</text></g>
-<g><circle cx="640.0" cy="90.0" r="17.9" fill="#1E9E6A" stroke="#FCFDFE" stroke-width="1.5"/><text x="640.0" y="121.9" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">補助科目集計表の変換用2601.xlsx</text><text x="640.0" y="135.9" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">3シート ／ 3表 ／ 59,400行</text></g>
-<g><circle cx="770.0" cy="370.0" r="28" fill="#7B5EA7" stroke="#FCFDFE" stroke-width="1.5"/><text x="770.0" y="412.0" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">2601_実績表_Base_局別.xlsx</text><text x="770.0" y="426.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">8シート ／ 8表 ／ 186,342行</text></g>
-<g><circle cx="510.0" cy="370.0" r="17.9" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="510.0" y="401.9" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">2025-総勘定元帳-2601までP.xlsx</text><text x="510.0" y="415.9" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">1シート ／ 1表 ／ 480,000行</text></g>
-<g><circle cx="510.0" cy="510.0" r="17.9" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="510.0" y="541.9" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">2025年度_実績表_value.xlsx</text><text x="510.0" y="555.9" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">1シート ／ 1表 ／ 372,000行</text></g>
-<g><circle cx="770.0" cy="510.0" r="17.9" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="770.0" y="541.9" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">エリマネ部門施設_営業成績表.xlsx</text><text x="770.0" y="555.9" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">1シート ／ 1表 ／ 12,400行</text></g>
+<text x="64" y="199.3" font-size="11" font-weight="700" fill="#7A8794" letter-spacing=".04em">経由ファイル</text>
+<text x="64" y="342.7" font-size="11" font-weight="700" fill="#7A8794" letter-spacing=".04em">経由ファイル</text>
+<text x="64" y="486.0" font-size="11" font-weight="700" fill="#7A8794" letter-spacing=".04em">経由ファイル</text>
+<text x="64" y="629.3" font-size="11" font-weight="700" fill="#7A8794" letter-spacing=".04em">経由ファイル</text>
+<text x="64" y="772.7" font-size="11" font-weight="700" fill="#7A8794" letter-spacing=".04em">経由ファイル</text>
+<text x="64" y="916.0" font-size="11" font-weight="700" fill="#C24141" letter-spacing=".04em">最終アウトプット</text>
+<path d="M525.3,250.2 Q575.0,305.0 618.6,353.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M621.9,396.6 Q575.0,448.3 526.7,501.6" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M658.1,396.6 Q705.0,448.3 746.5,494.1" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M770.0,258.3 Q770.0,376.7 770.0,485.0" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M778.7,548.7 Q835.0,735.0 892.8,926.2" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M761.3,548.7 Q705.0,735.0 647.2,926.2" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M770.0,550.0 Q770.0,591.7 770.0,638.4" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M743.7,534.5 Q640.0,591.7 534.3,649.9" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M525.3,680.2 Q575.0,735.0 621.3,786.1" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M366.7,103.4 Q431.0,161.7 489.4,214.7" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M560.8,100.7 Q657.0,161.7 744.7,217.3" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M740.6,109.4 Q753.0,161.7 763.1,204.1" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M913.9,104.0 Q784.0,233.3 662.6,354.2" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<path d="M1108.9,106.5 Q880.0,448.3 655.5,783.6" fill="none" stroke="#B96A00" stroke-width="1.6" stroke-opacity="0.55" stroke-dasharray="6 5" marker-end="url(#ff-copy)"/>
+<g><circle cx="510.0" cy="233.3" r="20.8" fill="#7B5EA7" stroke="#FCFDFE" stroke-width="1.5"/><text x="510.0" y="268.1" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">仕訳汎用検索_2602.xlsx</text><text x="510.0" y="282.1" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">2シート ／ 3表 ／ 77,615行</text></g>
+<g><circle cx="900.0" cy="950.0" r="22.9" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="900.0" cy="950.0" r="17.9" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="900.0" y="981.9" font-size="11.5" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 2601_全社_営業成績表.xlsx</text><text x="900.0" y="995.9" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">2シート ／ 4表 ／ 264行</text></g>
+<g><circle cx="640.0" cy="950.0" r="22.9" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="640.0" cy="950.0" r="17.9" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="640.0" y="981.9" font-size="11.5" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 2601_プロモーション部門_営業成績表.xls…</text><text x="640.0" y="995.9" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">15シート ／ 29表 ／ 1,885行</text></g>
+<g><circle cx="380.0" cy="950.0" r="21.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2" stroke-dasharray="5 4"/><circle cx="380.0" cy="950.0" r="16" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="380.0" y="980.0" font-size="11.5" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 2025年度【売総および損益実績】2601.xl…</text><text x="380.0" y="994.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">8シート ／ 92表 ／ 8,736行（つながり未検出）</text></g>
+<g><circle cx="160.0" cy="90.0" r="11" fill="#9AA7B4" stroke="#FCFDFE" stroke-width="1.5"/><text x="160.0" y="115.0" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">000まとめ_2025年度利益計画改定(2025-072…</text><text x="160.0" y="129.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">41シート ／ 284表 ／ 54,401行</text></g>
+<g><circle cx="640.0" cy="376.7" r="24.9" fill="#7B5EA7" stroke="#FCFDFE" stroke-width="1.5"/><text x="640.0" y="415.6" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">仕訳汎用検索-変換-2026-0212.xlsx</text><text x="640.0" y="429.6" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">7シート ／ 7表 ／ 1,745,600行</text></g>
+<g><circle cx="770.0" cy="233.3" r="23" fill="#7B5EA7" stroke="#FCFDFE" stroke-width="1.5"/><text x="770.0" y="270.3" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">補助科目集計表の変換用2601.xlsx</text><text x="770.0" y="284.3" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">3シート ／ 3表 ／ 59,400行</text></g>
+<g><circle cx="770.0" cy="520.0" r="28" fill="#7B5EA7" stroke="#FCFDFE" stroke-width="1.5"/><text x="770.0" y="562.0" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">2601_実績表_Base_局別.xlsx</text><text x="770.0" y="576.0" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">8シート ／ 8表 ／ 186,342行</text></g>
+<g><circle cx="510.0" cy="520.0" r="17.9" fill="#7B5EA7" stroke="#FCFDFE" stroke-width="1.5"/><text x="510.0" y="551.9" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">2025-総勘定元帳-2601までP.xlsx</text><text x="510.0" y="565.9" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">1シート ／ 1表 ／ 480,000行</text></g>
+<g><circle cx="510.0" cy="663.3" r="20.8" fill="#7B5EA7" stroke="#FCFDFE" stroke-width="1.5"/><text x="510.0" y="698.1" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">2025年度_実績表_value.xlsx</text><text x="510.0" y="712.1" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">1シート ／ 1表 ／ 372,000行</text></g>
+<g><circle cx="770.0" cy="663.3" r="17.9" fill="#7B5EA7" stroke="#FCFDFE" stroke-width="1.5"/><text x="770.0" y="695.2" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">エリマネ部門施設_営業成績表.xlsx</text><text x="770.0" y="709.2" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">1シート ／ 1表 ／ 12,400行</text></g>
+<g><circle cx="640.0" cy="806.7" r="20.8" fill="#7B5EA7" stroke="#FCFDFE" stroke-width="1.5"/><text x="640.0" y="841.5" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">経営会議用_営業実績表.xlsx</text><text x="640.0" y="855.5" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">1シート ／ 1表 ／ 9,600行</text></g>
+<g><circle cx="352.0" cy="90.0" r="17.9" fill="#1E9E6A" stroke="#FCFDFE" stroke-width="1.5"/><text x="352.0" y="121.9" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">[Fusion]BS_PL仕訳XML</text><text x="352.0" y="135.9" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">1シート ／ 1表 ／ 1行</text></g>
+<g><circle cx="544.0" cy="90.0" r="17.9" fill="#1E9E6A" stroke="#FCFDFE" stroke-width="1.5"/><text x="544.0" y="121.9" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">[Fusion]補助科目集計表_全社CSV</text><text x="544.0" y="135.9" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">1シート ／ 1表 ／ 1行</text></g>
+<g><circle cx="736.0" cy="90.0" r="17.9" fill="#1E9E6A" stroke="#FCFDFE" stroke-width="1.5"/><text x="736.0" y="121.9" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">[Fusion]補助科目集計表_末端組織CSV</text><text x="736.0" y="135.9" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">1シート ／ 1表 ／ 1行</text></g>
+<g><circle cx="928.0" cy="90.0" r="17.9" fill="#1E9E6A" stroke="#FCFDFE" stroke-width="1.5"/><text x="928.0" y="121.9" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">[ZERO]前年データ</text><text x="928.0" y="135.9" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">1シート ／ 1表 ／ 1行</text></g>
+<g><circle cx="1120.0" cy="90.0" r="17.9" fill="#1E9E6A" stroke="#FCFDFE" stroke-width="1.5"/><text x="1120.0" y="121.9" font-size="11.5" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">[Netsuite]過去案件当月計上</text><text x="1120.0" y="135.9" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">1シート ／ 1表 ／ 1行</text></g>
 </svg></div>
     <div class="legend">
       <span class="lg-h">ファイルの役割</span>
@@ -746,7 +850,7 @@ body.relgraph-noscroll{overflow:hidden}
       <span class="li"><span class="nrole out"></span>最終アウトプット</span>
       <span class="li"><span class="nrole iso"></span>独立（つながり未検出）</span>
     </div>
-    <div class="seg-note"><span class="mark">📝</span><div><p><b>仕訳汎用検索_2602.xlsx → 仕訳汎用検索-変換-2026-0212.xlsx（転記）</b>：インポート結果を「元データ」へ値貼り付け（CX列に数式追加）</p><p><b>仕訳汎用検索-変換-2026-0212.xlsx → 2025-総勘定元帳-2601までP.xlsx（転記）</b>：「データ変換からPLのみ値にして管理計算追加」シートをコピペ</p><p><b>仕訳汎用検索-変換-2026-0212.xlsx → 2601_実績表_Base_局別.xlsx（転記）</b>：減価償却の相殺 AY〜BL列を FY25_実績 の T列最終行以降へコピペ</p><p><b>補助科目集計表の変換用2601.xlsx → 2601_実績表_Base_局別.xlsx（転記）</b>：変換用シート T〜AF列を当月データとして使用</p><p><b>2601_実績表_Base_局別.xlsx → 2601_全社_営業成績表.xlsx（転記）</b>：マクロ生成の単月/累計シートを移動し、移動先でリンク解除</p><p><b>2601_実績表_Base_局別.xlsx → 2601_プロモーション部門_営業成績表.xlsx（転記）</b>：同上（30部署×2＝60シートを部門別へ配布）</p><p><b>2601_実績表_Base_局別.xlsx → エリマネ部門施設_営業成績表.xlsx（転記）</b>：FY25_実績 を 対象月=当月／部CD=6600／組織名略称「SB局」除外 でフィルタしてコピペ</p><p><b>2601_実績表_Base_局別.xlsx → 2025年度_実績表_value.xlsx（転記）</b>：各組織を縦に並べて値化</p></div></div>
+    <div class="seg-note"><span class="mark">📝</span><div><p><b>仕訳汎用検索_2602.xlsx → 仕訳汎用検索-変換-2026-0212.xlsx（転記）</b>：インポート結果を「元データ」へ値貼り付け（CX列に数式追加）</p><p><b>仕訳汎用検索-変換-2026-0212.xlsx → 2025-総勘定元帳-2601までP.xlsx（転記）</b>：「データ変換からPLのみ値にして管理計算追加」シートをコピペ</p><p><b>仕訳汎用検索-変換-2026-0212.xlsx → 2601_実績表_Base_局別.xlsx（転記）</b>：減価償却の相殺 AY〜BL列を FY25_実績 の T列最終行以降へコピペ</p><p><b>補助科目集計表の変換用2601.xlsx → 2601_実績表_Base_局別.xlsx（転記）</b>：変換用シート T〜AF列を当月データとして使用</p><p><b>2601_実績表_Base_局別.xlsx → 2601_全社_営業成績表.xlsx（転記）</b>：マクロ生成の単月/累計シートを移動し、移動先でリンク解除</p><p><b>2601_実績表_Base_局別.xlsx → 2601_プロモーション部門_営業成績表.xlsx（転記）</b>：同上（30部署×2＝60シートを部門別へ配布）</p><p><b>2601_実績表_Base_局別.xlsx → エリマネ部門施設_営業成績表.xlsx（転記）</b>：FY25_実績 を 対象月=当月／部CD=6600／組織名略称「SB局」除外 でフィルタしてコピペ</p><p><b>2601_実績表_Base_局別.xlsx → 2025年度_実績表_value.xlsx（転記）</b>：各組織を縦に並べて値化</p><p><b>2025年度_実績表_value.xlsx → 経営会議用_営業実績表.xlsx（集計）</b>：単月・累計が縦に並んだデータを使って営業実績表を作成</p><p><b>[Fusion]BS_PL仕訳XML → 仕訳汎用検索_2602.xlsx（転記）</b>：BOM付UTF-8で保存 → 外部データのインポート → 元データへ値貼り付け</p><p><b>[Fusion]補助科目集計表_全社CSV → 補助科目集計表の変換用2601.xlsx（転記）</b>：CSV(.txt) をそのまま取込</p><p><b>[Fusion]補助科目集計表_末端組織CSV → 補助科目集計表の変換用2601.xlsx（転記）</b>：CSV(.txt) をそのまま取込</p><p><b>[ZERO]前年データ → 仕訳汎用検索-変換-2026-0212.xlsx（転記）</b>：2025年3月まで使用のZEROデータ。Fusionデータをこの形式に変換し、累計から単月を出力</p><p><b>[Netsuite]過去案件当月計上 → 経営会議用_営業実績表.xlsx（転記）</b>：財務から入手した当月計上データ</p></div></div>
 
     
     <h3 class="sub-h">2-2　最終アウトプットへの流れ（シート・表単位）</h3>
@@ -846,7 +950,7 @@ body.relgraph-noscroll{overflow:hidden}
       <span class="li"><span class="nrole out"></span>最終アウトプット</span>
       <span class="li"><span class="nrole iso"></span>独立（つながりなし・要確認）</span>
     </div>
-    <p class="tbl-note">※ 円の大きさ＝つながりの本数。つながりの多い表を優先表示（省略: 表 333・関係 0）。</p>
+    <p class="tbl-note">※ 円の大きさ＝つながりの本数。つながりの多い表を優先表示（省略: 表 342・関係 0）。</p>
 
     
     <h3 class="sub-h">2-3　ロジック別の説明 — 上の流れを部分ごとに分けて見ます</h3>
@@ -944,7 +1048,7 @@ body.relgraph-noscroll{overflow:hidden}
         <tr><td>2601成績 (3)<span class="dl-col">I列</span></td><td class="mono"><span class="dl-none">（キー未特定）</span></td><td><span class="rel agg">集計</span><div class="dl-proc">SUMIF で集計</div></td><td>損益実全社 (4)<span class="dl-col">DB列</span></td><td class="mono dl-ev">SUMIF('2601成績'!$R:$R,DB$1&amp;$CW6,'2601成績'!$I:$I)</td><td class="conf"><b>高</b></td></tr>
         <tr><td>2601成績 (3)<span class="dl-col">I列</span></td><td class="mono"><span class="dl-none">（キー未特定）</span></td><td><span class="rel agg">集計</span><div class="dl-proc">SUMIF で集計</div></td><td>損益実全社 (5)<span class="dl-col">DF列</span></td><td class="mono dl-ev">SUMIF('2601成績'!$R:$R,DF$1&amp;$CW6,'2601成績'!$I:$I)</td><td class="conf"><b>高</b></td></tr>
       </table>
-      <p class="tbl-note">※ 関係が多いため流れの順に上位 30 件を掲載しています（全 2631 件）。残りはお打ち合わせで画面をご覧いただけます。</p>
+      <p class="tbl-note">※ 関係が多いため流れの順に上位 30 件を掲載しています（全 2637 件）。残りはお打ち合わせで画面をご覧いただけます。</p>
     </div>
     <div class="callout info">
       <span class="mark">ℹ️</span>

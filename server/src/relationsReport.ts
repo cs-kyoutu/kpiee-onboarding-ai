@@ -1184,12 +1184,20 @@ function joinKeysOf(r: Region): string {
   return omitted > 0 ? `${base}（ほか${omitted}列）` : base;
 }
 
-/** ファイル役割を確定する（最終アウトプットの指定を反映してから流入・流出で分類） */
-function assignFileRoles(stats: Map<string, FileStat>, outputs: Set<string>): void {
+/**
+ * ファイル役割を確定する（最終アウトプットの指定を反映してから流入・流出で分類）。
+ *
+ * declared=true（人が最終アウトプットを指定している）ときは、指定されていないファイルを
+ * 「流出が無いから」という理由だけで最終アウトプットにしない。総勘定元帳や値化ファイルのような
+ * 途中の成果物まで最終アウトプットとして並び、「kpiee で再現する対象はどれか」がぼやけるため。
+ * 指定が無いときだけ、従来どおり終端を最終アウトプットと推定する。
+ */
+function assignFileRoles(stats: Map<string, FileStat>, outputs: Set<string>, declared: boolean): void {
   for (const s of stats.values()) {
     if (outputs.has(s.label)) { s.role = '最終アウトプット'; continue; }
     if (s.inFiles.size === 0 && s.outFiles.size === 0) { s.role = '独立'; continue; }
-    s.role = s.inFiles.size === 0 ? '元データ' : s.outFiles.size > 0 ? '中間ファイル' : '最終アウトプット';
+    if (s.inFiles.size === 0) { s.role = '元データ'; continue; }
+    s.role = s.outFiles.size > 0 || declared ? '中間ファイル' : '最終アウトプット';
   }
 }
 
@@ -1438,7 +1446,7 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   const fileStats = buildFileStats(regions, filePairs, input.artifacts ?? [], declaredOut);
   const { labels: outputLabels, declared: outputsDeclared } = resolveOutputFiles(fileStats);
   const outputFiles = new Set(outputLabels);
-  assignFileRoles(fileStats, outputFiles);
+  assignFileRoles(fileStats, outputFiles, outputsDeclared);
   const fileNameOf = (label: string) => fileStats.get(label)?.filename ?? label;
   promoteDeclaredOutputRegions(regions, pairs, roles, declaredOut, outputFiles);
 
@@ -1535,29 +1543,25 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   }
 
   // ---- 01 ファイル一覧 ----
-  // 登録済みブック関係をファイル単位で引けるようにする（一覧の「ご登録の関係」列）
-  const relsByFile = new Map<string, string[]>();
-  for (const d of declaredRels) {
-    const text = `→ ${fileNameOf(d.toFile)}（${FILE_REL_LABELS[d.relType]}）`;
-    const arr = relsByFile.get(d.fromFile) ?? [];
-    arr.push(text);
-    relsByFile.set(d.fromFile, arr);
-  }
+  // 登録済みブック関係は 02 の「担当者の説明」に出るので、ここでは繰り返さない。
+  // 01 の一覧は「何を受け取り、どれが最終アウトプットか」を一目で掴む場所にする。
+  // 以前は 7 列（シート数・表数・行数・流れ込む元・ご登録の関係）を並べていたが、
+  // 流れは 02 の図で辿るものであり、ここで数字と関係を全部見せると何を見る表なのか分からなくなる。
+  // 役割の順（元データ → 中間 → 最終アウトプット → 独立）に並べ、規模は 1 列にまとめる。
+  const ROLE_ORDER: FileRole[] = ['元データ', '中間ファイル', '最終アウトプット', '独立'];
   const fileRows = [...fileStats.values()]
-    .sort((a, b) => {
-      const ra = a.role === '最終アウトプット' ? 1 : 0, rb = b.role === '最終アウトプット' ? 1 : 0;
-      return ra !== rb ? ra - rb : b.rowTotal - a.rowTotal; // 最終アウトプットは最後に置いて流れの順に読ませる
-    })
+    .sort((a, b) => (ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role)) || (b.rowTotal - a.rowTotal))
     .map(s => {
-      const upstream = [...s.inFiles.keys()].map(l => fileNameOf(l));
       const roleCls = s.role === '最終アウトプット' ? 'out' : s.role === '元データ' ? 'src' : s.role === '中間ファイル' ? 'mid' : 'iso';
-      const rels = relsByFile.get(s.label) ?? [];
+      // 最終アウトプットのファイルは、どのシートが対象なのかまで書く（再現する的が定まる）
+      const finalSheets = s.sheets.filter(sh => declaredOut.hasSheet(s.label, sh));
+      const note = s.role === '最終アウトプット' && finalSheets.length > 0
+        ? `<div class="rnote">対象シート: ${esc(shortText(finalSheets.join('、'), 56))}</div>`
+        : s.role === '独立' ? '<div class="rnote">他のファイルとのつながりが見つかっていません</div>' : '';
       return `<tr>` +
-        `<td><b>${esc(s.filename)}</b>${s.declaredOutput ? '<div class="rnote">取込時に「最終帳票」として指定</div>' : ''}</td>` +
-        `<td class="r">${s.sheets.length}</td><td class="r">${s.regionCount}</td><td class="r">${s.rowTotal.toLocaleString()}</td>` +
+        `<td><b>${esc(s.filename)}</b>${note}</td>` +
         `<td><span class="nrole ${roleCls}"></span> ${esc(s.role)}</td>` +
-        `<td>${upstream.length > 0 ? esc(shortText(upstream.join('、'), 44)) : '—'}</td>` +
-        `<td>${rels.length > 0 ? esc(shortText(rels.join('／'), 44)) : '<span class="dl-none">—</span>'}</td>` +
+        `<td class="r">${s.sheets.length} シート<br><span class="dl-none">${s.rowTotal.toLocaleString()} 行</span></td>` +
         `</tr>`;
     });
 
@@ -1728,7 +1732,7 @@ ${secOn.inventory ? `
     <h3 class="sub-h">ブック（ファイル）別</h3>
     <div style="overflow-x:auto">
       <table class="ot">
-        <tr><th>ファイル</th><th>シート</th><th>表</th><th>行数（合計）</th><th>役割</th><th>流れ込む元ファイル</th><th>ご登録の関係</th></tr>
+        <tr><th>ファイル</th><th>役割</th><th class="r">規模</th></tr>
         ${fileRows.join('\n        ')}
       </table>
     </div>` : ''}
@@ -1757,10 +1761,10 @@ ${secOn.flow ? `
       <div class="eyebrow">${noFlow} ── FLOW &amp; LOGIC</div>
       <h2>全体の流れと詳細ロジック</h2>
       <p class="sec-lede">${showFileFlow
-        ? 'まず<b>ブックどうしの全体関係図</b>で流れをご覧いただき、続けて<b>シート・表単位の詳細関係図</b>と、その処理内容（キー・数式）へ降りていきます。'
+        ? 'まず<b>ブックどうしの全体関係図</b>で流れをご覧いただき、続けて<b>最終アウトプットへの流れ</b>を表・シート単位で確認し、そのうえで<b>ロジック別に区切って</b>計算の中身・キーをご説明します。'
         : multiFile
-        ? '<b>シート・表単位の関係図</b>で流れをご覧いただき、続けてその処理内容（キー・数式）を説明します。'
-        : 'ご提供は1ブックのため、<b>シート・表単位の関係</b>で流れをご覧いただき、続けてその処理内容（キー・数式）を説明します。'}</p>
+        ? '<b>シート・表単位の関係図</b>で流れをご覧いただき、続けて<b>ロジック別に区切って</b>その処理内容（キー・数式）をご説明します。'
+        : 'ご提供は1ブックのため、<b>シート・表単位の関係</b>で流れをご覧いただき、続けて<b>ロジック別に区切って</b>その処理内容（キー・数式）をご説明します。'}</p>
     </div>
     ${showFileFlow ? (fileFlow ? `
     ${subH('全体関係図（ブックどうしの流れ）')}
