@@ -1901,14 +1901,6 @@ ${secOn.flow ? `
       <li class="only-screen">右上のボタン：<span class="k">＋ －</span> 拡大縮小／<span class="k">▤</span> レイアウト／<span class="k">☾</span> 配色／<span class="k">⤢</span> 全画面（Escで戻る）／<span class="k">⟳</span> リセット。背景ドラッグで移動</li>` : ''}
     </ul>
     ${spec.items.interactiveGraph ? '<p class="graph-guide only-print">※ 本紙は静止画です。操作版はブラウザでご覧ください。</p>' : ''}
-    ${spec.items.interactiveGraph ? `<div class="map-interactive relgraph-wrap" id="relgraph-wrap">
-      <figure class="relgraph-stage lightmode" id="relgraph" aria-label="表どうしの関係グラフ（操作可能）"></figure>
-      <aside class="relgraph-panel">
-        <div class="relgraph-crumbs" id="relgraph-crumbs"><span class="cur">表を選択</span></div>
-        <div class="relgraph-pbody" id="relgraph-pbody"><div class="empty">左のグラフで<b>表</b>をクリックすると、関係している表（上流／下流）と<b>最終アウトプットまでの経路</b>がここに出て、そのまま掘り下げられます。</div></div>
-      </aside>
-    </div>
-    <script type="application/json" id="relgraph-data">${JSON.stringify(map.data).replace(/</g, '\\u003c')}</script>` : ''}
     <div class="legend">
       <span class="lg-h">関係の種類</span>
       ${GROUP_ORDER.map(g => `<span class="li"><span class="sw${GROUP_META[g].dashed ? ' dash' : ''}" style="border-color:${GROUP_META[g].color}"></span>${esc(GROUP_META[g].label)}</span>`).join('\n      ')}
@@ -1935,7 +1927,15 @@ ${secOn.flow ? `
         ? 'まず関係図で全体のどの部分かを見ていただき、続けてその計算をご説明します。'
         : `<b>この帳票へ流れ込む元データを自動検出できませんでした。</b>`
           + `${srcQuestionRef ? `確認事項の <b>${srcQuestionRef}</b> に記載しています。` : 'お打ち合わせでご確認させてください。'}`}</p>
-    ${secMap ? `<div class="map-static map-scroll">${secMap.svg}</div>
+    ${secMap ? `<div class="map-static map-scroll" data-graph="-o${si}">${secMap.svg}</div>
+    ${spec.items.interactiveGraph ? `<div class="map-interactive relgraph-wrap" id="relgraph-wrap-o${si}" data-relgraph="-o${si}">
+      <figure class="relgraph-stage lightmode" id="relgraph-o${si}" aria-label="表どうしの関係グラフ（操作可能）"></figure>
+      <aside class="relgraph-panel">
+        <div class="relgraph-crumbs" id="relgraph-crumbs-o${si}"><span class="cur">表を選択</span></div>
+        <div class="relgraph-pbody" id="relgraph-pbody-o${si}"><div class="empty">左のグラフで<b>表</b>をクリックすると、関係している表（上流／下流）と<b>最終アウトプットまでの経路</b>がここに出て、そのまま掘り下げられます。</div></div>
+      </aside>
+    </div>
+    <script type="application/json" id="relgraph-data-o${si}">${JSON.stringify(secMap.data).replace(/</g, '\\u003c')}</script>` : ''}
     ${secMap.omittedNodes > 0 ? `<p class="tbl-note">※ つながりの多い表を優先表示（省略: 表 ${secMap.omittedNodes}）。</p>` : ''}` : ''}
     ${sec.blocks.map((b, i) => renderLogicBlock(b, i + 1, regions, graph.keyLinks ?? [], labels, fileNameOf, showEr)).join('\n')}`;
     }).join('\n')}
@@ -2347,16 +2347,19 @@ const REPORT_PRINT_JS = `
 // 初期化に失敗したら静的SVG（.map-static）へ戻す。※テンプレートリテラルに埋めるためバッククォート/${ は使わない。
 const REPORT_GRAPH_JS = `
 (function(){
+  // 最終アウトプットごとに図を出すので、1ページに複数のインスタンスが並ぶ。
+  // id は sfx（data-relgraph の値）で分ける。描画ロジックは元のまま。
+  function initGraph(sfx){
   try{
-    var wrap=document.getElementById('relgraph-wrap');
-    var host=document.getElementById('relgraph');
-    var dataEl=document.getElementById('relgraph-data');
-    var pbody=document.getElementById('relgraph-pbody');
-    var crumbsEl=document.getElementById('relgraph-crumbs');
+    var wrap=document.getElementById('relgraph-wrap'+sfx);
+    var host=document.getElementById('relgraph'+sfx);
+    var dataEl=document.getElementById('relgraph-data'+sfx);
+    var pbody=document.getElementById('relgraph-pbody'+sfx);
+    var crumbsEl=document.getElementById('relgraph-crumbs'+sfx);
     if(!wrap||!host||!dataEl) return;
     var data=JSON.parse(dataEl.textContent);
     if(!data||!data.nodes||!data.nodes.length) return;
-    var staticEl=document.querySelector('.map-static'); if(staticEl) staticEl.style.display='none';
+    var staticEl=document.querySelector('.map-static[data-graph="'+sfx+'"]'); if(staticEl) staticEl.style.display='none';
     wrap.style.display='grid';
 
     var NS='http://www.w3.org/2000/svg';
@@ -2593,8 +2596,12 @@ const REPORT_GRAPH_JS = `
 
     apply(); draw(); render(); kick(1);
   }catch(e){
-    var w=document.getElementById('relgraph-wrap'); if(w) w.style.display='none';
-    var s=document.querySelector('.map-static'); if(s) s.style.display='';
+    var w=document.getElementById('relgraph-wrap'+sfx); if(w) w.style.display='none';
+    var st=document.querySelector('.map-static[data-graph="'+sfx+'"]'); if(st) st.style.display='';
   }
+  }
+  // data-relgraph を持つ要素ぶん初期化する（最終アウトプットごとに1つ）
+  var hosts=document.querySelectorAll('[data-relgraph]');
+  for(var gi=0;gi<hosts.length;gi++) initGraph(hosts[gi].getAttribute('data-relgraph'));
 })();
 `;
