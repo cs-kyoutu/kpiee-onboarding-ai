@@ -344,14 +344,14 @@ body.relgraph-noscroll{overflow:hidden}
     <h3 class="sub-h">ブック（ファイル）別</h3>
     <div style="overflow-x:auto">
       <table class="ot">
-        <tr><th>ファイル</th><th>シート</th><th>表</th><th>行数（合計）</th><th>役割</th><th>流れ込む元ファイル</th><th>ご登録の関係</th></tr>
-        <tr><td><b>FY 2601 0213.xlsx</b></td><td class="r">14</td><td class="r">28</td><td class="r">11,424</td><td><span class="nrole iso"></span> 独立</td><td>—</td><td><span class="dl-none">—</span></td></tr>
-        <tr><td><b>業績管理表2603期 FY 02 保育事業 2601 0213.xlsx</b></td><td class="r">16</td><td class="r">120</td><td class="r">3,890</td><td><span class="nrole src"></span> 元データ</td><td>—</td><td><span class="dl-none">—</span></td></tr>
-        <tr><td><b>業績管理表2603期 FY 08 本社部門 2601 0213.xlsx</b></td><td class="r">13</td><td class="r">91</td><td class="r">2,620</td><td><span class="nrole src"></span> 元データ</td><td>—</td><td><span class="dl-none">—</span></td></tr>
-        <tr><td><b>業績管理表2603期 FY 04 就労支援事業 2601 0213.xlsx</b></td><td class="r">7</td><td class="r">24</td><td class="r">1,437</td><td><span class="nrole src"></span> 元データ</td><td>—</td><td><span class="dl-none">—</span></td></tr>
-        <tr><td><b>業績管理表2603期 FY 03 介護事業 2601 0213.xlsx</b></td><td class="r">6</td><td class="r">44</td><td class="r">1,305</td><td><span class="nrole src"></span> 元データ</td><td>—</td><td><span class="dl-none">—</span></td></tr>
-        <tr><td><b>業績管理表2603期 FY 05 その他事業 2601 0213.xlsx</b></td><td class="r">4</td><td class="r">28</td><td class="r">665</td><td><span class="nrole src"></span> 元データ</td><td>—</td><td><span class="dl-none">—</span></td></tr>
-        <tr><td><b>業績管理表2603期 FY 00 法人合計 2601 0213.xlsx</b></td><td class="r">9</td><td class="r">130</td><td class="r">4,470</td><td><span class="nrole out"></span> 最終アウトプット</td><td>業績管理表2603期 FY 02 保育事業 2601 0213.xlsx、業績管理表26…</td><td><span class="dl-none">—</span></td></tr>
+        <tr><th>ファイル</th><th>役割</th><th class="r">規模</th></tr>
+        <tr><td><b>業績管理表2603期 FY 02 保育事業 2601 0213.xlsx</b></td><td><span class="nrole src"></span> 元データ</td><td class="r">16 シート<br><span class="dl-none">3,890 行</span></td></tr>
+        <tr><td><b>業績管理表2603期 FY 08 本社部門 2601 0213.xlsx</b></td><td><span class="nrole src"></span> 元データ</td><td class="r">13 シート<br><span class="dl-none">2,620 行</span></td></tr>
+        <tr><td><b>業績管理表2603期 FY 04 就労支援事業 2601 0213.xlsx</b></td><td><span class="nrole src"></span> 元データ</td><td class="r">7 シート<br><span class="dl-none">1,437 行</span></td></tr>
+        <tr><td><b>業績管理表2603期 FY 03 介護事業 2601 0213.xlsx</b></td><td><span class="nrole src"></span> 元データ</td><td class="r">6 シート<br><span class="dl-none">1,305 行</span></td></tr>
+        <tr><td><b>業績管理表2603期 FY 05 その他事業 2601 0213.xlsx</b></td><td><span class="nrole src"></span> 元データ</td><td class="r">4 シート<br><span class="dl-none">665 行</span></td></tr>
+        <tr><td><b>業績管理表2603期 FY 00 法人合計 2601 0213.xlsx</b></td><td><span class="nrole out"></span> 最終アウトプット</td><td class="r">9 シート<br><span class="dl-none">4,470 行</span></td></tr>
+        <tr><td><b>FY 2601 0213.xlsx</b><div class="rnote">他のファイルとのつながりが見つかっていません</div></td><td><span class="nrole iso"></span> 独立</td><td class="r">14 シート<br><span class="dl-none">11,424 行</span></td></tr>
       </table>
     </div>
 
@@ -656,7 +656,7 @@ body.relgraph-noscroll{overflow:hidden}
     <div class="sec-head">
       <div class="eyebrow">02 ── FLOW &amp; LOGIC</div>
       <h2>全体の流れと詳細ロジック</h2>
-      <p class="sec-lede">まず<b>ブックどうしの全体関係図</b>で流れをご覧いただき、続けて<b>シート・表単位の詳細関係図</b>と、その処理内容（キー・数式）へ降りていきます。</p>
+      <p class="sec-lede">まず<b>ブックどうしの全体関係図</b>で流れをご覧いただき、続けて<b>最終アウトプットへの流れ</b>を表・シート単位で確認し、そのうえで<b>ロジック別に区切って</b>計算の中身・キーをご説明します。</p>
     </div>
     
     <h3 class="sub-h">2-1　全体関係図（ブックどうしの流れ）</h3>
@@ -699,7 +699,6 @@ body.relgraph-noscroll{overflow:hidden}
     
 
     
-    <h3 class="sub-h">2-2　最終アウトプットへの流れ（シート・表単位）</h3>
     <ul class="graph-guide">
       <li><b>ノード＝表</b>。<b>上＝元データ → 下＝最終アウトプット</b>、矢印の向きにデータが流れます</li>
       <li><b>線の色＝関係の種類</b>／<b>破線＝手作業コピー（要確認）</b></li>
@@ -707,28 +706,50 @@ body.relgraph-noscroll{overflow:hidden}
       <li class="only-screen">右上のボタン：<span class="k">＋ －</span> 拡大縮小／<span class="k">▤</span> レイアウト／<span class="k">☾</span> 配色／<span class="k">⤢</span> 全画面（Escで戻る）／<span class="k">⟳</span> リセット。背景ドラッグで移動</li>
     </ul>
     <p class="graph-guide only-print">※ 本紙は静止画です。操作版はブラウザでご覧ください。</p>
-    <div class="map-static map-scroll"><svg viewBox="0 0 1280 780" role="img" aria-label="表どうしの関係図（ノード形式）">
+    <div class="legend">
+      <span class="lg-h">関係の種類</span>
+      <span class="li"><span class="sw" style="border-color:#1F5FAE"></span>参照・照合（VLOOKUP等）</span>
+      <span class="li"><span class="sw" style="border-color:#1E9E6A"></span>集計（SUMIFS・SUM等）</span>
+      <span class="li"><span class="sw" style="border-color:#7B5EA7"></span>転記・計算（=参照・四則）</span>
+      <span class="li"><span class="sw dash" style="border-color:#B96A00"></span>手修正推定（要確認）</span>
+    </div>
+    <div class="legend">
+      <span class="lg-h">表の役割</span>
+      <span class="li"><span class="nrole src"></span>元データ（明細）</span>
+      <span class="li"><span class="nrole mst"></span>マスタ（参照元）</span>
+      <span class="li"><span class="nrole mid"></span>中間集計</span>
+      <span class="li"><span class="nrole out"></span>最終アウトプット</span>
+      <span class="li"><span class="nrole iso"></span>独立（つながりなし・要確認）</span>
+    </div>
+    <p class="tbl-note">※ 円の大きさ＝つながりの本数。以下、最終アウトプットごとに「関係図 → その計算」の順にご説明します。</p>
+
+    
+    <h3 class="sub-h">2-2　最終アウトプット①　業績管理表2603期 FY 00 法人合計 2601 0213.xlsx</h3>
+    <p class="sec-lede">この帳票を kpiee で再現します。対象シートは
+      <b>master、計 FY、top、FY 保育事業、FY 介護事業、FY 就労支援事業、FY その他事業、FY 本社部門、end</b> です。
+      まず関係図で全体のどの部分かを見ていただき、続けてその計算をご説明します。</p>
+    <div class="map-static map-scroll" data-graph="-o0"><svg viewBox="0 0 1280 780" role="img" aria-label="表どうしの関係図（ノード形式）">
 <defs>
-<marker id="arr-r-ref" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1F5FAE" fill-opacity="0.85"/></marker>
-<marker id="arr-r-agg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1E9E6A" fill-opacity="0.85"/></marker>
-<marker id="arr-r-move" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7B5EA7" fill-opacity="0.85"/></marker>
-<marker id="arr-r-copy" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B96A00" fill-opacity="0.85"/></marker>
+<marker id="arr-o0-ref" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1F5FAE" fill-opacity="0.85"/></marker>
+<marker id="arr-o0-agg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1E9E6A" fill-opacity="0.85"/></marker>
+<marker id="arr-o0-move" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7B5EA7" fill-opacity="0.85"/></marker>
+<marker id="arr-o0-copy" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B96A00" fill-opacity="0.85"/></marker>
 </defs>
 <rect x="0" y="0" width="1280" height="780" fill="#FCFDFE"/>
-<pattern id="dot-r" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#E4EBF3"/></pattern>
-<rect x="0" y="0" width="1280" height="780" fill="url(#dot-r)"/>
-<path d="M768.6,91.9 Q485.7,237.0 207.3,379.8" fill="none" stroke="#1F5FAE" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-ref)"/>
-<path d="M503.7,102.9 Q620.5,390.0 732.6,665.4" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
-<path d="M596.9,103.8 Q668.5,390.0 737.0,664.0" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
-<path d="M221.5,99.3 Q476.5,390.0 723.2,671.2" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
-<path d="M1156.4,100.8 Q956.5,390.0 763.8,668.9" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
-<path d="M968.8,103.1 Q860.5,390.0 756.7,665.1" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-agg)"/>
-<path d="M746.7,668.1 Q754.2,543.0 762.1,412.3" fill="none" stroke="#1F5FAE" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-ref)"/>
-<path d="M511.4,97.4 Q670.9,237.0 828.9,375.3" fill="none" stroke="#1F5FAE" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-ref)"/>
-<path d="M607.1,97.7 Q760.0,237.0 911.5,375.0" fill="none" stroke="#1F5FAE" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-ref)"/>
-<path d="M227.1,91.3 Q609.1,237.0 989.4,382.1" fill="none" stroke="#1F5FAE" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-ref)"/>
-<path d="M1163.1,103.8 Q1130.3,237.0 1097.9,368.3" fill="none" stroke="#1F5FAE" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-ref)"/>
-<path d="M987.1,101.1 Q1075.4,237.0 1162.7,371.3" fill="none" stroke="#1F5FAE" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-r-ref)"/>
+<pattern id="dot-o0" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#E4EBF3"/></pattern>
+<rect x="0" y="0" width="1280" height="780" fill="url(#dot-o0)"/>
+<path d="M768.6,91.9 Q485.7,237.0 207.3,379.8" fill="none" stroke="#1F5FAE" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-o0-ref)"/>
+<path d="M503.7,102.9 Q620.5,390.0 732.6,665.4" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-o0-agg)"/>
+<path d="M596.9,103.8 Q668.5,390.0 737.0,664.0" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-o0-agg)"/>
+<path d="M221.5,99.3 Q476.5,390.0 723.2,671.2" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-o0-agg)"/>
+<path d="M1156.4,100.8 Q956.5,390.0 763.8,668.9" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-o0-agg)"/>
+<path d="M968.8,103.1 Q860.5,390.0 756.7,665.1" fill="none" stroke="#1E9E6A" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-o0-agg)"/>
+<path d="M746.7,668.1 Q754.2,543.0 762.1,412.3" fill="none" stroke="#1F5FAE" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-o0-ref)"/>
+<path d="M511.4,97.4 Q670.9,237.0 828.9,375.3" fill="none" stroke="#1F5FAE" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-o0-ref)"/>
+<path d="M607.1,97.7 Q760.0,237.0 911.5,375.0" fill="none" stroke="#1F5FAE" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-o0-ref)"/>
+<path d="M227.1,91.3 Q609.1,237.0 989.4,382.1" fill="none" stroke="#1F5FAE" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-o0-ref)"/>
+<path d="M1163.1,103.8 Q1130.3,237.0 1097.9,368.3" fill="none" stroke="#1F5FAE" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-o0-ref)"/>
+<path d="M987.1,101.1 Q1075.4,237.0 1162.7,371.3" fill="none" stroke="#1F5FAE" stroke-width="1.3" stroke-opacity="0.5" marker-end="url(#arr-o0-ref)"/>
 <g><circle cx="187.4" cy="390.0" r="20.3" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="187.4" cy="390.0" r="15.3" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="187.4" y="418.3" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ master (10)</text></g>
 <g><circle cx="187.4" cy="390.0" r="20.3" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="187.4" cy="390.0" r="15.3" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="187.4" y="418.3" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ master (10)</text></g>
 <g><circle cx="745.0" cy="696.0" r="31.0" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="745.0" cy="696.0" r="26" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="745.0" y="735.0" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 計 FY (9)</text></g>
@@ -758,35 +779,15 @@ body.relgraph-noscroll{overflow:hidden}
 <g><circle cx="1168.0" cy="84.0" r="23.4" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="1168.0" cy="84.0" r="18.4" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="1168.0" y="115.4" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 業績管理表2603期 FY 00 法人合…</text></g>
 <g><circle cx="1168.0" cy="84.0" r="23.4" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/><circle cx="1168.0" cy="84.0" r="18.4" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/><text x="1168.0" y="115.4" font-size="11" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">★ 業績管理表2603期 FY 00 法人合…</text></g>
 </svg></div>
-    <div class="map-interactive relgraph-wrap" id="relgraph-wrap">
-      <figure class="relgraph-stage lightmode" id="relgraph" aria-label="表どうしの関係グラフ（操作可能）"></figure>
+    <div class="map-interactive relgraph-wrap" id="relgraph-wrap-o0" data-relgraph="-o0">
+      <figure class="relgraph-stage lightmode" id="relgraph-o0" aria-label="表どうしの関係グラフ（操作可能）"></figure>
       <aside class="relgraph-panel">
-        <div class="relgraph-crumbs" id="relgraph-crumbs"><span class="cur">表を選択</span></div>
-        <div class="relgraph-pbody" id="relgraph-pbody"><div class="empty">左のグラフで<b>表</b>をクリックすると、関係している表（上流／下流）と<b>最終アウトプットまでの経路</b>がここに出て、そのまま掘り下げられます。</div></div>
+        <div class="relgraph-crumbs" id="relgraph-crumbs-o0"><span class="cur">表を選択</span></div>
+        <div class="relgraph-pbody" id="relgraph-pbody-o0"><div class="empty">左のグラフで<b>表</b>をクリックすると、関係している表（上流／下流）と<b>最終アウトプットまでの経路</b>がここに出て、そのまま掘り下げられます。</div></div>
       </aside>
     </div>
-    <script type="application/json" id="relgraph-data">{"nodes":[{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／master#5","label":"master (10)","sub":"5行","role":"最終アウトプット","deg":8698,"x":187.4285714285714,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／master#5","label":"master (10)","sub":"5行","role":"最終アウトプット","deg":8698,"x":187.4285714285714,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#1","label":"計 FY (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":8078,"x":745,"y":696},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#1","label":"計 FY (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":8078,"x":745,"y":696},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#8","label":"計 FY (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":763.4285714285714,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 保育事業#8","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 保育事業 (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":845.7142857142858,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 介護事業#8","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 介護事業 (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":928,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 就労支援事業#8","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 就労支援事業 (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":1010.2857142857143,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY その他事業#8","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY その他事業 (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":1092.5714285714287,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 本社部門#8","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 本社部門 (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":1174.857142857143,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#8","label":"計 FY (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":763.4285714285714,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 保育事業#8","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 保育事業 (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":845.7142857142858,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 介護事業#8","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 介護事業 (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":928,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 就労支援事業#8","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 就労支援事業 (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":1010.2857142857143,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY その他事業#8","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY その他事業 (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":1092.5714285714287,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 本社部門#8","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 本社部門 (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":1174.857142857143,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 就労支援事業#1","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 就労支援事業 (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":7220,"x":208,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 就労支援事業#1","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 就労支援事業 (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":7220,"x":208,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 保育事業#1","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 保育事業 (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":7076,"x":496,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 介護事業#1","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 介護事業 (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":7076,"x":592,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 保育事業#1","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 保育事業 (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":7076,"x":496,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 介護事業#1","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 介護事業 (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":7076,"x":592,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／master#1","label":"master (6)","sub":"265行 ／ D列","role":"最終アウトプット","deg":7060,"x":784,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／master#1","label":"master (6)","sub":"265行 ／ D列","role":"最終アウトプット","deg":7060,"x":784,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 本社部門#1","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 本社部門 (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":6934,"x":976,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 本社部門#1","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 本社部門 (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":6934,"x":976,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY その他事業#1","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY その他事業 (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":6788,"x":1168,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY その他事業#1","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY その他事業 (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":6788,"x":1168,"y":84}],"links":[{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／master#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／master#5","color":"#1F5FAE","dashed":false,"label":"参照・照合","count":6592},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 保育事業#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#1","color":"#1E9E6A","dashed":false,"label":"集計","count":288},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 介護事業#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#1","color":"#1E9E6A","dashed":false,"label":"集計","count":288},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 就労支援事業#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#1","color":"#1E9E6A","dashed":false,"label":"集計","count":288},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／FY その他事業#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#1","color":"#1E9E6A","dashed":false,"label":"集計","count":288},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 本社部門#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#1","color":"#1E9E6A","dashed":false,"label":"集計","count":288},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#8","color":"#1F5FAE","dashed":false,"label":"参照・照合","count":3070},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 保育事業#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 保育事業#8","color":"#1F5FAE","dashed":false,"label":"参照・照合","count":3070},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 介護事業#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 介護事業#8","color":"#1F5FAE","dashed":false,"label":"参照・照合","count":3070},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 就労支援事業#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 就労支援事業#8","color":"#1F5FAE","dashed":false,"label":"参照・照合","count":3070},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／FY その他事業#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／FY その他事業#8","color":"#1F5FAE","dashed":false,"label":"参照・照合","count":3070},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 本社部門#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 本社部門#8","color":"#1F5FAE","dashed":false,"label":"参照・照合","count":3070}],"w":1280,"h":780}</script>
-    <div class="legend">
-      <span class="lg-h">関係の種類</span>
-      <span class="li"><span class="sw" style="border-color:#1F5FAE"></span>参照・照合（VLOOKUP等）</span>
-      <span class="li"><span class="sw" style="border-color:#1E9E6A"></span>集計（SUMIFS・SUM等）</span>
-      <span class="li"><span class="sw" style="border-color:#7B5EA7"></span>転記・計算（=参照・四則）</span>
-      <span class="li"><span class="sw dash" style="border-color:#B96A00"></span>手修正推定（要確認）</span>
-    </div>
-    <div class="legend">
-      <span class="lg-h">表の役割</span>
-      <span class="li"><span class="nrole src"></span>元データ（明細）</span>
-      <span class="li"><span class="nrole mst"></span>マスタ（参照元）</span>
-      <span class="li"><span class="nrole mid"></span>中間集計</span>
-      <span class="li"><span class="nrole out"></span>最終アウトプット</span>
-      <span class="li"><span class="nrole iso"></span>独立（つながりなし・要確認）</span>
-    </div>
-    <p class="tbl-note">※ 円の大きさ＝つながりの本数。つながりの多い表を優先表示（省略: 表 388・関係 0）。</p>
-
-    
-    <h3 class="sub-h">2-3　ロジック別の説明 — 上の流れを部分ごとに分けて見ます</h3>
-    <p class="sec-lede">上の図の流れを、最終アウトプットへ流れ込むファイルごとに 5 個に分けました。
-    関係の本数が多い（＝影響の大きい）ものから、<b>どういう計算か → 関係する表のキーと1行の定義 → キー関係図（ER）</b>の順にご説明します。</p>
+    <script type="application/json" id="relgraph-data-o0">{"nodes":[{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／master#5","label":"master (10)","sub":"5行","role":"最終アウトプット","deg":8698,"x":187.4285714285714,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／master#5","label":"master (10)","sub":"5行","role":"最終アウトプット","deg":8698,"x":187.4285714285714,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#1","label":"計 FY (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":8078,"x":745,"y":696},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#1","label":"計 FY (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":8078,"x":745,"y":696},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#8","label":"計 FY (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":763.4285714285714,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 保育事業#8","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 保育事業 (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":845.7142857142858,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 介護事業#8","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 介護事業 (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":928,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 就労支援事業#8","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 就労支援事業 (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":1010.2857142857143,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY その他事業#8","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY その他事業 (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":1092.5714285714287,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 本社部門#8","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 本社部門 (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":1174.857142857143,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#8","label":"計 FY (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":763.4285714285714,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 保育事業#8","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 保育事業 (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":845.7142857142858,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 介護事業#8","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 介護事業 (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":928,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 就労支援事業#8","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 就労支援事業 (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":1010.2857142857143,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY その他事業#8","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY その他事業 (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":1092.5714285714287,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 本社部門#8","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 本社部門 (16)","sub":"25行","role":"最終アウトプット","deg":7714,"x":1174.857142857143,"y":390},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 就労支援事業#1","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 就労支援事業 (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":7220,"x":208,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 就労支援事業#1","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 就労支援事業 (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":7220,"x":208,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 保育事業#1","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 保育事業 (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":7076,"x":496,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 介護事業#1","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 介護事業 (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":7076,"x":592,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 保育事業#1","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 保育事業 (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":7076,"x":496,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 介護事業#1","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 介護事業 (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":7076,"x":592,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／master#1","label":"master (6)","sub":"265行 ／ D列","role":"最終アウトプット","deg":7060,"x":784,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／master#1","label":"master (6)","sub":"265行 ／ D列","role":"最終アウトプット","deg":7060,"x":784,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 本社部門#1","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 本社部門 (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":6934,"x":976,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 本社部門#1","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY 本社部門 (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":6934,"x":976,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY その他事業#1","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY その他事業 (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":6788,"x":1168,"y":84},{"id":"業績管理表2603期 FY 00 法人合計 2601 0213／FY その他事業#1","label":"業績管理表2603期 FY 00 法人合計 2601 0213 › FY その他事業 (9)","sub":"247行 ／ A列","role":"最終アウトプット","deg":6788,"x":1168,"y":84}],"links":[{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／master#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／master#5","color":"#1F5FAE","dashed":false,"label":"参照・照合","count":6592},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 保育事業#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#1","color":"#1E9E6A","dashed":false,"label":"集計","count":288},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 介護事業#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#1","color":"#1E9E6A","dashed":false,"label":"集計","count":288},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 就労支援事業#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#1","color":"#1E9E6A","dashed":false,"label":"集計","count":288},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／FY その他事業#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#1","color":"#1E9E6A","dashed":false,"label":"集計","count":288},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 本社部門#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#1","color":"#1E9E6A","dashed":false,"label":"集計","count":288},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／計 FY#8","color":"#1F5FAE","dashed":false,"label":"参照・照合","count":3070},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 保育事業#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 保育事業#8","color":"#1F5FAE","dashed":false,"label":"参照・照合","count":3070},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 介護事業#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 介護事業#8","color":"#1F5FAE","dashed":false,"label":"参照・照合","count":3070},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 就労支援事業#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 就労支援事業#8","color":"#1F5FAE","dashed":false,"label":"参照・照合","count":3070},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／FY その他事業#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／FY その他事業#8","color":"#1F5FAE","dashed":false,"label":"参照・照合","count":3070},{"s":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 本社部門#1","t":"業績管理表2603期 FY 00 法人合計 2601 0213／FY 本社部門#8","color":"#1F5FAE","dashed":false,"label":"参照・照合","count":3070}],"w":1280,"h":780}</script>
+    <p class="tbl-note">※ つながりの多い表を優先表示（省略: 表 319）。</p>
     <div class="lb">
     <div class="lb-head"><span class="lb-no">1</span>
       <div><b>業績管理表2603期 FY 04 就労支援事業 2601 0213.xlsx</b> → <b>業績管理表2603期 FY 00 法人合計 2601 0213.xlsx</b>
@@ -981,10 +982,12 @@ body.relgraph-noscroll{overflow:hidden}
       <p class="tbl-note">このブロックには、キー列で結ばれる表の対がありません（セル位置での対応のため、結合キーが存在しません）。</p>
     </div>
   </div>
+
+    
+    <h3 class="sub-h">2-3　つながりが検出できなかったファイル</h3>
     <div class="lb iso">
       <div class="lb-head"><span class="lb-no">—</span>
-        <div><b>つながりが検出できなかったファイル</b>
-          <div class="lb-sub">FY 2601 0213.xlsx</div></div>
+        <div><b>FY 2601 0213.xlsx</b></div>
       </div>
       <div class="lb-step"><span class="lb-st">状況</span>
         <p>これらのファイルは、他のどのファイルとも数式・値の一致でつながりませんでした。
@@ -995,6 +998,9 @@ body.relgraph-noscroll{overflow:hidden}
 
     
     <h3 class="sub-h">2-4　関係の一覧（付録）— どのシートが、どのキーで、どうつながっているか</h3>
+    <!-- 付録は行数が多く、読み合わせでは普段たたんでおきたい。既定は閉じる -->
+    <details class="fileblk">
+      <summary><b>関係の一覧を開く</b><span class="rows">30 件</span></summary>
     <div style="overflow-x:auto">
       <table class="ot dl">
         <tr><th>元（表・列）</th><th>キー</th><th>処理</th><th>先（表・列）</th><th>根拠（数式・一致）</th><th>確度</th></tr>
@@ -1031,6 +1037,7 @@ body.relgraph-noscroll{overflow:hidden}
       </table>
       <p class="tbl-note">※ 関係が多いため流れの順に上位 30 件を掲載しています（全 908 件）。残りはお打ち合わせで画面をご覧いただけます。</p>
     </div>
+    </details>
     <div class="callout info">
       <span class="mark">ℹ️</span>
       <span>別ブックを参照する数式（外部リンク）は追跡していますが、参照先のファイルをいただいていない場合・リンクが切れている場合は追跡できません。
@@ -1184,16 +1191,19 @@ body.relgraph-noscroll{overflow:hidden}
 </script>
 <script>
 (function(){
+  // 最終アウトプットごとに図を出すので、1ページに複数のインスタンスが並ぶ。
+  // id は sfx（data-relgraph の値）で分ける。描画ロジックは元のまま。
+  function initGraph(sfx){
   try{
-    var wrap=document.getElementById('relgraph-wrap');
-    var host=document.getElementById('relgraph');
-    var dataEl=document.getElementById('relgraph-data');
-    var pbody=document.getElementById('relgraph-pbody');
-    var crumbsEl=document.getElementById('relgraph-crumbs');
+    var wrap=document.getElementById('relgraph-wrap'+sfx);
+    var host=document.getElementById('relgraph'+sfx);
+    var dataEl=document.getElementById('relgraph-data'+sfx);
+    var pbody=document.getElementById('relgraph-pbody'+sfx);
+    var crumbsEl=document.getElementById('relgraph-crumbs'+sfx);
     if(!wrap||!host||!dataEl) return;
     var data=JSON.parse(dataEl.textContent);
     if(!data||!data.nodes||!data.nodes.length) return;
-    var staticEl=document.querySelector('.map-static'); if(staticEl) staticEl.style.display='none';
+    var staticEl=document.querySelector('.map-static[data-graph="'+sfx+'"]'); if(staticEl) staticEl.style.display='none';
     wrap.style.display='grid';
 
     var NS='http://www.w3.org/2000/svg';
@@ -1430,9 +1440,13 @@ body.relgraph-noscroll{overflow:hidden}
 
     apply(); draw(); render(); kick(1);
   }catch(e){
-    var w=document.getElementById('relgraph-wrap'); if(w) w.style.display='none';
-    var s=document.querySelector('.map-static'); if(s) s.style.display='';
+    var w=document.getElementById('relgraph-wrap'+sfx); if(w) w.style.display='none';
+    var st=document.querySelector('.map-static[data-graph="'+sfx+'"]'); if(st) st.style.display='';
   }
+  }
+  // data-relgraph を持つ要素ぶん初期化する（最終アウトプットごとに1つ）
+  var hosts=document.querySelectorAll('[data-relgraph]');
+  for(var gi=0;gi<hosts.length;gi++) initGraph(hosts[gi].getAttribute('data-relgraph'));
 })();
 </script>
 </body>
