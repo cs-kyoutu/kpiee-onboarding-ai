@@ -2023,9 +2023,14 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   // 説明文だけを並べていたときは「で、それはどの列で突き合わせているのか」が読み取れず、
   // 自動検出できなかった関係については読み合わせで毎回そこから聞き直しになっていた。
   const fileCols = buildFileColumnIndex(regions);
-  const declaredRows = declaredRels.map(d => ({
-    d, hints: joinKeyHints(fileCols.get(d.fromFile), fileCols.get(d.toFile)),
-  }));
+  // 並びは 01 のファイル一覧と同じく、名前の先頭番号（①②…）順にする。
+  // 登録した順に並べると、読み合わせで 01 と行き来したときに探す順序が変わってしまう。
+  const declaredRows = declaredRels
+    .map(d => ({ d, hints: joinKeyHints(fileCols.get(d.fromFile), fileCols.get(d.toFile)) }))
+    .sort((a, b) => {
+      const na = fileNameOf(a.d.fromFile); const nb = fileNameOf(b.d.fromFile);
+      return (fileOrderNo(na) - fileOrderNo(nb)) || na.localeCompare(nb, 'ja');
+    });
   const showFileFlow = multiFile && spec.items.fileFlow;
 
   // ---- 節番号 ----
