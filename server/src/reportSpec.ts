@@ -20,11 +20,11 @@ export interface ReportSpecSections {
 }
 
 export interface ReportSpecItems {
-  /** 01 ブック（ファイル）別の一覧表 */
+  /** 01 ファイルごとの役割と中身（開閉ブロックの一覧そのもの） */
   fileTable: boolean;
-  /** 01 ブックの中身（シートの役割・列構成） */
+  /** 01 開閉ブロックの中身（シートの役割・表と列の構成）。false なら見出し行だけ */
   sheetDetails: boolean;
-  /** 01 ご登録のブック関係と自動解析の突き合わせ */
+  /** 02 ご登録のブック関係と自動解析の突き合わせ（全体関係図の下） */
   declaredAudit: boolean;
   /** 02 全体関係図（ブック間）。1ブック案件では指定に関わらず出ない */
   fileFlow: boolean;
@@ -39,11 +39,11 @@ export interface ReportSpecItems {
 export interface ReportSpec {
   /** レポート表題。空なら既定（ご提供データの構造分析レポート） */
   title: string;
-  /** この案件で特に確認したいこと。まとめの先頭へ1行入る */
+  /** この案件で特に確認したいこと。表紙のリード文へ1行入る */
   focus: string;
   sections: ReportSpecSections;
   items: ReportSpecItems;
-  /** まとめへ足す補足（案件固有の前提など） */
+  /** 01 の「この案件の前提」へ足す補足（案件固有の前提など） */
   notes: string[];
 }
 
@@ -67,8 +67,8 @@ export const REPORT_SECTION_LABELS: Record<keyof ReportSpecSections, string> = {
 };
 
 export const REPORT_ITEM_LABELS: Record<keyof ReportSpecItems, string> = {
-  fileTable: 'ブック（ファイル）別の一覧表',
-  sheetDetails: 'ブックの中身（シートの役割・列構成）',
+  fileTable: 'ファイルごとの役割と中身（一覧）',
+  sheetDetails: '一覧を開いたときの中身（シートの役割・列構成）',
   declaredAudit: 'ご登録のブック関係との突き合わせ',
   fileFlow: '全体関係図（ブックどうしの流れ）',
   erDiagram: 'キー関係図（ER）',

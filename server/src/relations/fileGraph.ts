@@ -35,10 +35,10 @@ export const groupOf = (t: Edge['type']): Group =>
 
 // 4色は色覚多様性チェック（validate_palette）通過済みの組。ラベル併記で色だけに頼らない。
 export const GROUP_META: Record<Group, { label: string; color: string; cls: string; dashed: boolean }> = {
-  ref:  { label: '参照・照合（VLOOKUP等）', color: '#1F5FAE', cls: 'lookup', dashed: false },
-  agg:  { label: '集計（SUMIFS・SUM等）',   color: '#1E9E6A', cls: 'agg',    dashed: false },
-  move: { label: '転記・計算（=参照・四則）', color: '#7B5EA7', cls: 'move',   dashed: false },
-  copy: { label: '手修正推定（要確認）',   color: '#B96A00', cls: 'copy',   dashed: true },
+  ref:  { label: '参照・照合', color: '#1F5FAE', cls: 'lookup', dashed: false },
+  agg:  { label: '集計',   color: '#1E9E6A', cls: 'agg',    dashed: false },
+  move: { label: '転記・計算', color: '#7B5EA7', cls: 'move',   dashed: false },
+  copy: { label: '手作業コピーの疑い',   color: '#B96A00', cls: 'copy',   dashed: true },
 };
 export const GROUP_ORDER: Group[] = ['ref', 'agg', 'move', 'copy'];
 
@@ -102,7 +102,17 @@ export function computeLayers(ids: string[], pairs: PairAgg[]): Map<string, numb
 // ============================================================
 // ファイル(ブック)ペア単位の集約
 // ============================================================
-export interface FilePair { from: string; to: string; counts: Partial<Record<Group, number>>; total: number }
+export interface FilePair {
+  from: string; to: string; counts: Partial<Record<Group, number>>; total: number;
+  /**
+   * 担当者が登録した関係だが、数式・値のどちらからも検出できなかった対。
+   * counts は空・total は 0 になる。全体関係図に「ご登録のみ」の線として描くために、
+   * 検出済みの対と同じ形で流し込めるようにしている（役割判定・段の計算も同じ経路を通す）。
+   */
+  declaredOnly?: boolean;
+  /** declaredOnly のとき、担当者が登録した種別を色に反映するための分類 */
+  declaredGroup?: Group;
+}
 
 /** 表領域ペアをファイル単位へ畳む。ファイル内の流れは対象外（シート単位の図で見せる） */
 export function aggregateFilePairs(regions: Region[], pairs: PairAgg[]): FilePair[] {
