@@ -2876,18 +2876,20 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   // 回答欄は textarea。画面でそのまま書き込め、内容はブラウザに保存される（下部スクリプト）。
   const qCards = questions.map(q => {
     const anchor = q.id.toLowerCase();
-    const ask = Array.isArray(q.ask)
-      ? `<ul class="qlist">${q.ask.map(a => `<li>${esc(a)}</li>`).join('')}</ul>`
-      : esc(q.ask);
+    // 1行でも箇条書きのままにする（編集で行を足したり消したりできるようにするため）
+    const askItems = Array.isArray(q.ask) ? q.ask : [q.ask];
+    const ask = `<ul class="qlist">${askItems.map(a => `<li>${esc(a)}</li>`).join('')}</ul>`;
+    const noAnalysis = (q.analysis ?? '').trim() === '';
+    const noWhere = (q.detail ?? []).length === 0;
+    // data-* は編集機能が読み書きする値。表示に使う文字列と同じものを属性にも持たせておく
     return `
-    <div class="qcard${q.priority === 'high' ? ' p-high' : ''}">
-      <div class="qhead"><span class="qid" id="${anchor}">${q.id}</span><span class="qtag ${q.priority === 'high' ? 'high' : 'mid'}">優先度 ${q.priority === 'high' ? '高' : '中'}</span><span class="qtag kind">${esc(q.kind)}</span></div>
-      <div class="qtitle">${esc(q.title)}</div>
+    <div class="qcard${q.priority === 'high' ? ' p-high' : ''}" data-qid="${q.id}" data-priority="${q.priority}">
+      <div class="qhead"><span class="qid" id="${anchor}">${q.id}</span><span class="qtag ${q.priority === 'high' ? 'high' : 'mid'}" data-role="priority">優先度 ${q.priority === 'high' ? '高' : '中'}</span><span class="qtag kind" data-role="kind">${esc(q.kind)}</span><span class="qcard-tools" hidden><button type="button" class="qdel" title="この設問を消す">削除</button></span></div>
+      <div class="qtitle" data-role="title">${esc(q.title)}</div>
       <dl class="qgrid">
-        ${q.analysis ? `<dt>わかったこと</dt><dd>${esc(q.analysis)}</dd>` : ''}
-      ${q.detail && q.detail.length > 0 ? `<dt>どこか</dt><dd><ul class="qwhere">${q.detail.map(d => `<li>${esc(d)}</li>`).join('')}</ul></dd>` : ''}
-        <dt>教えてください</dt><dd>${ask}</dd>
-
+        <dt data-for="analysis"${noAnalysis ? ' hidden' : ''}>わかったこと</dt><dd data-role="analysis"${noAnalysis ? ' hidden' : ''}>${esc(q.analysis ?? '')}</dd>
+        <dt data-for="where"${noWhere ? ' hidden' : ''}>どこか</dt><dd data-role="where"${noWhere ? ' hidden' : ''}><ul class="qwhere">${(q.detail ?? []).map(d => `<li>${esc(d)}</li>`).join('')}</ul></dd>
+        <dt>教えてください</dt><dd data-role="ask">${ask}</dd>
       </dl>
       <label class="ans-h" for="ans-${anchor}">ご回答メモ</label>
       <textarea class="ansbox" id="ans-${anchor}" placeholder="この場でご入力いただけます"></textarea>
@@ -3165,14 +3167,25 @@ ${secOn.questions ? `
 <section class="alt">
   <div class="wrap">
     <div class="sec-head">
-      <h2><span class="secno">${noQuestions}</span>ご確認いただきたい点　${questions.length}件</h2>
-      <p class="sec-lede">${sentences(
-        `数式が残っている箇所は中身をそのまま読み取れましたが、以下の ${questions.length} 点は、いただいたファイルからは判断がつきませんでした。`,
+      <h2><span class="secno">${noQuestions}</span>ご確認いただきたい点　<span id="qcount">${questions.length}</span>件</h2>
+      <p class="sec-lede" id="qlede">${sentences(
+        `数式が残っている箇所は中身をそのまま読み取れましたが、以下の <span id="qcount2">${questions.length}</span> 点は、いただいたファイルからは判断がつきませんでした。`,
         'お打ち合わせの場で結構ですので、わかる範囲でお聞かせください。',
         'メモ欄はこの画面に直接ご入力いただけます。入力内容はこのブラウザに保存され、印刷にもそのまま出ます。',
       )}</p>
+      <!-- 読み合わせの前に、こちらで文面を直したり、要らない設問を消したりするための道具。
+           編集内容はブラウザに保存され、「HTMLとして保存」で配布用のファイルにも焼き込める。 -->
+      <div class="qedit-bar" id="qedit-bar" hidden>
+        <button type="button" id="qedit-toggle">設問を編集する</button>
+        <span class="qedit-tools" hidden>
+          <button type="button" id="qedit-add">＋ 設問を追加</button>
+          <button type="button" id="qedit-export">HTML として保存</button>
+          <button type="button" id="qedit-reset">元に戻す</button>
+          <span class="qedit-note">文章はクリックして直接書き換えられます。番号は本文からの参照を保つため振り直しません。</span>
+        </span>
+      </div>
     </div>
-    ${qCards}
+    <div id="qcards">${qCards}</div>
   </div>
 </section>` : ''}
 
@@ -3210,6 +3223,7 @@ ${secOn.nextSteps ? `
   <div class="wrap">© dataX Inc.　|　kpiee データ構造分析レポート　${dateStr} 生成　|　本資料は貴社との確認用資料であり、社外への共有はお控えください。</div>
 </footer>
 <script>${REPORT_PRINT_JS}</script>
+${secOn.questions ? `<script>${REPORT_QEDIT_JS}</script>` : ''}
 ${map && spec.items.interactiveGraph ? `<script>${REPORT_GRAPH_JS}</script>` : ''}
 </body>
 </html>
@@ -3362,6 +3376,25 @@ details.fileblk[open]>summary::before{transform:rotate(90deg)}
 .qwhere li+li{border-top:1px dotted var(--line)}
 .qwhere li::before{content:'・';position:absolute;left:0;color:var(--sub)}
 /* ご回答メモ。画面上でそのまま入力でき、内容はブラウザに保存される。印刷にもそのまま出る */
+/* ---- 03 設問の編集（読み合わせ前に文面を直す・要らない設問を消す）---- */
+.qedit-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px}
+.qedit-bar button{font-family:var(--body);font-size:12.5px;border:1px solid var(--line);background:#fff;
+  color:var(--ink);border-radius:8px;padding:5px 12px;cursor:pointer}
+.qedit-bar button:hover{border-color:var(--blue);color:var(--blue)}
+.qedit-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+/* display を指定した要素は hidden 属性（UA の display:none）に勝ってしまうので明示する。
+   これが無いと JS 無効の環境で編集の道具立てだけが出る */
+.qedit-bar[hidden],.qedit-tools[hidden],.qcard-tools[hidden]{display:none}
+.qedit-note{font-size:11.5px;color:var(--sub)}
+.qcard-tools{margin-left:auto}
+.qcard-tools .qdel{font-family:var(--body);font-size:11.5px;border:1px solid #E8C9C9;background:#fff;color:var(--red);
+  border-radius:8px;padding:3px 10px;cursor:pointer}
+.qaddrow{display:block;margin-top:6px;font-family:var(--body);font-size:11.5px;border:1px dashed var(--line);
+  background:#fff;color:var(--sub);border-radius:8px;padding:3px 10px;cursor:pointer}
+/* 編集中だけ、書き換えられる場所が分かるようにする */
+#qcards.editing [contenteditable]{outline:1px dashed #C9DEF4;outline-offset:2px;border-radius:4px}
+#qcards.editing [contenteditable]:focus{outline:2px solid var(--blue);background:#fff}
+#qcards.editing [data-role=priority]{cursor:pointer}
 .ansbox{margin-top:12px;display:block;width:100%;border:1.5px dashed var(--line);border-radius:10px;min-height:76px;padding:10px 12px;font-family:var(--body);font-size:13px;line-height:1.75;color:var(--text);background:#FCFDFE;resize:vertical}
 .ansbox::placeholder{color:var(--sub)}
 .ansbox:focus{outline:none;border-color:var(--blue);border-style:solid;background:#fff}
@@ -3564,6 +3597,9 @@ body.relgraph-noscroll{overflow:hidden}
   header::after{display:none}
   section{padding:28px 0}
   .qcard{page-break-inside:avoid}
+  /* 編集の道具は紙に出さない */
+  .qedit-bar,.qcard-tools,.qaddrow{display:none !important}
+  #qcards.editing [contenteditable]{outline:none}
   /* 印刷時は折りたたみを全て開いて紙に載せる（details[open] は JS で付ける） */
   .fileblk{page-break-inside:avoid}
   .fileblk>summary{list-style:none}
@@ -3595,22 +3631,256 @@ const REPORT_PRINT_JS = `
   });
 })();
 
-// 03 のご回答メモ。読み合わせ中に再読み込みしても消えないようブラウザに保存し、
-// 入力量にあわせて高さを伸ばす（印刷時に末尾が切れないようにするため）。
+// ご回答メモの保存と高さ調整は REPORT_QEDIT_JS 側で面倒を見る（設問の作り直しと同じ場所に置く。
+// ここで別に束ねると、設問を編集して作り直した後のカードにイベントが付かない）。
+`;
+
+/**
+ * 03「ご確認いただきたい点」の編集。
+ *
+ * なぜ必要か:
+ *   自動で出した設問は、そのまま顧客へ出せるものと、こちらの言い方に直したいもの、
+ *   案件では論点にならないものが混ざる。これまではレポートを再生成しないと直せなかったため、
+ *   読み合わせの直前に文面を整えることができなかった。
+ *
+ * できること: 文章の書き換え／行の追加・削除／設問の追加・削除／優先度と種別の切り替え。
+ * 保存は2段構え —
+ *   ・自動保存（localStorage）… 同じブラウザで開き直しても消えない
+ *   ・HTML として保存      … 編集後の状態を焼き込んだファイルを書き出す（配布・添付用）
+ * 番号は振り直さない。本文（02 の説明文や図のラベル）から Q-01 のように参照しているため、
+ * 振り直すと参照だけが古い番号を指す。
+ * ※テンプレートリテラルに埋めるためバッククォート/${ は使わない。
+ */
+const REPORT_QEDIT_JS = `
 (function(){
-  var KEY = 'kpiee-ansmemo:' + location.pathname + ':';
-  var boxes = document.querySelectorAll('textarea.ansbox');
-  function grow(t){ t.style.height = 'auto'; t.style.height = Math.max(76, t.scrollHeight + 2) + 'px'; }
-  for (var i = 0; i < boxes.length; i++) {
-    (function(t){
-      try { var saved = localStorage.getItem(KEY + t.id); if (saved) t.value = saved; } catch (e) {}
-      grow(t);
-      t.addEventListener('input', function(){
-        grow(t);
-        try { localStorage.setItem(KEY + t.id, t.value); } catch (e) {}
-      });
-    })(boxes[i]);
+  var wrap = document.getElementById('qcards');
+  var bar = document.getElementById('qedit-bar');
+  if (!wrap || !bar) return;
+  var KEY = 'kpiee-qedit:' + location.pathname;
+  var MEMO = 'kpiee-ansmemo:' + location.pathname + ':';
+  var tools = bar.querySelector('.qedit-tools');
+  var editing = false;
+
+  function txt(el){ return el ? (el.textContent || '').replace(/\\s+$/, '') : ''; }
+  function items(dd){
+    var out = [], lis = dd ? dd.querySelectorAll('li') : [];
+    for (var i = 0; i < lis.length; i++) { var t = txt(lis[i]).trim(); if (t) out.push(t); }
+    return out;
   }
+  /** 画面のカードから状態を読む。表示中の DOM がそのまま保存対象になる */
+  function readState(){
+    var out = [], cards = wrap.querySelectorAll('.qcard');
+    for (var i = 0; i < cards.length; i++) {
+      var c = cards[i];
+      out.push({
+        id: c.getAttribute('data-qid') || '',
+        priority: c.getAttribute('data-priority') === 'high' ? 'high' : 'mid',
+        kind: txt(c.querySelector('[data-role=kind]')).trim(),
+        title: txt(c.querySelector('[data-role=title]')).trim(),
+        analysis: txt(c.querySelector('[data-role=analysis]')).trim(),
+        where: items(c.querySelector('[data-role=where]')),
+        ask: items(c.querySelector('[data-role=ask]'))
+      });
+    }
+    return out;
+  }
+  function esc(s){
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function liList(cls, arr){
+    var h = '';
+    for (var i = 0; i < arr.length; i++) h += '<li>' + esc(arr[i]) + '</li>';
+    return '<ul class="' + cls + '">' + h + '</ul>';
+  }
+  function cardHtml(q){
+    var anchor = q.id.toLowerCase();
+    var hiA = q.analysis ? '' : ' hidden';
+    var hiW = q.where.length ? '' : ' hidden';
+    return '<div class="qcard' + (q.priority === 'high' ? ' p-high' : '') + '" data-qid="' + esc(q.id) + '" data-priority="' + q.priority + '">'
+      + '<div class="qhead"><span class="qid" id="' + anchor + '">' + esc(q.id) + '</span>'
+      + '<span class="qtag ' + q.priority + '" data-role="priority">優先度 ' + (q.priority === 'high' ? '高' : '中') + '</span>'
+      + '<span class="qtag kind" data-role="kind">' + esc(q.kind) + '</span>'
+      + '<span class="qcard-tools"' + (editing ? '' : ' hidden') + '><button type="button" class="qdel" title="この設問を消す">削除</button></span></div>'
+      + '<div class="qtitle" data-role="title">' + esc(q.title) + '</div>'
+      + '<dl class="qgrid">'
+      + '<dt data-for="analysis"' + hiA + '>わかったこと</dt><dd data-role="analysis"' + hiA + '>' + esc(q.analysis) + '</dd>'
+      + '<dt data-for="where"' + hiW + '>どこか</dt><dd data-role="where"' + hiW + '>' + liList('qwhere', q.where) + '</dd>'
+      + '<dt>教えてください</dt><dd data-role="ask">' + liList('qlist', q.ask) + '</dd>'
+      + '</dl>'
+      + '<label class="ans-h" for="ans-' + anchor + '">ご回答メモ</label>'
+      + '<textarea class="ansbox" id="ans-' + anchor + '" placeholder="この場でご入力いただけます"></textarea>'
+      + '</div>';
+  }
+  function render(state){
+    var h = '';
+    for (var i = 0; i < state.length; i++) h += cardHtml(state[i]);
+    wrap.innerHTML = h;
+    restoreMemos();
+    if (editing) applyEditable(true);
+    count(state.length);
+  }
+  function restoreMemos(){
+    var boxes = wrap.querySelectorAll('textarea.ansbox');
+    for (var i = 0; i < boxes.length; i++) {
+      var t = boxes[i];
+      try { var v = localStorage.getItem(MEMO + t.id); if (v) t.value = v; } catch (e) {}
+      t.style.height = 'auto';
+      t.style.height = Math.max(76, t.scrollHeight + 2) + 'px';
+    }
+  }
+  function count(n){
+    var a = document.getElementById('qcount'); if (a) a.textContent = n;
+    var b = document.getElementById('qcount2'); if (b) b.textContent = n;
+  }
+  function save(){
+    try { localStorage.setItem(KEY, JSON.stringify(readState())); } catch (e) {}
+    count(wrap.querySelectorAll('.qcard').length);
+  }
+
+  /** 編集モードの ON/OFF。文章は contenteditable、行と設問はボタンで足し引きする */
+  function applyEditable(on){
+    var sel = '[data-role=title],[data-role=analysis],.qwhere li,[data-role=ask] li,[data-role=kind]';
+    var els = wrap.querySelectorAll(sel);
+    for (var i = 0; i < els.length; i++) {
+      if (on) els[i].setAttribute('contenteditable', 'true');
+      else els[i].removeAttribute('contenteditable');
+    }
+    var t = wrap.querySelectorAll('.qcard-tools');
+    for (var j = 0; j < t.length; j++) t[j].hidden = !on;
+    // 空の「わかったこと」「どこか」も編集中だけ出す（普段は見出しだけ残っても意味が無い）
+    var hid = wrap.querySelectorAll('dt[data-for],dd[data-role=analysis],dd[data-role=where]');
+    for (var k = 0; k < hid.length; k++) {
+      if (on) { hid[k].dataset.washidden = hid[k].hidden ? '1' : ''; hid[k].hidden = false; }
+      else if (hid[k].dataset.washidden === '1') hid[k].hidden = true;
+    }
+    // 行を足すボタン
+    var lists = wrap.querySelectorAll('[data-role=where],[data-role=ask]');
+    for (var m = 0; m < lists.length; m++) {
+      var dd = lists[m];
+      var b = dd.querySelector('.qaddrow');
+      if (on && !b) {
+        b = document.createElement('button');
+        b.type = 'button'; b.className = 'qaddrow'; b.textContent = '＋ 行を追加';
+        dd.appendChild(b);
+      } else if (!on && b) { b.parentNode.removeChild(b); }
+    }
+    wrap.classList.toggle('editing', on);
+  }
+
+  // 節の導入文も直せるようにする（件数の言い方や依頼の書き方は案件で変わる）
+  var lede = document.getElementById('qlede');
+  var LKEY = KEY + ':lede';
+  function bindLede(on){
+    if (!lede) return;
+    if (on) lede.setAttribute('contenteditable', 'true');
+    else lede.removeAttribute('contenteditable');
+  }
+  if (lede) {
+    try { var lv = localStorage.getItem(LKEY); if (lv) lede.innerHTML = lv; } catch (e) {}
+    lede.addEventListener('input', function(){
+      try { localStorage.setItem(LKEY, lede.innerHTML); } catch (e) {}
+    });
+  }
+
+  bar.hidden = false;
+  bar.querySelector('#qedit-toggle').addEventListener('click', function(){
+    editing = !editing;
+    this.textContent = editing ? '編集を終える' : '設問を編集する';
+    tools.hidden = !editing;
+    applyEditable(editing);
+    bindLede(editing);
+    if (!editing) save();
+  });
+
+  wrap.addEventListener('input', function(e){
+    if (e.target && e.target.classList && e.target.classList.contains('ansbox')) {
+      var t = e.target;
+      t.style.height = 'auto'; t.style.height = Math.max(76, t.scrollHeight + 2) + 'px';
+      try { localStorage.setItem(MEMO + t.id, t.value); } catch (err) {}
+      return;
+    }
+    save();
+  });
+  wrap.addEventListener('click', function(e){
+    var el = e.target;
+    if (!el || !el.classList) return;
+    if (el.classList.contains('qdel')) {
+      var card = el.closest('.qcard');
+      if (card && confirm('この設問を消します。よろしいですか？')) { card.parentNode.removeChild(card); save(); }
+      return;
+    }
+    if (el.classList.contains('qaddrow')) {
+      var dd = el.closest('dd');
+      var ul = dd.querySelector('ul');
+      var li = document.createElement('li');
+      li.setAttribute('contenteditable', 'true');
+      li.textContent = '（ここに書いてください）';
+      ul.appendChild(li);
+      li.focus();
+      save();
+      return;
+    }
+    // 優先度は札を押すだけで切り替える
+    if (el.getAttribute && el.getAttribute('data-role') === 'priority' && editing) {
+      var c = el.closest('.qcard');
+      var high = c.getAttribute('data-priority') !== 'high';
+      c.setAttribute('data-priority', high ? 'high' : 'mid');
+      c.classList.toggle('p-high', high);
+      el.className = 'qtag ' + (high ? 'high' : 'mid');
+      el.textContent = '優先度 ' + (high ? '高' : '中');
+      save();
+    }
+  });
+
+  bar.querySelector('#qedit-add').addEventListener('click', function(){
+    var state = readState();
+    // 番号は既にある最大値の次。振り直さないので本文からの参照が生きたまま残る
+    var max = 0;
+    for (var i = 0; i < state.length; i++) {
+      var m = /Q-(\\d+)/.exec(state[i].id);
+      if (m && Number(m[1]) > max) max = Number(m[1]);
+    }
+    var id = 'Q-' + (max + 1 < 10 ? '0' : '') + (max + 1);
+    state.push({
+      id: id, priority: 'mid', kind: 'ご確認事項',
+      title: '（ここに確認したいことを書いてください）',
+      analysis: '', where: [], ask: ['（教えていただきたいことを書いてください）']
+    });
+    render(state);
+    save();
+    var last = wrap.querySelector('.qcard:last-child [data-role=title]');
+    if (last) { last.focus(); }
+  });
+
+  bar.querySelector('#qedit-export').addEventListener('click', function(){
+    // 編集の跡（contenteditable・ボタン・編集バー）を落としてから書き出す。
+    // textarea の入力値は outerHTML に出ないので、中身へ写してから複製する。
+    var wasEditing = editing;
+    if (wasEditing) { applyEditable(false); bindLede(false); }
+    var boxes = document.querySelectorAll('textarea.ansbox');
+    for (var i = 0; i < boxes.length; i++) boxes[i].textContent = boxes[i].value;
+    var html = '<!DOCTYPE html>\\n' + document.documentElement.outerHTML;
+    if (wasEditing) { applyEditable(true); bindLede(true); }
+    var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    var base = (document.title || 'report').replace(/[\\\\\\/:*?"<>|]/g, '_');
+    a.download = base + '（編集済み）.html';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
+  });
+
+  bar.querySelector('#qedit-reset').addEventListener('click', function(){
+    if (!confirm('編集内容を消して、生成時の設問に戻します。よろしいですか？')) return;
+    try { localStorage.removeItem(KEY); localStorage.removeItem(LKEY); } catch (e) {}
+    location.reload();
+  });
+
+  // 保存済みの編集があれば、それで置き換える（無ければ生成時のまま）
+  var saved = null;
+  try { saved = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) {}
+  if (saved && saved.length >= 0 && Object.prototype.toString.call(saved) === '[object Array]') render(saved);
+  else restoreMemos();
 })();
 `;
 
