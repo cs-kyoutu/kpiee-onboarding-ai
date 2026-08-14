@@ -1,4 +1,4 @@
-// 顧客共有用「データ構造 分析レポート」(自己完結 HTML) の生成。
+﻿// 顧客共有用「データ構造 分析レポート」(自己完結 HTML) の生成。
 //
 // 目的: 受領データの関係分析（RelationGraph）を、顧客との読み合わせに使える1枚のHTMLへ整形する。
 //   - 確定事項（数式由来）と推定（値一致・構造推定）を視覚的に分離し、確認は推定部分だけに絞る
@@ -2961,11 +2961,11 @@ ${secOn.inventory ? `
     <p class="graph-guide">各行をクリックすると、そのファイルのシートの役割と表・列の構成が開きます。列の色分け：<span class="colchip key">キー列</span> <span class="colchip formula">数式列</span> <span class="colchip manual">手入力の数値</span></p>
 ${fileList}` : ''}
 
-    <!-- 案件固有の前提は、どのファイルが何なのかを見たあとに読む情報。ファイル一覧より前に
+    <!-- 前提は、どのファイルが何なのかを見たあとに読む情報。ファイル一覧より前に
          置くと、まだ登場していないファイル名やコード名を含む文章を先に読ませることになる -->
     ${premises.length > 0 ? `
     <div class="summary">
-      <div class="stitle">この案件の前提</div>
+      <div class="stitle">今回の前提</div>
       <ul>
         ${premises.map(n => `<li>${esc(n)}</li>`).join('\n        ')}
       </ul>
@@ -3022,7 +3022,7 @@ ${secOn.flow ? `
       ${fileFlowGroups.map(g => `<span class="li"><span class="sw${GROUP_META[g].dashed ? ' dash' : ''}" style="border-color:${GROUP_META[g].color}"></span>${esc(GROUP_META[g].label)}</span>`).join('\n      ')}
       ${declaredOnlyPairs.length > 0 ? `<span class="li"><span class="sw dot" style="border-color:${DECLARED_ONLY.color}"></span>${esc(DECLARED_ONLY.label)}</span>` : ''}
     </div>` : ''}
-    ${spec.items.declaredAudit && declaredRels.length > 0 ? `<p class="tbl-note">ブックどうしの関係は ${declaredRels.length} 件ご登録いただいており、うち ${matchedRels} 件は、いただいたファイルの中でも同じつながりを確認できました。${matchedRels < declaredRels.length ? `食い違った ${declaredRels.length - matchedRels} 件は${noQuestions ? ` ${noQuestions} ` : 'お打ち合わせ'}でお伺いします。` : ''}</p>` : ''}
+    ${spec.items.declaredAudit && declaredRels.length > 0 ? `<p class="tbl-note">ファイルどうしの受け渡しは、うかがった内容をもとに ${declaredRels.length} 件として整理しています。うち ${matchedRels} 件は、いただいたファイルの中でも同じつながりを確認できました。${matchedRels < declaredRels.length ? `確認できなかった ${declaredRels.length - matchedRels} 件は${noQuestions ? ` ${noQuestions} ` : 'お打ち合わせ'}でお伺いします。` : ''}</p>` : ''}
     ${declaredRows.length > 0 ? `
     ${subH('ファイル間の受け渡しと、突合キーの候補')}
     <p class="graph-guide">うかがった受け渡しの内容と、その突合に使えそうな列です。この理解で合っているかをご覧ください。</p>
@@ -3342,7 +3342,7 @@ h2{font-family:var(--disp);font-weight:700;font-size:26px;color:var(--ink);line-
 .legend .li{display:inline-flex;align-items:center;gap:7px;color:var(--text)}
 .legend .sw{width:22px;height:0;border-top:3px solid;border-radius:2px}
 .legend .sw.dash{border-top-style:dashed}
-/* ご登録のみ（Excel上に根拠なし）の線。値一致の破線ともう一段違う点線にする */
+/* うかがった内容だけが根拠の線。値一致の破線ともう一段違う点線にする */
 .legend .sw.dot{border-top-style:dotted}
 /* 折りたたみブロック（01 のブック別）。三角は自前で描く */
 details.fileblk>summary{list-style:none}
@@ -3464,7 +3464,7 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
 .av.warn{background:var(--amber-bg);color:var(--amber)}
 .av.ng{background:var(--red-bg);color:var(--red)}
 
-/* ---- 02 ご登録いただいたブック関係の一覧（全体関係図の直下）---- */
+/* ---- 02 うかがった受け渡しの一覧（全体関係図の直下）---- */
 .seg-list{font-size:12.5px;line-height:1.8}
 .seg-list p{margin:0}
 .seg-list p+p{margin-top:7px;padding-top:7px;border-top:1px dashed var(--line)}
@@ -3772,7 +3772,7 @@ const REPORT_QEDIT_JS = `
     wrap.classList.toggle('editing', on);
   }
 
-  // 節の導入文も直せるようにする（件数の言い方や依頼の書き方は案件で変わる）
+  // 節の導入文も直せるようにする（件数の言い方や依頼の書き方は、お客様ごとに変わる）
   var lede = document.getElementById('qlede');
   var LKEY = KEY + ':lede';
   function bindLede(on){
