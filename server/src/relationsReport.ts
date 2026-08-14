@@ -2386,6 +2386,15 @@ interface Recipe {
   dstCols: string[];                             // そこにできる項目（列）
   srcs: { label: string; kind: string; key: string; group: Group }[];
   keys: string[];                                // 突合に使われているキー（重複除く）
+  /**
+   * どうやって元と先を対応づけているか。
+   *   key        … 突合キーの列が数式から読み取れた（VLOOKUP・SUMIFS の照合列など）
+   *   position   … キーで突き合わせておらず、同じ位置のセルを指している（＝縦横が揃っている前提）
+   *   unknown    … 引き当ての式なのに、照合列を読み取れなかった
+   * 以前はどれも「キー未特定」と出していたため、キーで突合していない箇所まで
+   * 「キーが分からない」と読めてしまい、何を確認すればよいのかが伝わらなかった。
+   */
+  match: 'key' | 'position' | 'unknown';
   noHeaderCols: string[];                        // 見出しが無く「D列」のように表示している列
 }
 /**
@@ -2479,6 +2488,11 @@ function buildRecipes(
       const srcs = picked.map(([sid, v]) => ({
         label: nameOf(sid), kind: kindOf(sid), key: v.key, group: v.group,
       }));
+      const keys = [...new Set(srcs.flatMap(s => (s.key ? [prettyKey(s.key).text] : [])).filter(Boolean))];
+      // キーが取れないときの意味は2通り。引き当ての式（VLOOKUP 等）なら「照合列を読み取れなかった」、
+      // そうでなければ「そもそもキーで突き合わせておらず、同じ位置のセルを指している」。
+      const match: Recipe['match'] = keys.length > 0 ? 'key'
+        : srcs.some(s => s.group === 'ref') ? 'unknown' : 'position';
       return {
         file: one,
         dst: nameOf(dstId),
@@ -2486,7 +2500,8 @@ function buildRecipes(
         dstIsOutput: roles.get(dstId) === '最終アウトプット',
         dstCols: [...d.cols].slice(0, RECIPE_COL_CAP),
         srcs,
-        keys: [...new Set(srcs.flatMap(s => (s.key ? [prettyKey(s.key).text] : [])).filter(Boolean))],
+        keys,
+        match,
         noHeaderCols: [...new Set([
           ...srcs.flatMap(s => (s.key ? prettyKey(s.key).noHeader : [])),
           ...[...d.cols].slice(0, RECIPE_COL_CAP).filter(c => PLACEHOLDER_COL.test(c)),
@@ -2501,7 +2516,10 @@ const RCP = { W: 980, SRC_W: 320, DST_W: 300, ROW: 42, BOX_H: 32 };
 function renderRecipeSvg(r: Recipe): string {
   const h = Math.max(96, r.srcs.length * RCP.ROW + 22);
   const cy = h / 2;
-  const keyText = r.keys.length > 0 ? shortText(r.keys.join('・'), 26) : 'キー未特定';
+  const keyText = r.match === 'key' ? shortText(r.keys.join('・'), 26)
+    : r.match === 'position' ? 'セルの位置で対応'
+      : '照合の列を読み取れず';
+  const keyCaption = r.match === 'key' ? '突き合わせる列' : '対応のしかた';
   const keyW = Math.min(280, 26 + keyText.length * 12);
   const keyX = (RCP.W - keyW) / 2 + 30;
   const dstX = RCP.W - RCP.DST_W - 8;
@@ -2518,7 +2536,7 @@ function renderRecipeSvg(r: Recipe): string {
     p.push(kindTag(8, y, RCP.SRC_W, s.kind));
     p.push(`<path d="M${8 + RCP.SRC_W},${scy} C${8 + RCP.SRC_W + 40},${scy} ${keyX - 40},${cy} ${keyX - 4},${cy}" fill="none" stroke="#B9C6D6" stroke-width="1.4"/>`);
   });
-  p.push(`<text x="${keyX + keyW / 2}" y="${cy - 22}" font-size="10" fill="#7A8794" text-anchor="middle">突き合わせる列</text>`);
+  p.push(`<text x="${keyX + keyW / 2}" y="${cy - 22}" font-size="10" fill="#7A8794" text-anchor="middle">${keyCaption}</text>`);
   p.push(`<rect x="${keyX}" y="${cy - 15}" width="${keyW}" height="30" rx="15" fill="#EAF2FB" stroke="#C9DEF4"/>`);
   p.push(`<text x="${keyX + keyW / 2}" y="${cy + 4.5}" font-size="12.5" font-weight="700" fill="#1F5FAE" text-anchor="middle">${esc(fitText(keyText, keyW - 18, 12.5))}</text>`);
   p.push(`<path d="M${keyX + keyW},${cy} L${dstX - 8},${cy}" fill="none" stroke="#7A8794" stroke-width="1.6" marker-end="url(#rcp-ar)"/>`);
@@ -3133,12 +3151,16 @@ ${secOn.flow ? `
 
     ${spec.items.detailLogic ? `
     ${subH('何と何を、何で突き合わせて、何ができるか')}
+    <p class="graph-guide">真ん中の札が、元と先をどう対応づけているかです。<b>列名が出ているもの</b>はその列で突き合わせています。<b>「セルの位置で対応」</b>は、キーで突き合わせず同じ位置のセルを参照しているもので、元の表と行の並び・行数が揃っていることが前提になります（並びが変わると数字がずれます）。kpiee では位置ではなくキーで結ぶため、この箇所は<b>何を突合キーにするか</b>を決めさせてください。</p>
     ${recipes.map(r => `
     <div class="rcp">
       ${r.file ? `<div class="rcp-f">${esc(r.file)} の中で</div>` : ''}
-      <p class="rcp-t">${r.srcs.map(s => `<b>${esc(s.label)}</b>${s.kind}`).join('と')}${r.keys.length > 0
+      <p class="rcp-t">${r.srcs.map(s => `<b>${esc(s.label)}</b>${s.kind}`).join('と')}${r.match === 'key'
         ? `を <b>${esc(shortText(r.keys.join('・'), 40))}</b> の列で突き合わせて`
-        : r.srcs.length > 1 ? 'を合わせて' : 'から'}、${r.dstIsOutput ? '最終アウトプットの' : ''}<b>${esc(r.dst)}</b>${r.dstKind}${r.dstCols.length > 0
+        : r.match === 'position'
+          // キーで突き合わせていないもの。同じ並び・同じ行数であることが前提になっている
+          ? `${r.srcs.length > 1 ? 'を' : 'から'}<b>同じ位置のセル</b>で対応させて`
+          : `${r.srcs.length > 1 ? 'を合わせて' : 'から'}（照合の列は読み取れませんでした）`}、${r.dstIsOutput ? '最終アウトプットの' : ''}<b>${esc(r.dst)}</b>${r.dstKind}${r.dstCols.length > 0
         ? `の <b>${esc(r.dstCols.join('・'))}</b>${/列$/.test(r.dstCols[r.dstCols.length - 1]) ? '' : ' 列'}`
         : 'の数値'}ができます。</p>
       <div class="map-scroll">${renderRecipeSvg(r)}</div>
