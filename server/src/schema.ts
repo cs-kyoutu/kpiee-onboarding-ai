@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS artifacts (
 -- 自動検出（値の一致による手修正推定）は初期案として提示するだけで、確定するのは人。
 -- ファイルの識別は artifact_id（FK）で持つ。関係グラフ側のキーである fileLabelOf(original_filename)
 -- はラベルなのでリネームで壊れる。ラベルへの解決は読み出し時に行う。
+-- step / step_title / adds は「作成手順」の層。手順書をいただけた案件では、受け渡しが
+-- 何番目の作業で、そのとき先のファイルに何が足されるのかまで分かる。レポート 02 の全体関係図を
+-- ステップの帯で描くために使う（未入力なら従来どおり流れの段で描く）。
 CREATE TABLE IF NOT EXISTS file_relations (
   id ${pk},
   project_id INTEGER NOT NULL REFERENCES projects(id),
@@ -46,6 +49,9 @@ CREATE TABLE IF NOT EXISTS file_relations (
   rel_type TEXT NOT NULL,
   note TEXT NOT NULL DEFAULT '',
   origin TEXT NOT NULL DEFAULT 'manual',
+  step INTEGER,
+  step_title TEXT NOT NULL DEFAULT '',
+  adds TEXT NOT NULL DEFAULT '',
   created_at ${ts}
 );
 
@@ -198,4 +204,29 @@ CREATE TABLE IF NOT EXISTS report_chat_messages (
   created_at ${ts}
 );
 `);
+
+  // 既存 DB への列追加。CREATE TABLE IF NOT EXISTS は既存テーブルには効かないため、
+  // 後から足した列はここで補う（新規 DB では上の DDL で既に存在するので何も起きない）。
+  await addColumns(db, 'file_relations', [
+    ['step', 'INTEGER'],
+    ['step_title', "TEXT NOT NULL DEFAULT ''"],
+    ['adds', "TEXT NOT NULL DEFAULT ''"],
+  ]);
+}
+
+/**
+ * 足りない列だけを ALTER TABLE で追加する。
+ * 既存列かどうかの判定は方言差が大きいので、実行して「既にある」系のエラーだけ飲む。
+ * それ以外のエラーは投げ直す（起動時に気付けないと、書き込み時に初めて壊れる）。
+ */
+async function addColumns(db: Db, table: string, cols: [string, string][]): Promise<void> {
+  for (const [name, type] of cols) {
+    try {
+      await db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+    } catch (e) {
+      const m = String(e).toLowerCase();
+      if (m.includes('duplicate column') || m.includes('already exists')) continue;
+      throw e;
+    }
+  }
 }

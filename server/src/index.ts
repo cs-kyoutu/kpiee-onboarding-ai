@@ -33,7 +33,8 @@ import {
 } from './reportChat.js';
 import { REPORT_ITEM_LABELS, REPORT_SECTION_LABELS } from './reportSpec.js';
 import { invalidateBooks } from './qa/tools.js';
-import { aiAvailable, MODEL, estimateCostUsd } from './ai/client.js';
+import { aiAvailable, callStructured, MODEL, estimateCostUsd } from './ai/client.js';
+import { STEP_FLOW_SCHEMA } from './ai/schemas.js';
 import {
   googleConfigured, fetchDriveArtifact, fetchDriveForRelations, clearStreamCache, listSpreadsheets, listFolderChildren, extractSpreadsheetId,
   oauthClientConfigured, connectionStatus, buildAuthUrl, exchangeCodeAndStore, disconnect, warmupDrive,
@@ -585,6 +586,8 @@ async function loadProjectRelationGraphUncached(projectId: number): Promise<{ gr
 interface FileRelRow {
   id: number; from_artifact_id: number; to_artifact_id: number;
   rel_type: string; note: string; origin: string;
+  // 作成手順の層（手順書をいただけた案件だけ入る）
+  step: number | null; step_title: string | null; adds: string | null;
 }
 
 /** 解析対象になるアーティファクト（関係グラフの file ラベルと対応づくもの）を返す */
@@ -614,7 +617,8 @@ function parseSheetRoles(raw: string | null): Record<string, string> | undefined
 async function loadDeclaredFileRels(projectId: number): Promise<DeclaredFileRel[]> {
   const [rows, arts] = await Promise.all([
     db.prepare(
-      `SELECT id, from_artifact_id, to_artifact_id, rel_type, note, origin FROM file_relations WHERE project_id = ? ORDER BY id`,
+      `SELECT id, from_artifact_id, to_artifact_id, rel_type, note, origin, step, step_title, adds
+         FROM file_relations WHERE project_id = ? ORDER BY step NULLS LAST, id`,
     ).all(projectId) as Promise<FileRelRow[]>,
     relationArtifacts(projectId),
   ]);
@@ -628,6 +632,10 @@ async function loadDeclaredFileRels(projectId: number): Promise<DeclaredFileRel[
       id: r.id, fromFile, toFile,
       relType: (FILE_REL_TYPES as string[]).includes(r.rel_type) ? r.rel_type as FileRelType : 'unknown',
       note: r.note ?? '', origin: r.origin === 'auto' ? 'auto' : 'manual',
+      // 0 や NaN は「未入力」と同じ扱いにする（レポート側はステップの有無で描き方を変える）
+      step: Number(r.step) > 0 ? Number(r.step) : undefined,
+      stepTitle: r.step_title?.trim() || undefined,
+      adds: r.adds?.trim() || undefined,
     });
   }
   return out;
@@ -895,6 +903,18 @@ async function validateFileRel(projectId: number, fromId: number, toId: number, 
   return null;
 }
 
+/** 手順の入力を正規化する。ステップ番号は 1〜99 の整数だけ受け、それ以外は未入力とみなす */
+function normStepInput(body: { step?: unknown; stepTitle?: unknown; adds?: unknown }): {
+  step: number | null; stepTitle: string; adds: string;
+} {
+  const n = Math.trunc(Number(body.step));
+  return {
+    step: Number.isFinite(n) && n >= 1 && n <= 99 ? n : null,
+    stepTitle: typeof body.stepTitle === 'string' ? body.stepTitle.trim().slice(0, 60) : '',
+    adds: typeof body.adds === 'string' ? body.adds.trim().slice(0, 120) : '',
+  };
+}
+
 app.post('/api/projects/:id/file-relations', async (req, res) => {
   const projectId = Number(req.params.id);
   const { fromArtifactId, toArtifactId, relType, note, origin } = req.body as {
@@ -904,18 +924,94 @@ app.post('/api/projects/:id/file-relations', async (req, res) => {
   const type = relType ?? 'unknown';
   const err = await validateFileRel(projectId, fromId, toId, type);
   if (err) return res.status(400).json({ error: err });
+  const st = normStepInput(req.body as Record<string, unknown>);
   // 同じ向きの重複登録は作らない（初期案の「確定」を二度押しても増えない）
   const dup = await db.prepare(
     `SELECT id FROM file_relations WHERE project_id = ? AND from_artifact_id = ? AND to_artifact_id = ?`,
   ).get(projectId, fromId, toId) as { id: number } | undefined;
   if (dup) {
-    await db.prepare(`UPDATE file_relations SET rel_type = ?, note = ? WHERE id = ?`).run(type, note ?? '', dup.id);
+    await db.prepare(`UPDATE file_relations SET rel_type = ?, note = ?, step = ?, step_title = ?, adds = ? WHERE id = ?`)
+      .run(type, note ?? '', st.step, st.stepTitle, st.adds, dup.id);
     return res.json({ ok: true, id: dup.id, updated: true });
   }
   const result = await db.prepare(
-    `INSERT INTO file_relations (project_id, from_artifact_id, to_artifact_id, rel_type, note, origin) VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(projectId, fromId, toId, type, note ?? '', origin === 'auto' ? 'auto' : 'manual');
+    `INSERT INTO file_relations (project_id, from_artifact_id, to_artifact_id, rel_type, note, origin, step, step_title, adds)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(projectId, fromId, toId, type, note ?? '', origin === 'auto' ? 'auto' : 'manual',
+    st.step, st.stepTitle, st.adds);
   res.json({ ok: true, id: Number(result.lastInsertRowid) });
+});
+
+/** 手順書から読み取った1件の受け渡し（保存前の案） */
+interface StepFlowProposal {
+  step: number; stepTitle: string; fromFile: string; toFile: string;
+  relType: string; adds: string; note: string;
+}
+
+/**
+ * 手順書（業務資料）から作成手順を読み取り、ブック関係の案として返す。保存はしない。
+ *
+ * なぜ必要か:
+ *   「①へ⑧から部門コードを付与」のような作業手順は数式にはどこにも残らない。ここを人が
+ *   1件ずつ画面へ入れ直すのは、手順書を貰っているのに二度手間になる。資料はすでに
+ *   「業務資料」として取り込めるので、その本文からステップ付きの受け渡しを起こす。
+ *   確定は人が行う（自動保存しない）— 読み取り違いをそのまま顧客レポートへ載せないため。
+ */
+app.post('/api/projects/:id/file-relations/from-docs', async (req, res) => {
+  const projectId = Number(req.params.id);
+  try {
+    if (!aiAvailable()) {
+      return res.status(400).json({ error: 'ANTHROPIC_API_KEY が未設定のため、手順書の読み取りは使えません' });
+    }
+    const arts = await relationArtifacts(projectId);
+    if (arts.length === 0) return res.status(400).json({ error: '関係を登録できるファイルがまだありません' });
+    const docs = (await listProjectDocs(projectId)).filter(d => d.content.trim() !== '');
+    if (docs.length === 0) {
+      return res.status(400).json({ error: '業務資料が登録されていません。手順書（txt / docx / md）を先にアップロードしてください' });
+    }
+    const fileList = arts.map(a => `- ${a.original_filename}`).join('\n');
+    const body = docs.map(d => `<doc name="${d.filename}">\n${d.content}\n</doc>`).join('\n');
+    const instruction = [
+      '次の業務資料から、ファイル間の受け渡しを「作成手順」として取り出してください。',
+      '',
+      '守ること:',
+      '- fromFile / toFile は、下の受領ファイル一覧にある名前をそのまま使う（言い換え・省略をしない）',
+      '- 資料に書かれていない受け渡しは作らない。書かれている順番をステップ番号にする',
+      '- 「①に③から管理料を付与」のような書き方は、from=③ / to=① と読む（付与される側が to）',
+      '- 一覧に無いファイルが出てきたら、そのファイル名のまま返す（こちらで突き合わせます）',
+      '- adds には、その受け渡しで to 側に増える列・項目だけを書く。計算式の説明は note へ',
+      '',
+      `<received_files>\n${fileList}\n</received_files>`,
+      `<docs>\n${body}\n</docs>`,
+    ].join('\n');
+    const result = await callStructured<{ steps: StepFlowProposal[] }>(
+      projectId, 'step-flow', instruction, STEP_FLOW_SCHEMA as unknown as Record<string, unknown>,
+    );
+
+    // ファイル名 → artifact id へ解決する。完全一致 → ラベル一致 → 記号・空白を落とした一致の順。
+    // 解決できなかったものは捨てずに返し、画面で「どのファイルか」を選べるようにする。
+    const norm = (s: string) => s.replace(/\.[A-Za-z0-9]+$/, '').replace(/[\s　_\-.]/g, '').toLowerCase();
+    const byExact = new Map(arts.map(a => [a.original_filename, a.id]));
+    const byLabel = new Map(arts.map(a => [fileLabelOf(a.original_filename), a.id]));
+    const byNorm = new Map(arts.map(a => [norm(a.original_filename), a.id]));
+    const idOf = (name: string): number | null =>
+      byExact.get(name) ?? byLabel.get(fileLabelOf(name)) ?? byNorm.get(norm(name)) ?? null;
+    const proposals = result.data.steps.map(s => ({
+      ...s,
+      relType: (FILE_REL_TYPES as string[]).includes(s.relType) ? s.relType : 'unknown',
+      fromArtifactId: idOf(s.fromFile),
+      toArtifactId: idOf(s.toFile),
+    }));
+    res.json({
+      proposals,
+      // 読み取れたが受領ファイルに無い名前（未受領のファイルを指している可能性がある）
+      unresolved: [...new Set(proposals.flatMap(p =>
+        [p.fromArtifactId === null ? p.fromFile : '', p.toArtifactId === null ? p.toFile : ''].filter(Boolean)))],
+      docCount: docs.length,
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
 });
 
 /** 初期案の一括確定（ファイルが多い案件で1件ずつ押させないため） */
@@ -947,17 +1043,29 @@ app.post('/api/projects/:id/file-relations/accept-all', async (req, res) => {
 });
 
 app.patch('/api/file-relations/:id', async (req, res) => {
-  const { relType, note } = req.body as { relType?: string; note?: string };
-  const row = await db.prepare(`SELECT project_id, rel_type, note FROM file_relations WHERE id = ?`)
-    .get(req.params.id) as { project_id: number; rel_type: string; note: string } | undefined;
+  const body = req.body as Record<string, unknown>;
+  const relType = typeof body.relType === 'string' ? body.relType : undefined;
+  const note = typeof body.note === 'string' ? body.note : undefined;
+  const row = await db.prepare(
+    `SELECT project_id, rel_type, note, step, step_title, adds FROM file_relations WHERE id = ?`,
+  ).get(req.params.id) as {
+    project_id: number; rel_type: string; note: string;
+    step: number | null; step_title: string | null; adds: string | null;
+  } | undefined;
   if (!row) return res.status(404).json({ error: 'file relation not found' });
   const type = relType ?? row.rel_type;
   if (!(FILE_REL_TYPES as string[]).includes(type)) {
     return res.status(400).json({ error: `種別は ${FILE_REL_TYPES.join(' / ')} のいずれかです` });
   }
+  // 手順の3項目は、送られてきた項目だけを書き換える（説明だけ直したときにステップが消えないように）
+  const st = normStepInput(body);
+  const step = 'step' in body ? st.step : row.step;
+  const stepTitle = 'stepTitle' in body ? st.stepTitle : (row.step_title ?? '');
+  const adds = 'adds' in body ? st.adds : (row.adds ?? '');
   // 修正した時点で「人が確認したもの」になるので origin を manual に上げる
-  await db.prepare(`UPDATE file_relations SET rel_type = ?, note = ?, origin = 'manual' WHERE id = ?`)
-    .run(type, note ?? row.note, req.params.id);
+  await db.prepare(
+    `UPDATE file_relations SET rel_type = ?, note = ?, step = ?, step_title = ?, adds = ?, origin = 'manual' WHERE id = ?`,
+  ).run(type, note ?? row.note, step, stepTitle, adds, req.params.id);
   res.json({ ok: true });
 });
 

@@ -348,6 +348,23 @@ export interface FileRelation {
   relType: FileRelType
   note: string
   origin: 'auto' | 'manual'
+  /** 作成手順の層（手順書がある案件だけ入る）。レポート 02 をステップの帯で描くのに使う */
+  step?: number
+  stepTitle?: string
+  adds?: string
+}
+
+/** 手順書から読み取った受け渡しの案（保存前。ファイル名は解決できないことがある） */
+export interface StepFlowProposal {
+  step: number
+  stepTitle: string
+  fromFile: string
+  toFile: string
+  relType: FileRelType
+  adds: string
+  note: string
+  fromArtifactId: number | null
+  toArtifactId: number | null
 }
 
 /** 自動検出されたが未登録のファイル対（初期案） */
@@ -385,16 +402,26 @@ export function getFileRelations(projectId: number): Promise<FileRelationsData> 
 }
 
 export function addFileRelation(projectId: number, body: {
-  fromArtifactId: number; toArtifactId: number; relType: FileRelType; note?: string; origin?: 'auto' | 'manual'
+  fromArtifactId: number; toArtifactId: number; relType: FileRelType; note?: string
+  origin?: 'auto' | 'manual'; step?: number | null; stepTitle?: string; adds?: string
 }): Promise<{ ok: boolean; id: number }> {
   return post(`/projects/${projectId}/file-relations`, body)
+}
+
+/** 業務資料（手順書）から作成手順を読み取る。保存はせず、案を返すだけ */
+export function extractFileRelationsFromDocs(projectId: number): Promise<{
+  proposals: StepFlowProposal[]; unresolved: string[]; docCount: number
+}> {
+  return post(`/projects/${projectId}/file-relations/from-docs`)
 }
 
 export function acceptAllFileRelations(projectId: number): Promise<{ ok: boolean; added: number }> {
   return post(`/projects/${projectId}/file-relations/accept-all`)
 }
 
-export function updateFileRelation(id: number, body: { relType?: FileRelType; note?: string }): Promise<{ ok: boolean }> {
+export function updateFileRelation(id: number, body: {
+  relType?: FileRelType; note?: string; step?: number | null; stepTitle?: string; adds?: string
+}): Promise<{ ok: boolean }> {
   return patch(`/file-relations/${id}`, body)
 }
 

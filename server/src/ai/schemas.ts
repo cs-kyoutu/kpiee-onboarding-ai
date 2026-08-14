@@ -11,6 +11,43 @@ export const KPIEE_TARGETS = [
   'allocation', 'needs_customer_confirmation',
 ] as const;
 
+/**
+ * 手順書（業務資料）から読み取る「作成手順」のスキーマ。
+ *
+ * 手順書には「①に⑧から部門コードを付与」のように、数式には現れない受け渡しと順番が書かれている。
+ * これをブック関係（step / stepTitle / adds 付き）の案として取り出し、人が確定する。
+ * ファイル名は必ず受領ファイル名そのままを返させる — 言い換えられると id へ解決できない。
+ */
+export const STEP_FLOW_SCHEMA = {
+  type: 'object',
+  properties: {
+    steps: {
+      type: 'array',
+      description: '手順に書かれたファイル間の受け渡し。1つの受け渡しにつき1件',
+      items: {
+        type: 'object',
+        properties: {
+          step: { type: 'integer', description: '手順のステップ番号（1〜）。番号が無い作業は近い番号を割り当てる' },
+          stepTitle: { type: 'string', description: 'そのステップの見出し（例: エリア人件費の計算）。無ければ空文字' },
+          fromFile: { type: 'string', description: '元のファイル名。受領ファイル一覧の名前をそのまま使う' },
+          toFile: { type: 'string', description: '先のファイル名。受領ファイル一覧の名前をそのまま使う' },
+          relType: {
+            type: 'string',
+            enum: ['aggregate', 'reference', 'transcribe', 'manual_copy', 'unknown'],
+            description: '集計 / 参照・マスタ引き当て / 転記 / 手作業コピー / 不明',
+          },
+          adds: { type: 'string', description: 'この受け渡しで先のファイルに足される列・項目（例: 部門コード）。無ければ空文字' },
+          note: { type: 'string', description: '手順書の記述に沿った説明。突合キーが書かれていれば含める' },
+        },
+        required: ['step', 'stepTitle', 'fromFile', 'toFile', 'relType', 'adds', 'note'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['steps'],
+  additionalProperties: false,
+} as const;
+
 /** P1 解読: 解読項目リスト＋全体構造の自然言語サマリのスキーマ */
 export const FINDINGS_SCHEMA = {
   type: 'object',

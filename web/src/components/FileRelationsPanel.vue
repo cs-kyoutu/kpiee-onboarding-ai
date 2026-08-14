@@ -11,7 +11,8 @@
 import { computed, onMounted, ref } from 'vue'
 import {
   getFileRelations, addFileRelation, acceptAllFileRelations, updateFileRelation, deleteFileRelation,
-  type FileRelationsData, type FileRelType, type FileRelVerdict,
+  extractFileRelationsFromDocs,
+  type FileRelationsData, type FileRelType, type FileRelVerdict, type StepFlowProposal,
 } from '../api'
 
 const props = defineProps<{ projectId: number }>()
@@ -28,6 +29,15 @@ const newFrom = ref<number | null>(null)
 const newTo = ref<number | null>(null)
 const newType = ref<FileRelType>('aggregate')
 const newNote = ref('')
+const newStep = ref<number | null>(null)
+const newStepTitle = ref('')
+const newAdds = ref('')
+
+// 手順書からの読み取り結果（保存前の案）
+const docProposals = ref<StepFlowProposal[]>([])
+const docUnresolved = ref<string[]>([])
+const docBusy = ref(false)
+const docMsg = ref('')
 
 const REL_LABELS: Record<FileRelType, string> = {
   aggregate: '集計',
@@ -110,8 +120,58 @@ function addManual() {
     await addFileRelation(props.projectId, {
       fromArtifactId: newFrom.value!, toArtifactId: newTo.value!,
       relType: newType.value, note: newNote.value.trim(),
+      step: newStep.value, stepTitle: newStepTitle.value.trim(), adds: newAdds.value.trim(),
     })
     newNote.value = ''
+    newAdds.value = ''
+  })
+}
+
+/** 手順書を読み取って案を出す。保存はしない（読み取り違いをそのまま登録しないため） */
+async function readDocs() {
+  docBusy.value = true
+  docMsg.value = ''
+  error.value = ''
+  try {
+    const r = await extractFileRelationsFromDocs(props.projectId)
+    docProposals.value = r.proposals
+    docUnresolved.value = r.unresolved
+    docMsg.value = r.proposals.length === 0
+      ? '資料からファイル間の受け渡しを読み取れませんでした。'
+      : `業務資料 ${r.docCount} 件から ${r.proposals.length} 件の受け渡しを読み取りました。内容を確かめてから登録してください。`
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    docBusy.value = false
+  }
+}
+
+/** 手順書から読み取った案を1件登録する */
+function confirmDocProposal(p: StepFlowProposal) {
+  if (p.fromArtifactId === null || p.toArtifactId === null) return
+  return mutate(async () => {
+    await addFileRelation(props.projectId, {
+      fromArtifactId: p.fromArtifactId!, toArtifactId: p.toArtifactId!,
+      relType: p.relType, note: p.note, origin: 'auto',
+      step: p.step, stepTitle: p.stepTitle, adds: p.adds,
+    })
+    docProposals.value = docProposals.value.filter(x => x !== p)
+  })
+}
+
+/** ファイルまで解決できた案をまとめて登録する */
+function confirmAllDocProposals() {
+  const ready = docProposals.value.filter(p => p.fromArtifactId !== null && p.toArtifactId !== null)
+  if (ready.length === 0) return
+  return mutate(async () => {
+    for (const p of ready) {
+      await addFileRelation(props.projectId, {
+        fromArtifactId: p.fromArtifactId!, toArtifactId: p.toArtifactId!,
+        relType: p.relType, note: p.note, origin: 'auto',
+        step: p.step, stepTitle: p.stepTitle, adds: p.adds,
+      })
+    }
+    docProposals.value = docProposals.value.filter(p => !ready.includes(p))
   })
 }
 
@@ -142,6 +202,53 @@ onMounted(load)
       </div>
 
       <template v-else>
+        <!-- ⓪ 手順書からの読み取り。
+             「①へ⑧から部門コードを付与」のような作業手順は数式に残らないため、
+             資料を貰っているなら手で入れ直さずここから起こす。確定は人が行う。 -->
+        <section class="frsec">
+          <div class="frhead">
+            <h3>手順書から読み取る</h3>
+            <button :disabled="docBusy || busy" @click="readDocs">
+              {{ docBusy ? '読み取り中…' : '業務資料を読み取る' }}
+            </button>
+          </div>
+          <p class="muted">
+            「資料アップロード」で入れた<strong>手順書・要件定義書</strong>から、
+            <strong>どのファイルから何を付与するか</strong>と<strong>その順番（ステップ）</strong>を読み取ります。
+            ステップを登録すると、顧客共有レポートの全体関係図が<strong>手順の並び</strong>で描かれます。
+          </p>
+          <p v-if="docMsg" class="muted frempty">{{ docMsg }}</p>
+          <p v-if="docUnresolved.length > 0" class="muted frempty">
+            受領ファイルに見当たらない名前：{{ docUnresolved.join('、') }}
+            — 未受領のファイルを指している可能性があります。
+          </p>
+          <div v-if="docProposals.length > 1" class="frform">
+            <button class="primary" :disabled="busy" @click="confirmAllDocProposals">
+              ファイルが特定できた案をまとめて登録
+            </button>
+          </div>
+          <div v-for="(p, i) in docProposals" :key="`doc-${i}`" class="frcard">
+            <div class="frflow">
+              <span class="badge info">ステップ{{ p.step }}</span>
+              <b>{{ p.fromFile }}</b>
+              <span class="frarrow">──▶</span>
+              <b>{{ p.toFile }}</b>
+              <span v-if="p.fromArtifactId === null || p.toArtifactId === null" class="badge warn">ファイル未特定</span>
+            </div>
+            <div class="frreason muted">
+              {{ REL_LABELS[p.relType] }}<template v-if="p.stepTitle"> ／ {{ p.stepTitle }}</template>
+              <template v-if="p.adds"> ／ 足される列: {{ p.adds }}</template>
+            </div>
+            <div class="frreason muted">{{ p.note }}</div>
+            <div class="frform">
+              <button
+                class="primary" :disabled="busy || p.fromArtifactId === null || p.toArtifactId === null"
+                @click="confirmDocProposal(p)"
+              >登録</button>
+            </div>
+          </div>
+        </section>
+
         <!-- ① 自動検出の初期案 -->
         <section class="frsec">
           <div class="frhead">
@@ -182,8 +289,11 @@ onMounted(load)
           <table v-if="data.declared.length > 0">
             <thead>
               <tr>
-                <th style="width: 30%">関係</th>
-                <th style="width: 170px">種別</th>
+                <th style="width: 26%">関係</th>
+                <th style="width: 150px">種別</th>
+                <th style="width: 62px">手順</th>
+                <th style="width: 150px">ステップ名</th>
+                <th style="width: 150px">足される列</th>
                 <th>説明（レポートに掲載）</th>
                 <th style="width: 70px">操作</th>
               </tr>
@@ -201,6 +311,24 @@ onMounted(load)
                   >
                     <option v-for="t in REL_TYPES" :key="t" :value="t">{{ REL_LABELS[t] }}</option>
                   </select>
+                </td>
+                <td>
+                  <input
+                    type="number" min="1" max="99" :value="r.step ?? ''" placeholder="—" style="width: 54px"
+                    @change="mutate(() => updateFileRelation(r.id, { step: Number(($event.target as HTMLInputElement).value) || null }))"
+                  />
+                </td>
+                <td>
+                  <input
+                    type="text" :value="r.stepTitle ?? ''" placeholder="例: エリア人件費の計算"
+                    @change="mutate(() => updateFileRelation(r.id, { stepTitle: ($event.target as HTMLInputElement).value }))"
+                  />
+                </td>
+                <td>
+                  <input
+                    type="text" :value="r.adds ?? ''" placeholder="例: 部門コード"
+                    @change="mutate(() => updateFileRelation(r.id, { adds: ($event.target as HTMLInputElement).value }))"
+                  />
                 </td>
                 <td>
                   <input
@@ -227,7 +355,10 @@ onMounted(load)
             <select v-model="newType">
               <option v-for="t in REL_TYPES" :key="t" :value="t">{{ REL_LABELS[t] }}</option>
             </select>
-            <input v-model="newNote" type="text" placeholder="説明（任意。レポートに掲載されます）" style="min-width: 240px; flex: 1" />
+            <input v-model.number="newStep" type="number" min="1" max="99" placeholder="手順" style="width: 62px" />
+            <input v-model="newStepTitle" type="text" placeholder="ステップ名（任意）" style="width: 150px" />
+            <input v-model="newAdds" type="text" placeholder="足される列（任意）" style="width: 150px" />
+            <input v-model="newNote" type="text" placeholder="説明（任意。レポートに掲載されます）" style="min-width: 200px; flex: 1" />
             <button
               class="primary"
               :disabled="busy || newFrom === null || newTo === null || newFrom === newTo"
