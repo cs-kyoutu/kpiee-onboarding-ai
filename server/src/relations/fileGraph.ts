@@ -50,6 +50,16 @@ export interface PairAgg {
   counts: Partial<Record<Group, number>>;
   best: Partial<Record<Group, Edge>>;       // 各分類の代表辺（確信度最大）
   total: number;
+  /**
+   * 数式でも値でも検出できていないが、別の根拠（うかがった内容・列名の一致）で結んだ対。
+   * counts は空・total は 0。値貼り付けのシートを受領ファイルへ結び直すときに使う
+   * （FilePair.declaredOnly と同じ考え方を表領域のレベルへ下ろしたもの）。
+   */
+  declaredOnly?: boolean;
+  /** declaredOnly のとき、線に添える短いラベル（例: 貼り付けと推定） */
+  declaredLabel?: string;
+  /** declaredOnly のとき、受け側のパネルに出す一文（何を根拠にそう見たか） */
+  declaredNote?: string;
 }
 
 export function aggregatePairs(edges: Edge[]): PairAgg[] {

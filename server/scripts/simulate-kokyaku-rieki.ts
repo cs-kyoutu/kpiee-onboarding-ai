@@ -90,31 +90,46 @@ const graph = await analyzeArtifacts(inputs);
 log(`解析完了 ${((Date.now() - t0) / 1000).toFixed(1)}s  表${graph.regions.length} 辺${graph.edges.length} rss=${mb()}`);
 
 // ---- ブック関係（顧客別営業利益試算手順.txt のステップ1〜4）----
-// 手順書はブックの中のシート同士の話として書かれているが、受け渡しの単位はブックなので
-// 「どのファイルから何を持ってきて、どのキーで突合するか」をブック関係の説明として渡す。
+// 手順書は「①へ付与していく」書き方なので、受け渡しの行き先も手順書のとおりに置く。
+// 以前はすべてを ★ 宛てにしていたため、
+//   ・①が土台であること（他の8ファイルは①へ足されていく）
+//   ・⑤人件費データは①ではなく⑥得意先別訪問数へ付くこと
+// が図から落ち、9本の線が★へ集まるだけの扇形になっていた。
 const OUT_FILE = '★顧客別営業利益試算ver5';
-const RELS: [string, FileRelType, string][] = [
-  ['①68期集計得意先別実績', 'transcribe',
-    '売上・粗利の実績。試算表の土台として貼り付け（備品と備品外に分かれており、非表示で分けている）'],
-  ['⑧得意先マスタ', 'reference',
-    'ステップ1：①へ部門コードを付与。集計得意先CD（J列＝代表コード）と得意先CD（E列＝ユニーク）で突合'],
-  ['③SPD収支管理表', 'reference',
-    'ステップ1：①へ管理料・経費合計を付与（集計得意先CD同士）。F列の管理料とJ列の経費の差分がSPDの収支'],
-  ['②AMEX手数料計算', 'reference',
-    'ステップ1：①へ手数料金額を付与。②の得意先CDを集計得意先CDへ変換してから突合（E列とQ列を取得）'],
-  ['⑥得意先別訪問数', 'aggregate',
-    'ステップ2：作成者ごとの顧客別訪問率を算出し、顧客別のエリア経費として①へ付与'],
-  ['⑤人件費データ', 'reference',
-    'ステップ2：⑥得意先別訪問数へ作成者の人件費を付与（社員コードで突合）。エリア人件費の元'],
-  ['⑦kintone得意先変換表', 'reference',
-    'ステップ2：訪問数と集計得意先コードの突合に使用（T列とAB列）'],
-  ['④プロ得意先別実績', 'aggregate',
-    'ステップ3：拠点内の得意先別粗利構成比を算出して①へ付与。構成比×プロ本部経費部門計＝得意先別プロ人件費'],
-  ['⑥拠点別経費', 'aggregate',
-    'ステップ4：部門別の販管費合計を①へ付与。販管費合計から得意先配賦済み経費を引いた残りを拠点内売上構成比で配賦'],
+const BASE_FILE = '①68期集計得意先別実績';   // 土台。ここへ足していく
+const VISIT_FILE = '⑥得意先別訪問数';
+type Rel = {
+  from: string; to: string; relType: FileRelType; note: string;
+  step?: number; stepTitle?: string; adds?: string;
+};
+const RELS: Rel[] = [
+  // ステップ1：得意先直下
+  { from: '⑧得意先マスタ', to: BASE_FILE, relType: 'reference', step: 1, stepTitle: '得意先直下', adds: '部門コード',
+    note: 'ステップ1：①へ部門コードを付与。集計得意先CD（J列＝代表コード）と得意先CD（E列＝ユニーク）で突合' },
+  { from: '③SPD収支管理表', to: BASE_FILE, relType: 'reference', step: 1, stepTitle: '得意先直下', adds: '管理料・経費合計',
+    note: 'ステップ1：①へ管理料・経費合計を付与（集計得意先CD同士）。F列の管理料とJ列の経費の差分がSPDの収支' },
+  { from: '②AMEX手数料計算', to: BASE_FILE, relType: 'reference', step: 1, stepTitle: '得意先直下', adds: '手数料金額',
+    note: 'ステップ1：①へ手数料金額を付与。②の得意先CDを集計得意先CDへ変換してから突合（E列とQ列を取得）' },
+  // ステップ2：エリア人件費の計算（①ではなく⑥へ付くものが2件ある）
+  { from: '⑤人件費データ', to: VISIT_FILE, relType: 'reference', step: 2, stepTitle: 'エリア人件費の計算',
+    note: 'ステップ2：⑥得意先別訪問数へ作成者の人件費を付与（社員コードで突合）。エリア人件費の元' },
+  { from: '⑦kintone得意先変換表', to: VISIT_FILE, relType: 'reference', step: 2, stepTitle: 'エリア人件費の計算',
+    note: 'ステップ2：訪問数と集計得意先コードの突合に使用（T列とAB列）' },
+  { from: VISIT_FILE, to: BASE_FILE, relType: 'aggregate', step: 2, stepTitle: 'エリア人件費の計算', adds: '顧客別のエリア経費',
+    note: 'ステップ2：作成者ごとの顧客別訪問率を算出し、顧客別のエリア経費として①へ付与' },
+  // ステップ3：プロ人件費の計算
+  { from: '④プロ得意先別実績', to: BASE_FILE, relType: 'aggregate', step: 3, stepTitle: 'プロ人件費の計算', adds: '得意先別粗利構成比',
+    note: 'ステップ3：拠点内の得意先別粗利構成比を算出して①へ付与。構成比×プロ本部経費部門計＝得意先別プロ人件費' },
+  // ステップ4：その他拠点経費の計算
+  { from: '⑥拠点別経費', to: BASE_FILE, relType: 'aggregate', step: 4, stepTitle: 'その他拠点経費の計算', adds: '部門別の販管費合計',
+    note: 'ステップ4：部門別の販管費合計を①へ付与。販管費合計から得意先配賦済み経費を引いた残りを拠点内売上構成比で配賦' },
+  // 仕上げ：土台の①が、そのまま試算表になる
+  { from: BASE_FILE, to: OUT_FILE, relType: 'transcribe',
+    note: '売上・粗利の実績。ステップ1〜4を足し込んだ①が試算表の土台として貼り付けられる（備品と備品外に分かれており、非表示で分けている）' },
 ];
-const declared: DeclaredFileRel[] = RELS.map(([from, relType, note], i) => ({
-  id: i + 1, fromFile: from, toFile: OUT_FILE, relType, note, origin: 'manual' as const,
+const declared: DeclaredFileRel[] = RELS.map((r, i) => ({
+  id: i + 1, fromFile: r.from, toFile: r.to, relType: r.relType, note: r.note,
+  origin: 'manual' as const, step: r.step, stepTitle: r.stepTitle, adds: r.adds,
 }));
 
 const merged = applyDeclaredFileRelations(graph, declared);

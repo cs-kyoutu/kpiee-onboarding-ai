@@ -284,8 +284,11 @@ function buildQuestions(
   // 関係ごとに1問ずつ出さず、その1点にまとめて聞く。
   const undetected = fileRelAudit.filter(x => x.verdict === 'declared_not_detected');
   if (undetected.length > 0) {
-    const names = undetected.slice(0, 3).map(a => `「${fileNameOf(a.fromFile)}」`).join('、')
-      + (undetected.length > 3 ? ` ほか${undetected.length - 3}件` : '');
+    // 数えているのはファイルなので単位も「ファイル」で書く（「件」だと何の件数か分からない）。
+    // 1つのファイルが複数の受け渡しに出てくることがあるので、ファイル名で重複を落としてから数える
+    const fromFiles = [...new Set(undetected.map(a => a.fromFile))];
+    const names = fromFiles.slice(0, 3).map(f => `「${fileNameOf(f)}」`).join('、')
+      + (fromFiles.length > 3 ? ` ほか${fromFiles.length - 3}ファイル` : '');
     const dsts = [...new Set(undetected.map(a => a.toFile))];
     const to = dsts.length === 1 ? `「${fileNameOf(dsts[0])}」へ` : 'それぞれの集計先へ';
     qs.push({
@@ -354,13 +357,50 @@ function buildQuestions(
     });
   }
   if (copyPairs.length > shownCopy.length) {
+    // 残りをまとめる問い。以前は件数だけを書いていたため「どこを見ればよいのか」が伝わらなかった。
+    // 規模の大きい順に実物の表の名前を挙げて、読み合わせで最初に開く場所を決められるようにする。
+    // また、個別カードが1件も出ていないときに「上と同じ」と書くと、存在しないカードを指してしまう。
+    const rest = copyPairs.filter(p => !shownCopy.includes(p));
+    // 表ペアのまま3件だけ挙げると、月次タブのように同じ形のシートが並ぶブックでは
+    //「②AMEX › 202604 と 202603」「202604 と 202602」…と、同じ話が並ぶだけで論点にならない。
+    // ブック単位へ畳んでから挙げると、「同じブックの中のシートどうし」なのか
+    //「ブックをまたぐ受け渡し」なのかが一目で分かる。
+    interface CopyGroup { from: string; to: string; pairs: number; cols: number; sameFile: boolean }
+    const groups = new Map<string, CopyGroup>();
+    for (const p of rest) {
+      const f = fileOfRegion.get(p.from) ?? ''; const t = fileOfRegion.get(p.to) ?? '';
+      const k = filePairKey(f, t);
+      let g = groups.get(k);
+      if (!g) { g = { from: f, to: t, pairs: 0, cols: 0, sameFile: f === t }; groups.set(k, g); }
+      g.pairs++;
+      g.cols += p.counts.copy ?? 0;
+    }
+    const ordered = [...groups.values()].sort((a, b) => b.cols - a.cols || b.pairs - a.pairs);
+    const names = ordered.slice(0, 3).map(g => (g.sameFile
+      ? `「${fileNameOf(g.from)}」の中のシートどうし（${g.pairs} 組）`
+      : `「${fileNameOf(g.from)}」と「${fileNameOf(g.to)}」（${g.pairs} 組）`)).join('、')
+      + (ordered.length > 3 ? ` ほか${ordered.length - 3}組み合わせ` : '');
+    // 同じブックの中で1列ずつ一致しているだけなら、月次タブの様式の使い回しであることが多い。
+    // それを「優先度 高」で並べると、本当に確認したい受け渡しが埋もれる。
+    const allSameFileThin = rest.every(p => {
+      const f = fileOfRegion.get(p.from); const t = fileOfRegion.get(p.to);
+      return f === t && (p.counts.copy ?? 0) <= 1;
+    });
     qs.push({
-      priority: 'high', kind: '手修正の確認',
-      title: `同じように値が一致する箇所が、ほかにも ${copyPairs.length - shownCopy.length} 組あります。主なものから一緒に見ていただけますか。`,
-      analysis: '上と同じ「数式がないのに値が一致する」組み合わせです。件数が多く、そのすべてが実際の転記作業とは限りません。'
-        + '同じ表を別の場所で使っているだけの場合も含まれます。',
-      ask: 'すべてを事前にお読みいただく必要はありません。お打ち合わせで画面をお見せしながら、'
-        + '最終アウトプットへの影響が大きいものから順に、実際の作業かどうかを確認させてください。',
+      priority: allSameFileThin ? 'mid' : 'high', kind: '手修正の確認',
+      title: shownCopy.length > 0
+        ? `同じように値が一致する箇所が、ほかにも ${rest.length} 組あります。規模の大きいものから一緒に見ていただけますか。`
+        : `数式が無いのに値が一致している箇所が ${rest.length} 組あります。${allSameFileThin ? '同じ様式の使い回しでしょうか。' : '規模の大きいものから一緒に見ていただけますか。'}`,
+      analysis: `多い順に ${names} です。`
+        + (allSameFileThin
+          ? '同じブックの中のシートどうしで、1列ずつ同じ値が並んでいる形です。月ごとにシートを分けて同じ様式で作っておられる場合、項目名の列が各シートに同じ順で並ぶため、ここに出てきます。'
+          : 'いずれも数式が残っていないため、貼り付けておられるのか、たまたま同じ値が並んでいるだけなのかを Excel からは区別できません。')
+        + '1列だけ・セル数の少ないものは、区分名や単価のように同じ値が並んでいるだけのことも多く、すべてが転記作業とは限りません。',
+      ask: allSameFileThin
+        ? ['シートを月ごとに分けて、同じ様式で作っておられるという理解で合っていますか',
+           'この中に、ほかのファイルからコピーして貼っておられるものがあれば教えてください']
+        : ['この中に、毎月コピーして貼っておられるものはありますか',
+           'お打ち合わせで画面をお見せしますので、上に挙げた大きいものから順に、実際の作業かどうかを教えてください'],
     });
   }
 
@@ -729,6 +769,8 @@ function buildMap(
   for (const g of GROUP_ORDER) {
     parts.push(`<marker id="arr-${uid}-${g}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${GROUP_META[g].color}" fill-opacity="0.85"/></marker>`);
   }
+  // 数式の根拠が無い線（貼り付け元の推定）は、色と線種で確定した関係と分ける
+  parts.push(`<marker id="arr-${uid}-declared" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${DECLARED_ONLY.color}" fill-opacity="0.85"/></marker>`);
   parts.push('</defs>');
   // 背景の点（操作版 lightmode の dotted background と同じ見え方にする）
   parts.push(`<rect x="0" y="0" width="${MAP_W}" height="${MAP_H}" fill="#FCFDFE"/>`);
@@ -739,8 +781,11 @@ function buildMap(
   const edgeLabels: string[] = [];
   for (const p of drawPairs) {
     const a = pos.get(p.from)!; const b = pos.get(p.to)!;
+    const dec = p.declaredOnly === true;
     const g = dominantGroup(p);
-    const meta = GROUP_META[g];
+    const meta = dec
+      ? { label: p.declaredLabel ?? 'うかがった内容', color: DECLARED_ONLY.color, dashed: true }
+      : GROUP_META[g];
     const k = [p.from, p.to].sort().join('|');
     const idx = seenPair.get(k) ?? 0;
     seenPair.set(k, idx + 1);
@@ -751,11 +796,14 @@ function buildMap(
     const mx = (a.x + b.x) / 2 - uy * cv, my = (a.y + b.y) / 2 + ux * cv;
     const sx = a.x + ux * (a.r + 2), sy = a.y + uy * (a.r + 2);
     const ex = b.x - ux * (b.r + 7), ey = b.y - uy * (b.r + 7);
-    const dash = meta.dashed ? ' stroke-dasharray="6 5"' : '';
-    parts.push(`<path d="M${sx.toFixed(1)},${sy.toFixed(1)} Q${mx.toFixed(1)},${my.toFixed(1)} ${ex.toFixed(1)},${ey.toFixed(1)}" fill="none" stroke="${meta.color}" stroke-width="1.3" stroke-opacity="0.5"${dash} marker-end="url(#arr-${uid}-${g})"/>`);
+    const dash = dec ? ' stroke-dasharray="2 5"' : meta.dashed ? ' stroke-dasharray="6 5"' : '';
+    parts.push(`<path d="M${sx.toFixed(1)},${sy.toFixed(1)} Q${mx.toFixed(1)},${my.toFixed(1)} ${ex.toFixed(1)},${ey.toFixed(1)}" fill="none" stroke="${meta.color}" stroke-width="1.3" stroke-opacity="0.5"${dash} marker-end="url(#arr-${uid}-${dec ? 'declared' : g})"/>`);
     const qid = g === 'copy' ? copyQuestionByPair.get(`${p.from}\u0000${p.to}`) : undefined;
-    if (showEdgeLabels || qid) {
-      const text = qid ? `手修正推定 → ${qid}` : `${meta.label.split('（')[0]}${p.total > 1 ? ` ×${p.total}` : ''}`;
+    // 貼り付け元の線は、本数が多くてもラベルを必ず出す（何を根拠に結んだ線かが要点なので）
+    if (showEdgeLabels || qid || dec) {
+      const text = qid ? `手修正推定 → ${qid}`
+        : dec ? meta.label
+        : `${meta.label.split('（')[0]}${p.total > 1 ? ` ×${p.total}` : ''}`;
       // 線に対して垂直へ逃がす。線の上や中点に置くと円とラベルに重なって読めない
       // （操作版はラベルを持たず右パネルで見せるが、静止画では Q 番号を図に出したい）。
       const side = cv >= 0 ? 1 : -1;
@@ -767,7 +815,7 @@ function buildMap(
       // 文字は「線から離れる向き」へ伸ばす。左へ逃がしたら右揃え、右へ逃がしたら左揃え。
       // ここを取り違えると、逃がした分だけ文字が線側へ戻ってきて円に重なる。
       const anchor = Math.abs(nx) < 6 ? 'middle' : nx < 0 ? 'end' : 'start';
-      edgeLabels.push(`<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" font-size="10" fill="${meta.color}" text-anchor="${anchor}"${qid ? ' font-weight="bold"' : ''} style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.5px">${esc(text)}</text>`);
+      edgeLabels.push(`<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" font-size="11.5" fill="${meta.color}" text-anchor="${anchor}"${qid ? ' font-weight="bold"' : ''} style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.5px">${esc(text)}</text>`);
     }
   }
 
@@ -802,14 +850,25 @@ function buildMap(
   const howOf = (id: string): string => {
     const ins = drawPairs.filter(p => p.to === id);
     if (ins.length === 0) return 'ほかの表から流れ込む関係は見つかっていません。ここが起点のデータです。';
-    const srcs = ins.slice(0, 4).map(p => labels.get(p.from) ?? p.from);
-    const more = ins.length > 4 ? ` ほか${ins.length - 4}件` : '';
-    const keys = [...new Set(ins.map(p => prettyKey(pairKeys.get(regionPairKey(p.from, p.to)) ?? '').text)
+    // 貼り付け元だけが根拠のシートは、「何から作られたか」ではなく「どのファイルを貼ったか」を出す。
+    // ここで通常の文面を出すと、数式で作られた表と見分けが付かなくなる。
+    const declaredIns = ins.filter(p => p.declaredOnly);
+    if (declaredIns.length === ins.length) {
+      return `${declaredIns.map(p => p.declaredNote ?? '').filter(Boolean).join(' ')}`.trim()
+        || 'この表そのものの数式は残っておらず、受領ファイルからの貼り付けと見ています。';
+    }
+    // 数式で確定している流入だけで文を作る（貼り付け推定を混ぜると根拠の質が混ざる）
+    const real = ins.filter(p => !p.declaredOnly);
+    const srcs = real.slice(0, 4).map(p => labels.get(p.from) ?? p.from);
+    const more = real.length > 4 ? ` ほか${real.length - 4}表` : '';
+    const keys = [...new Set(real.map(p => prettyKey(pairKeys.get(regionPairKey(p.from, p.to)) ?? '').text)
       .filter(Boolean))].slice(0, 2);
-    const proc = GROUP_META[dominantGroup(ins[0])].label;
-    return keys.length > 0
+    const proc = GROUP_META[dominantGroup(real[0])].label;
+    const paste = declaredIns.map(p => p.declaredNote ?? '').filter(Boolean).join(' ');
+    const head = keys.length > 0
       ? `${srcs.join('と')}${more}を「${keys.join('・')}」で突き合わせて作られています。処理は${proc}です。`
       : `${srcs.join('と')}${more}から作られています。処理は${proc}です。`;
+    return paste === '' ? head : `${head} ${paste}`;
   };
   const gnodes: GNode[] = kept.map(r => {
     const p = pos.get(r.id)!;
@@ -829,6 +888,12 @@ function buildMap(
   });
   const glinks: GLink[] = drawPairs.map(p => {
     const g = dominantGroup(p);
+    if (p.declaredOnly) {
+      return {
+        s: p.from, t: p.to, color: DECLARED_ONLY.color, dashed: true,
+        label: p.declaredLabel ?? 'うかがった内容', count: 0,
+      };
+    }
     const qid = g === 'copy' ? copyQuestionByPair.get(`${p.from}\u0000${p.to}`) : undefined;
     return {
       s: p.from, t: p.to, color: GROUP_META[g].color, dashed: GROUP_META[g].dashed,
@@ -1337,6 +1402,104 @@ function collectUpstream(startIds: string[], pairs: PairAgg[]): Set<string> {
   return seen;
 }
 
+/**
+ * 最終アウトプットのブックの中にある「受領データを貼り付けただけのシート」を、受領ファイルへ結び直す。
+ *
+ * なぜ要るか:
+ *   試算ブックの中には、受領ファイルをそのまま値で貼ったシート（得意先マスタ・SPD収支管理表など）が
+ *   同居している。貼り付けなので数式のリンクは残らず、帳票ごとの関係図では
+ *   「ここが起点のデータです」としか出ない。読み手からすると、そのマスタがどこから来たのかが
+ *   図の中で切れてしまい、「受領ファイルとブックの中身が、どう対応するのか」が読み合わせの
+ *   たびに口頭の説明頼みになる。
+ *
+ * 何を根拠にするか（断定はしない。図でも点線で出す）:
+ *   列名の一致 … 貼り付け元と同じ見出しが並んでいること。3列以上かつ少ない側の6割以上で「一致」
+ *   お名前の一致 … シート名とファイル名が近いこと（①②の通し番号と拡張子は外して比較）
+ *   どちらも取れないシートは結ばない（「入手元が特定できていない」ことがそのまま論点になる）
+ */
+interface PasteOrigin { file: string; note: string }
+
+/** ①②… の通し番号・拡張子・空白を落として、シート名とファイル名を同じ土俵で比べる */
+const normNameForMatch = (s: string): string =>
+  s.replace(/\.[A-Za-z0-9]+$/, '')
+    .replace(/^[①-⑳0-9]+[_\-.\s]*/, '')
+    .replace(/[\s　_\-]/g, '')
+    .toLowerCase();
+
+/** 2文字ずつの重なり（Dice 係数）。表記ゆれのある日本語名どうしの近さを見るのに使う */
+function nameCloseness(a: string, b: string): number {
+  if (a === '' || b === '') return 0;
+  if (a === b) return 1;
+  const gram = (s: string): Set<string> => {
+    const out = new Set<string>();
+    for (let i = 0; i + 1 < s.length; i++) out.add(s.slice(i, i + 2));
+    return out;
+  };
+  const ga = gram(a); const gb = gram(b);
+  if (ga.size === 0 || gb.size === 0) return 0;
+  let inter = 0;
+  for (const g of ga) if (gb.has(g)) inter++;
+  return (2 * inter) / (ga.size + gb.size);
+}
+
+function buildPasteOrigins(
+  regions: Region[], pairs: PairAgg[], outputFiles: Set<string>, stats: Map<string, FileStat>,
+  declaredRels: DeclaredFileRel[], roles: Map<string, Role>,
+): Map<string, PasteOrigin> {
+  const fileOf = new Map(regions.map(r => [r.id, r.file]));
+  const hasIn = new Set(pairs.map(p => p.to));
+  const crossFileIn = new Set(pairs.filter(p => fileOf.get(p.from) !== fileOf.get(p.to)).map(p => p.to));
+  const outside = regions.filter(r => !outputFiles.has(r.file));
+  const nameOf = (label: string) => stats.get(label)?.filename ?? label;
+  const found = new Map<string, PasteOrigin>();
+  for (const r of regions) {
+    // 対象は「最終アウトプットのブックの中で、ほかのファイルから流れ込んでいない表」。
+    // 同じブックの中だけで計算されている表も対象に含める — 受領データを貼り付けたうえで
+    // 列を足しているシート（プロ得意先別実績など）や、土台を貼ってから計算している帳票本体が
+    // ここに当たり、そこを外すと肝心の「この数値はどのファイルから来たのか」が抜ける。
+    if (!outputFiles.has(r.file)) continue;
+    if (crossFileIn.has(r.id)) continue;
+    // ブックの中で計算されている表は、お名前の近さだけでは結ばない（列の一致を必須にする）
+    const needStrong = hasIn.has(r.id);
+    const mine = new Set(r.columns.map(c => c.name.trim()).filter(n => n !== ''));
+    let best: { file: string; sheet: string; inter: number; strong: boolean; close: number; score: number } | null = null;
+    for (const s of outside) {
+      const theirs = new Set(s.columns.map(c => c.name.trim()).filter(n => n !== ''));
+      let inter = 0;
+      for (const n of mine) if (theirs.has(n)) inter++;
+      const min = Math.min(mine.size, theirs.size);
+      const strong = inter >= 3 && min > 0 && inter / min >= 0.6;
+      const close = nameCloseness(normNameForMatch(r.sheet), normNameForMatch(nameOf(s.file)));
+      if (!strong && (needStrong || close < 0.5)) continue;
+      const score = (strong ? 100 : 0) + inter + close * 10;
+      if (!best || score > best.score) best = { file: s.file, sheet: s.sheet, inter, strong, close, score };
+    }
+    if (!best) continue;
+    found.set(r.id, {
+      file: best.file,
+      note: best.strong
+        ? `${nameOf(best.file)}（${best.sheet}）と列の見出しが ${best.inter} 件一致します。これを貼り付けたものと見ています。`
+        : `お名前が近い ${nameOf(best.file)} を貼り付けたものと見ています（列の見出しの一致は確認できませんでした）。`,
+    });
+  }
+
+  // うかがったブック関係が「帳票そのもの」へ向かっている場合は、列の一致が取れていなくても
+  // 土台として結ぶ。これは推測ではなくうかがった内容そのもので、しかも読み手がいちばん知りたい
+  // 「この帳票の数値はどのファイルから来たのか」に直接あたる。
+  for (const d of declaredRels) {
+    if (!outputFiles.has(d.toFile) || outputFiles.has(d.fromFile)) continue;
+    if ([...found.values()].some(o => o.file === d.fromFile)) continue;
+    for (const t of regions) {
+      if (t.file !== d.toFile || roles.get(t.id) !== '最終アウトプット' || found.has(t.id)) continue;
+      found.set(t.id, {
+        file: d.fromFile,
+        note: `${nameOf(d.fromFile)} を土台として貼り付けたものとうかがっています（Excel 上に数式は残っていません）。`,
+      });
+    }
+  }
+  return found;
+}
+
 function buildOutputSections(
   regions: Region[], pairs: PairAgg[], roles: Map<string, Role>,
   outputFiles: Set<string>, blocks: LogicBlock[],
@@ -1620,12 +1783,251 @@ function buildFileFlow(stats: Map<string, FileStat>, filePairs: FilePair[], outp
         ? `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${(p.r + 5).toFixed(1)}" fill="none" stroke="${fill}" stroke-opacity="0.32" stroke-width="2"${orphanOut ? ' stroke-dasharray="5 4"' : ''}/>`
         : '')
       + `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${p.r}" fill="${fill}" stroke="#FCFDFE" stroke-width="1.5"/>`
-      + `<text x="${p.x.toFixed(1)}" y="${(p.y + p.r + 14).toFixed(1)}" font-size="11.5" font-weight="${isOut ? 800 : 700}" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">${esc(fitText((isOut ? '★ ' : '') + s.filename, 250, 11.5))}</text>`
+      + `<text x="${p.x.toFixed(1)}" y="${(p.y + p.r + 14).toFixed(1)}" font-size="11.5" font-weight="${isOut ? 800 : 700}" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">${esc(fitText(isOut && !s.filename.startsWith('★') ? `★ ${s.filename}` : s.filename, 250, 11.5))}</text>`
       + `<text x="${p.x.toFixed(1)}" y="${(p.y + p.r + 28).toFixed(1)}" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">${esc(sub)}${orphanOut ? '（つながり未検出）' : ''}</text>`
       + '</g>');
   }
   parts.push('</svg>');
   return parts.join('\n');
+}
+
+// ---- 作成手順（ステップ）に沿った全体関係図 ----
+//
+// 手順書をいただけた案件では、ファイル間の矢印を一枚に並べただけの図では足りない。
+// 受け渡しの数だけ矢印が最終アウトプットへ集まる扇形になり、
+//   ・実際には「①へ足していく」土台のファイルが1つあること
+//   ・⑤→⑥のように、途中で1回加工してから土台へ入るものがあること
+//   ・どれが何番目の作業なのか
+// が図から落ちる。手順のステップ番号が入っているときは、
+//   段（帯）＝ステップ、右の縦帯＝土台のファイル、帯から土台へ入る矢印＝そのステップで足す項目
+// という並びで描き直す。ステップ番号が無い案件は従来どおり buildFileFlow を使う。
+const SFL = {
+  W: 1280,
+  CAP_X: 40,           // 左の「ステップN」見出し
+  COL_X: [246, 556],   // 帯の中のノード列（2列まで。⑤→⑥のような1回だけの中継を表せる幅）
+  COL_W_LABEL: 290,    // ノード名の折り返し幅（隣の列と重ならないところまで）
+  MERGE_X: 700,        // 帯の矢印を1点へ寄せる位置（土台へ合流していく見た目にする）
+  BASE_X: 760,         // 土台のファイル（丸）を置く位置。ステップごとに同じ x へ繰り返す
+  // 読み合わせでは投影・印刷した図をその場で指しながら話すので、図の中の字は
+  // 本文と同じくらいの大きさが要る（小さいと結局「これは何ですか」と口頭で聞かれる）
+  FS_CAP: 14, FS_CAP_SUB: 12, FS_NODE: 13, FS_NODE_SUB: 11, FS_ADD: 12.5, FS_SPINE: 13.5,
+  ROW_H: 64, ADD_H: 19, BAND_PAD: 26, BANDS_TOP: 46, OUT_GAP: 76, R: 13,
+};
+
+interface StepBand {
+  no: number; title: string;
+  cols: string[][];                                   // 帯の中のノード（列ごと）
+  inner: { from: string; to: string; rel: DeclaredFileRel }[];  // 帯の中の受け渡し
+  toSpine: { from: string; rel: DeclaredFileRel }[];  // 土台へ入るもの
+  adds: string[];                                     // そのステップで土台に足される項目
+  top: number; h: number;
+}
+
+/**
+ * ステップ帯レイアウトの全体関係図。手順のステップ番号が無い、または土台が定まらないときは
+ * null を返し、呼び出し側が従来の図（buildFileFlow）へ落ちる。
+ */
+function buildStepFlow(
+  stats: Map<string, FileStat>, rels: DeclaredFileRel[], outputs: Set<string>, detected: Set<string>,
+): { svg: string; backbone: string; output: string } | null {
+  const stepRels = rels.filter(r => typeof r.step === 'number');
+  const stepNos = [...new Set(stepRels.map(r => r.step!))].sort((a, b) => a - b);
+  if (stepNos.length < 2) return null;
+
+  // 土台＝複数のステップで受け側になっているファイル（「①へ付与していく」の①）
+  const asTarget = new Map<string, Set<number>>();
+  for (const r of stepRels) {
+    if (outputs.has(r.toFile)) continue;
+    const s = asTarget.get(r.toFile) ?? new Set<number>();
+    s.add(r.step!);
+    asTarget.set(r.toFile, s);
+  }
+  let backbone: string | null = null;
+  for (const [f, s] of asTarget) {
+    if (s.size < 2) continue;
+    if (!backbone || s.size > (asTarget.get(backbone)?.size ?? 0)) backbone = f;
+  }
+  if (!backbone) return null;
+  const outLabel = [...outputs][0] ?? null;
+
+  // ---- 帯を組む ----
+  const bands: StepBand[] = [];
+  const placed = new Set<string>([backbone, ...(outLabel ? [outLabel] : [])]);
+  for (const no of stepNos) {
+    const mine = stepRels.filter(r => r.step === no);
+    const members = [...new Set(mine.flatMap(r => [r.fromFile, r.toFile]))]
+      .filter(f => f !== backbone && f !== outLabel && stats.has(f));
+    // 列＝帯の中での深さ（受け側になっているものを右へ）。2列で足りない案件は右端へ寄せる
+    const depth = new Map<string, number>(members.map(f => [f, 0]));
+    for (let pass = 0; pass < members.length; pass++) {
+      let changed = false;
+      for (const r of mine) {
+        const df = depth.get(r.fromFile); const dt = depth.get(r.toFile);
+        if (df === undefined || dt === undefined) continue;
+        if (dt < df + 1) { depth.set(r.toFile, df + 1); changed = true; }
+      }
+      if (!changed) break;
+    }
+    const cols: string[][] = [[], []];
+    for (const f of members) {
+      cols[Math.min(1, depth.get(f) ?? 0)].push(f);
+      placed.add(f);
+    }
+    const rows = Math.max(1, ...cols.map(c => c.length));
+    // 「このステップで土台に足される列」。1件ずつ別の行に出す — つないで1行にすると
+    // 折り返しの位置しだいで「・」で切れ、何がいくつ足されるのかが読めなくなる
+    const adds = [...new Set(mine.map(r => r.adds ?? '').filter(a => a !== ''))];
+    bands.push({
+      no, title: mine.find(r => r.stepTitle)?.stepTitle ?? '',
+      cols,
+      inner: mine.filter(r => members.includes(r.toFile)).map(r => ({ from: r.fromFile, to: r.toFile, rel: r })),
+      toSpine: mine.filter(r => r.toFile === backbone).map(r => ({ from: r.fromFile, rel: r })),
+      adds,
+      // 帯の高さは「左のノード」と「右の土台に足される列」の高いほうに合わせる
+      top: 0, h: SFL.BAND_PAD + Math.max(rows * SFL.ROW_H, adds.length * SFL.ADD_H + 12) + 6,
+    });
+  }
+  // 手順に出てこないファイルも図から消さない（消すと「無かったこと」になる）
+  const rest = [...stats.values()].map(s => s.label).filter(l => !placed.has(l));
+  if (rest.length > 0) {
+    bands.push({
+      no: 0, title: '', cols: [rest, []], inner: [], toSpine: [], adds: [],
+      top: 0, h: SFL.BAND_PAD + rest.length * SFL.ROW_H + 6,
+    });
+  }
+
+  let y = SFL.BANDS_TOP;
+  for (const b of bands) { b.top = y; y += b.h; }
+  const bandsBottom = y;
+  // 最終アウトプットも「仕上げ」の段として同じ左→右の並びで置く。
+  // 最後だけ下へ落とすと、そこで図の読み方が変わってしまう。
+  const finalMid = bandsBottom + SFL.BAND_PAD + 18;
+  const height = Math.round(finalMid + 104);
+
+  const posOf = new Map<string, { x: number; y: number }>();
+  for (const b of bands) {
+    const mid = b.top + b.h / 2;
+    b.cols.forEach((col, ci) => {
+      col.forEach((f, i) => {
+        posOf.set(f, { x: SFL.COL_X[ci], y: mid + (i - (col.length - 1) / 2) * SFL.ROW_H });
+      });
+    });
+  }
+
+  const parts: string[] = [];
+  parts.push(`<svg viewBox="0 0 ${SFL.W} ${height}" role="img" aria-label="うかがった手順に沿ったファイルどうしの関係図">`);
+  parts.push('<defs>');
+  for (const g of GROUP_ORDER) {
+    parts.push(`<marker id="sf-${g}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${GROUP_META[g].color}" fill-opacity="0.85"/></marker>`);
+  }
+  parts.push('</defs>');
+  parts.push(`<rect x="0" y="0" width="${SFL.W}" height="${height}" fill="#FCFDFE"/>`);
+  parts.push('<pattern id="dot-sf" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#E4EBF3"/></pattern>');
+  parts.push(`<rect x="0" y="0" width="${SFL.W}" height="${height}" fill="url(#dot-sf)"/>`);
+
+  const bb = stats.get(backbone)!;
+  const bbFill = FILE_ROLE_FILL[bb.role];
+
+  for (const b of bands) {
+    const mid = b.top + b.h / 2;
+    if (b.top > SFL.BANDS_TOP) {
+      parts.push(`<line x1="${SFL.CAP_X}" y1="${b.top.toFixed(1)}" x2="${SFL.W - SFL.CAP_X}" y2="${b.top.toFixed(1)}" stroke="#DDE5EE" stroke-width="1"/>`);
+    }
+    // 帯の見出し
+    if (b.no > 0) {
+      parts.push(`<text x="${SFL.CAP_X}" y="${(mid - 6).toFixed(1)}" font-size="${SFL.FS_CAP}" font-weight="700" fill="#1F5FAE">ステップ${b.no}</text>`);
+      if (b.title !== '') {
+        parts.push(`<text x="${SFL.CAP_X}" y="${(mid + 13).toFixed(1)}" font-size="${SFL.FS_CAP_SUB}" fill="#7A8794">${esc(fitText(b.title, 180, SFL.FS_CAP_SUB))}</text>`);
+      }
+    } else {
+      parts.push(`<text x="${SFL.CAP_X}" y="${(mid - 6).toFixed(1)}" font-size="${SFL.FS_CAP}" font-weight="700" fill="#7A8794">手順に出てこない</text>`);
+      parts.push(`<text x="${SFL.CAP_X}" y="${(mid + 13).toFixed(1)}" font-size="${SFL.FS_CAP_SUB}" fill="#7A8794">ファイル</text>`);
+    }
+
+    // 帯の中の受け渡し（⑤人件費データ → ⑥得意先別訪問数 のような中継）
+    for (const e of b.inner) {
+      const a = posOf.get(e.from); const t = posOf.get(e.to);
+      if (!a || !t) continue;
+      const meta = GROUP_META[DECLARED_REL_GROUP[e.rel.relType] ?? 'move'];
+      const dash = detected.has(filePairKey(e.from, e.to)) ? '' : ' stroke-dasharray="2 5"';
+      const mx = (a.x + t.x) / 2, my = (a.y + t.y) / 2 - 14;
+      parts.push(`<path d="M${(a.x + SFL.R + 2).toFixed(1)},${a.y.toFixed(1)} Q${mx.toFixed(1)},${my.toFixed(1)} ${(t.x - SFL.R - 7).toFixed(1)},${t.y.toFixed(1)}" fill="none" stroke="${meta.color}" stroke-width="1.6" stroke-opacity="0.55"${dash} marker-end="url(#sf-${DECLARED_REL_GROUP[e.rel.relType] ?? 'move'})"/>`);
+      parts.push(`<text x="${mx.toFixed(1)}" y="${(my - 5).toFixed(1)}" font-size="${SFL.FS_NODE_SUB}" fill="${meta.color}" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.5px">${esc(FILE_REL_LABELS[e.rel.relType])}</text>`);
+    }
+
+    // 土台へ入る矢印。1点へ寄せてから土台の丸へ入れる（何本あっても行き先は同じ土台）
+    for (const e of b.toSpine) {
+      const a = posOf.get(e.from);
+      if (!a) continue;
+      const g = DECLARED_REL_GROUP[e.rel.relType] ?? 'move';
+      const meta = GROUP_META[g];
+      const dash = detected.has(filePairKey(e.from, backbone)) ? '' : ' stroke-dasharray="2 5"';
+      parts.push(`<path d="M${(a.x + SFL.R + 2).toFixed(1)},${a.y.toFixed(1)} Q${SFL.MERGE_X},${mid.toFixed(1)} ${(SFL.BASE_X - SFL.R - 7).toFixed(1)},${mid.toFixed(1)}" fill="none" stroke="${meta.color}" stroke-width="1.6" stroke-opacity="0.55"${dash} marker-end="url(#sf-${g})"/>`);
+    }
+    // 土台の丸を、ステップごとに置く。同じファイルを毎段くり返すことになるが、
+    // 縦長の枠で1つだけ描くより「丸＝ファイル・線＝受け渡し」の読み方だけで通せる
+    // （枠は凡例にも無い別の記号になるため、何を指しているのかが伝わらなかった）。
+    if (b.toSpine.length > 0) {
+      const lines = 1 + b.adds.length;
+      const top = mid + 4 - ((lines - 1) / 2) * SFL.ADD_H;
+      parts.push(`<circle cx="${SFL.BASE_X}" cy="${mid.toFixed(1)}" r="${SFL.R}" fill="${bbFill}" stroke="#FCFDFE" stroke-width="1.5"/>`);
+      parts.push(`<text x="${SFL.BASE_X + SFL.R + 9}" y="${top.toFixed(1)}" font-size="${SFL.FS_NODE}" font-weight="700" fill="#0E2A47">${esc(fitText(bb.filename, SFL.W - SFL.BASE_X - 60, SFL.FS_NODE))}</text>`);
+      b.adds.forEach((a, i) => {
+        parts.push(`<text x="${SFL.BASE_X + SFL.R + 9}" y="${(top + (i + 1) * SFL.ADD_H).toFixed(1)}" font-size="${SFL.FS_ADD}" fill="#1F5FAE">＋${esc(fitText(a, SFL.W - SFL.BASE_X - 70, SFL.FS_ADD))}</text>`);
+      });
+    }
+
+    // ノード（受領ファイル）
+    for (const col of b.cols) {
+      for (const f of col) {
+        const s = stats.get(f);
+        const p = posOf.get(f);
+        if (!s || !p) continue;
+        const sub = `${s.sheets.length}シート ／ ${s.rowTotal.toLocaleString()}行`;
+        parts.push('<g>'
+          + `<circle cx="${p.x}" cy="${p.y.toFixed(1)}" r="${SFL.R}" fill="${FILE_ROLE_FILL[s.role]}" stroke="#FCFDFE" stroke-width="1.5"/>`
+          + `<text x="${p.x}" y="${(p.y + SFL.R + 16).toFixed(1)}" font-size="${SFL.FS_NODE}" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">${esc(fitText(s.filename, SFL.COL_W_LABEL, SFL.FS_NODE))}</text>`
+          + `<text x="${p.x}" y="${(p.y + SFL.R + 31).toFixed(1)}" font-size="${SFL.FS_NODE_SUB}" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">${esc(sub)}</text>`
+          + '</g>');
+      }
+    }
+  }
+
+  // 仕上げの段：足し終わった土台 → 最終アウトプット。ステップの段と同じ向き（左→右）で置く
+  if (outLabel) {
+    const o = stats.get(outLabel)!;
+    const srcX = SFL.COL_X[0];
+    const finalRel = rels.find(r => r.fromFile === backbone && r.toFile === outLabel);
+    const g = finalRel ? (DECLARED_REL_GROUP[finalRel.relType] ?? 'move') : 'move';
+    const dash = finalRel && detected.has(filePairKey(backbone, outLabel)) ? '' : ' stroke-dasharray="2 5"';
+    parts.push(`<line x1="${SFL.CAP_X}" y1="${bandsBottom.toFixed(1)}" x2="${SFL.W - SFL.CAP_X}" y2="${bandsBottom.toFixed(1)}" stroke="#DDE5EE" stroke-width="1"/>`);
+    parts.push(`<text x="${SFL.CAP_X}" y="${(finalMid - 6).toFixed(1)}" font-size="${SFL.FS_CAP}" font-weight="700" fill="#C24141">仕上げ</text>`);
+    parts.push(`<text x="${SFL.CAP_X}" y="${(finalMid + 13).toFixed(1)}" font-size="${SFL.FS_CAP_SUB}" fill="#7A8794">試算表にする</text>`);
+    // 足し終わった土台
+    parts.push('<g>'
+      + `<circle cx="${srcX}" cy="${finalMid.toFixed(1)}" r="${SFL.R}" fill="${bbFill}" stroke="#FCFDFE" stroke-width="1.5"/>`
+      + `<text x="${srcX}" y="${(finalMid + SFL.R + 16).toFixed(1)}" font-size="${SFL.FS_NODE}" font-weight="700" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">${esc(fitText(bb.filename, SFL.COL_W_LABEL, SFL.FS_NODE))}</text>`
+      + `<text x="${srcX}" y="${(finalMid + SFL.R + 31).toFixed(1)}" font-size="${SFL.FS_NODE_SUB}" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">ステップ1〜4を足し終わった状態</text>`
+      + '</g>');
+    parts.push(`<path d="M${(srcX + SFL.R + 2).toFixed(1)},${finalMid.toFixed(1)} Q${SFL.MERGE_X},${finalMid.toFixed(1)} ${(SFL.BASE_X - 40).toFixed(1)},${finalMid.toFixed(1)}" fill="none" stroke="${GROUP_META[g].color}" stroke-width="1.6" stroke-opacity="0.55"${dash} marker-end="url(#sf-${g})"/>`);
+    parts.push(`<text x="${((srcX + SFL.BASE_X) / 2).toFixed(1)}" y="${(finalMid - 10).toFixed(1)}" font-size="${SFL.FS_NODE_SUB}" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.5px">そのまま貼り付けて試算表になります</text>`);
+    parts.push('<g>'
+      + `<circle cx="${SFL.BASE_X}" cy="${finalMid.toFixed(1)}" r="31" fill="none" stroke="#C0392B" stroke-opacity="0.32" stroke-width="2"/>`
+      + `<circle cx="${SFL.BASE_X}" cy="${finalMid.toFixed(1)}" r="26" fill="#C0392B" stroke="#FCFDFE" stroke-width="1.5"/>`
+      // ファイル名の先頭が既に ★ なら重ねない（「★ ★顧客別…」になってしまう）
+      + `<text x="${SFL.BASE_X}" y="${(finalMid + 48).toFixed(1)}" font-size="${SFL.FS_NODE}" font-weight="800" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">${esc(fitText(o.filename.startsWith('★') ? o.filename : `★ ${o.filename}`, 340, SFL.FS_NODE))}</text>`
+      + `<text x="${SFL.BASE_X}" y="${(finalMid + 63).toFixed(1)}" font-size="${SFL.FS_NODE_SUB}" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">${esc(`${o.sheets.length}シート ／ ${o.rowTotal.toLocaleString()}行`)}</text>`
+      + '</g>');
+  }
+
+  // 同じファイルが毎段に出てくることを、図の中でも断っておく
+  parts.push(`<text x="${SFL.CAP_X}" y="${(height - 18).toFixed(1)}" font-size="${SFL.FS_NODE_SUB}" fill="#7A8794">※ 各ステップの ${esc(bb.filename)} は、すべて同じファイルです。上から順に列を足していきます。</text>`);
+  parts.push('</svg>');
+  return {
+    svg: parts.join('\n'),
+    backbone: bb.filename,
+    output: outLabel ? (stats.get(outLabel)?.filename ?? outLabel) : '',
+  };
 }
 
 // ============================================================
@@ -1653,25 +2055,92 @@ function buildFileColumnIndex(regions: Region[]): Map<string, FileCols> {
 const CODE_LIKE = /(コード|ｺｰﾄﾞ|CD|ID|No\.?|番号|区分)/i;
 /** ヘッダーが無い表で付く仮の列名（A列・B列…）。候補に出しても読み手が突合先を判断できない */
 const PLACEHOLDER_COL = /^[A-Z]{1,3}列$/;
+/** 名称の列。コードの列と突き合わせる候補にはしない */
+const NAME_COL = /(名称|名前|名)$/;
 const KEY_HINT_CAP = 4;
 
 interface KeyHint { name: string; note: string }
 
+/**
+ * 突合キーの候補を探すときの列名の正規化。末尾のコード表記だけを落とす。
+ * 「集計得意先コード」と「集計得意先」、「得意先CD」と「得意先」は、
+ * 現場では同じものを指していることが多く、名前が違うだけで候補から落とすと
+ * 「見つかりませんでした」しか出せなくなる（実際にそうなっていた）。
+ * 「得意先名」と「得意先コード」のような名称／コードの違いは落とさない — 別の列なので。
+ */
+const normKeyName = (s: string): string => s
+  .replace(/[\s　_\-（）()]/g, '')
+  .replace(/(コード|ｺｰﾄﾞ|CD|ID|No\.?|番号)$/i, '')
+  .toLowerCase();
+
+/**
+ * ご登録のブック関係に対して「どの列で突き合わせられそうか」を出す。
+ * 手がかりの強い順に3段。どの段で見つけたかは note に書き、断定はしない。
+ *   1. 同じ名前の列が両方にある
+ *   2. コード表記を除くと同じ／片方が他方を含む名前がある（集計得意先コード ↔ 集計得意先）
+ *   3. どちらも取れないときは、両側のキーらしい列を並べて「どれで突き合わせるか」を尋ねる
+ * 3段目が要るのは、「見つかりませんでした」だけでは読み手が何を答えればよいか分からないため。
+ */
 function joinKeyHints(a: FileCols | undefined, b: FileCols | undefined): KeyHint[] {
   if (!a || !b) return [];
+  const usable = (cols: Set<string>) => [...cols]
+    .filter(n => n.trim().length >= 2 && !PLACEHOLDER_COL.test(n));
   const hits: (KeyHint & { score: number })[] = [];
-  for (const name of a.all) {
-    if (!b.all.has(name) || name.trim().length < 2 || PLACEHOLDER_COL.test(name)) continue;
+  for (const name of usable(a.all)) {
+    if (!b.all.has(name)) continue;
     const ka = a.keyCols.has(name); const kb = b.keyCols.has(name);
     const code = CODE_LIKE.test(name);
     // 「金額」「合計」のようにどこにでもある名前だけで候補にすると、突合キーに見えない列が並ぶ
     if (!ka && !kb && !code) continue;
     hits.push({
-      name, score: (ka ? 2 : 0) + (kb ? 2 : 0) + (code ? 1 : 0),
+      name, score: 100 + (ka ? 2 : 0) + (kb ? 2 : 0) + (code ? 1 : 0),
       note: ka && kb ? 'どちらの表でも値が重複していません'
         : ka || kb ? '片方の表で値が重複していません'
           : '両方のファイルに同じ名前であります',
     });
+  }
+  // 2段目：コード表記を除けば同じ、または片方が他方を含む名前
+  if (hits.length === 0) {
+    for (const an of usable(a.all)) {
+      const na = normKeyName(an);
+      if (na.length < 2) continue;
+      for (const bn of usable(b.all)) {
+        if (an === bn) continue;
+        const nb = normKeyName(bn);
+        if (nb.length < 2) continue;
+        // 片方だけが名称の列なら別物（「集計得意先コード」と「集計得意先名」を
+        // 突合キーの候補として並べると、コードと名前を突き合わせる話に読めてしまう）
+        if (NAME_COL.test(an) !== NAME_COL.test(bn)) continue;
+        const same = na === nb;
+        const part = !same && (na.includes(nb) || nb.includes(na));
+        if (!same && !part) continue;
+        const ka = a.keyCols.has(an); const kb = b.keyCols.has(bn);
+        if (!ka && !kb && !CODE_LIKE.test(an) && !CODE_LIKE.test(bn)) continue;
+        hits.push({
+          name: `${an} ＝ ${bn}`,
+          score: (same ? 50 : 20) + (ka ? 2 : 0) + (kb ? 2 : 0),
+          note: same ? 'コードの書き方が違うだけで、同じものを指していそうです'
+            : 'お名前が近いので、この2つを突き合わせておられそうです',
+        });
+      }
+    }
+  }
+  // 3段目：手がかりが無いときは、両側のキーらしい列を見せて確認をお願いする
+  if (hits.length === 0) {
+    const pick = (f: FileCols) => {
+      const keys = usable(f.keyCols);
+      const codes = usable(f.all).filter(n => CODE_LIKE.test(n));
+      return [...new Set([...keys, ...codes])].slice(0, 3);
+    };
+    const pa = pick(a); const pb = pick(b);
+    if (pa.length > 0 || pb.length > 0) {
+      if (pa.length > 0) {
+        hits.push({ name: `元の側：${pa.join('・')}`, score: 10, note: 'この中のどれで突き合わせておられますか' });
+      }
+      if (pb.length > 0) {
+        hits.push({ name: `先の側：${pb.join('・')}`, score: 9, note: 'お名前が一致する列が無いため、対応を教えてください' });
+      }
+    }
   }
   return hits.sort((x, y) => y.score - x.score || x.name.localeCompare(y.name))
     .slice(0, KEY_HINT_CAP)
@@ -1768,10 +2237,19 @@ const RECIPE_CAP = 6;        // 載せる行き先の数。多いと「結局ど
 const RECIPE_SRC_CAP = 4;    // 1つの行き先につき並べる元の数
 const RECIPE_COL_CAP = 5;    // 1つの行き先につき挙げる項目数
 
+/**
+ * 2-4 の中身と、その母数。
+ *   list  … 実際に載せる行き先（RECIPE_CAP まで）
+ *   total … 数式で作られている行き先の総数。「載せたのは何件で、何件を省いたか」を
+ *           上限の定数ではなく実数で書くために返す（定数を書くと、母数が上限に満たない
+ *           案件で「6 か所を載せています」と出るのに 4 件しか無い、という食い違いになる）
+ */
+interface RecipeSet { list: Recipe[]; total: number }
+
 function buildRecipes(
   edges: Edge[], pairs: PairAgg[], regions: Region[], pairKeys: Map<string, string>,
   roles: Map<string, Role>,
-): Recipe[] {
+): RecipeSet {
   // 図では短い呼び名でよいが、ここは「何からできるか」を言い切る場所なのでファイル名まで書く
   const shortLabels = buildLabels(regions);
   const fileOf = new Map(regions.map(r => [r.id, r.file]));
@@ -1815,7 +2293,7 @@ function buildRecipes(
   // 読み手の関心は最終アウトプットが何からできるか。まずそれ、次に関係の多い順。
   const rank = (id: string) => (roles.get(id) === '最終アウトプット' ? 1e9 : 0)
     + (totalOf.get(id) ?? 0);
-  return [...byDst]
+  const list = [...byDst]
     .sort((a, b) => rank(b[0]) - rank(a[0]))
     .slice(0, RECIPE_CAP)
     .map(([dstId, d]) => {
@@ -1841,6 +2319,7 @@ function buildRecipes(
         ])],
       };
     });
+  return { list, total: byDst.size };
 }
 
 /** 1件ぶんの図。左に元の表、中央に突合キー、右にできる表。 */
@@ -1984,6 +2463,9 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   assignFileRoles(fileStats, outputFiles, outputsDeclared, masterFiles);
   const fileNameOf = (label: string) => fileStats.get(label)?.filename ?? label;
   promoteDeclaredOutputRegions(regions, pairs, roles, declaredOut, outputFiles, outputsDeclared);
+  // 最終アウトプットのブックの中で「貼り付けただけ」のシートを、受領ファイルへ結び直す。
+  // 帳票ごとの関係図に点線で足して、マスタや実績がどこから来たのかを図の中で切らさない。
+  const pasteOrigins = buildPasteOrigins(regions, pairs, outputFiles, fileStats, declaredRels, roles);
 
   const audit = input.fileRelAudit ?? [];
   const questions = buildQuestions(
@@ -1994,7 +2476,10 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   // 「元データが辿れない最終アウトプット」を 03 の該当設問へ結ぶ。番号を書かないと
   // 図に「つながり未検出」とだけ出て、どこで確認すればよいのか読み手に伝わらない。
   const srcQuestionRef = questions.find(q => q.kind === '最終帳票の元データ')?.id ?? '';
-  const fileFlow = buildFileFlow(fileStats, flowPairs, outputFiles);
+  // うかがった手順のステップが登録されていれば、全体関係図はステップ帯で描く。
+  // 手順が無い案件（大半）はこれまでどおり流れの段で描く。
+  const stepFlow = buildStepFlow(fileStats, declaredRels, outputFiles, detectedPairKeys);
+  const fileFlow = stepFlow?.svg ?? buildFileFlow(fileStats, flowPairs, outputFiles);
   // 全体関係図の凡例は、実際にその図へ描かれた種類だけを出す。4種すべてを並べると、
   // 1種類しか使われていない図の下に無関係な3行が残り、どれがこの図の線なのか分からなくなる。
   const fileFlowGroups = GROUP_ORDER.filter(g => filePairs.some(p => dominantFileGroup(p) === g)
@@ -2017,19 +2502,27 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   const showEr = spec.items.erDiagram;
   const { rows: detailRows, omitted: detailOmitted } = buildDetailRows(pairs, labels, pairKeys, copyQuestionByPair);
   // 「何と何を、何で突き合わせて、何ができるか」を行き先ごとに1文＋1枚の図で示す
-  const recipes = buildRecipes(edges, pairs, regions, pairKeys, roles);
-  const recipeOmitted = Math.max(0, new Set(pairs.map(p => p.to)).size - recipes.length);
+  const { list: recipes, total: recipeTotal } = buildRecipes(edges, pairs, regions, pairKeys, roles);
+  // 省いた分は性質が2つある。混ぜて1つの数にすると「6か所を載せています」と出るのに
+  // 4件しか無いような食い違いになるので分けて数える。
+  //   truncated … 数式で作られている行き先のうち、上限で載せきれなかったぶん
+  //   valueOnly … 値の一致だけで見えている行き先（2-4 は言い切る場所なので最初から載せない）
+  const recipeTruncated = Math.max(0, recipeTotal - recipes.length);
+  const recipeValueOnly = Math.max(0, new Set(pairs.map(p => p.to)).size - recipeTotal);
   // 担当者が登録したブック関係。全体図の直下に、根拠の有無と突合キーの候補を添えて並べる。
   // 説明文だけを並べていたときは「で、それはどの列で突き合わせているのか」が読み取れず、
   // 自動検出できなかった関係については読み合わせで毎回そこから聞き直しになっていた。
   const fileCols = buildFileColumnIndex(regions);
   // 並びは 01 のファイル一覧と同じく、名前の先頭番号（①②…）順にする。
   // 登録した順に並べると、読み合わせで 01 と行き来したときに探す順序が変わってしまう。
+  // 手順のステップが登録されている案件では、ステップ順が担当者の頭の中の順番になる。
+  // その場合はステップ→ファイル番号の順に並べ、図の帯と同じ順序で読めるようにする。
   const declaredRows = declaredRels
     .map(d => ({ d, hints: joinKeyHints(fileCols.get(d.fromFile), fileCols.get(d.toFile)) }))
     .sort((a, b) => {
+      const sa = a.d.step ?? 99; const sb = b.d.step ?? 99;
       const na = fileNameOf(a.d.fromFile); const nb = fileNameOf(b.d.fromFile);
-      return (fileOrderNo(na) - fileOrderNo(nb)) || na.localeCompare(nb, 'ja');
+      return (sa - sb) || (fileOrderNo(na) - fileOrderNo(nb)) || na.localeCompare(nb, 'ja');
     });
   const showFileFlow = multiFile && spec.items.fileFlow;
 
@@ -2257,7 +2750,9 @@ ${secOn.inventory ? `
       <p class="sec-lede">いただいたファイルと、その中の各シートがどういう役割かの一覧です。</p>
     </div>
     <div class="tiles">
-      <div class="tile"><div class="tl">受領ファイル</div><div class="tv">${input.fileCount}<small>件</small></div>
+      <!-- 単位は「件」ではなく「ファイル」。隣のタイルと単位がそろっていないと、
+           同じ 10 でも何を数えた 10 なのかが読み取りにくい -->
+      <div class="tile"><div class="tl">受領ファイル</div><div class="tv">${input.fileCount}<small>ファイル</small></div>
         <div class="tsub">${sheetTotal} シート</div></div>
       <div class="tile"><div class="tl">元データ</div><div class="tv">${srcFileCount}<small>ファイル</small></div>
         <div class="tsub">${[masterFileCount > 0 ? `マスタ ${masterFileCount}` : '', midFileCount > 0 ? `経由するファイル ${midFileCount}` : ''].filter(Boolean).join(' ／ ') || '経由ファイル・マスタなし'}</div></div>
@@ -2297,13 +2792,20 @@ ${secOn.flow ? `
       ${formulaCount > 0 || copyCount > 0 ? `<p class="sec-lede">${sentences(
         formulaCount > 0 ? '表どうしのつながりの大半は SUMIFS・VLOOKUP などの数式で、中身はそのまま読み取れました。' : '',
         copyCount > 0
-          ? `一方、<b>${copyCount} 組</b>は数式が残っておらず、値が一致することから手作業での転記と考えています。`
-          : '手作業での転記と思われるつながりは見つかりませんでした。',
+          // 値が一致しているだけの組を「転記です」と言い切らない。同じ様式のシートを
+          // 並べているだけのこともあり、どちらかは Excel からは区別できない
+          ? `一方、<b>${copyCount} 組</b>は数式が残っておらず、値が一致していることだけが分かりました。`
+          : '数式が無いのに値が一致している組み合わせは見つかりませんでした。',
         copyCount > 0 ? refQuestions : '',
       )}</p>` : ''}
     </div>
     ${showFileFlow ? (fileFlow ? `
-    ${subH('ファイルどうしの全体関係図')}
+    ${subH(stepFlow ? 'ファイルどうしの全体関係図（うかがった作成手順）' : 'ファイルどうしの全体関係図')}
+    ${stepFlow ? `<ul class="graph-guide">
+      <li>各ステップの右端にある ${esc(stepFlow.backbone)} が<b>土台</b>です。左の丸が、そのステップで突き合わせる受領ファイルです。</li>
+      <li><b>＋</b> は、そのステップで土台の表に足される列です。上から順に足していき、最後に${stepFlow.output === '' ? '' : ` ${esc(stepFlow.output)} `}になります。</li>
+      <li>この順番と、足される列がこれで合っているかをご覧ください。</li>
+    </ul>` : ''}
     <div class="map-scroll">${fileFlow}</div>
     <div class="legend">
       <span class="lg-h">丸＝ファイル</span>
@@ -2311,8 +2813,9 @@ ${secOn.flow ? `
       ${masterFileCount > 0 ? '<span class="li"><span class="nrole mst"></span>マスタ</span>' : ''}
       <span class="li"><span class="nrole mid"></span>中間ファイル</span>
       <span class="li"><span class="nrole out"></span>最終アウトプット</span>
-      <span class="li"><span class="nrole iso"></span>つながり未検出</span>
-      ${hasOrphanOutput ? '<span class="li"><span class="nrole" style="border-color:#C0392B;border-style:dashed;background:#FBEFEF"></span>つながり未検出の最終アウトプット</span>' : ''}
+      ${stepFlow ? '<span class="li">各段の右端＝土台のファイル（同じファイルが毎段に出ます）</span>'
+        : '<span class="li"><span class="nrole iso"></span>つながり未検出</span>'}
+      ${hasOrphanOutput && !stepFlow ? '<span class="li"><span class="nrole" style="border-color:#C0392B;border-style:dashed;background:#FBEFEF"></span>つながり未検出の最終アウトプット</span>' : ''}
     </div>
     ${fileFlowGroups.length > 0 || declaredOnlyPairs.length > 0 ? `<div class="legend">
       <span class="lg-h">線</span>
@@ -2327,11 +2830,12 @@ ${secOn.flow ? `
       <table class="ot dl">
         <tr><th>ファイル間の受け渡し</th><th>種別</th><th>突合に使えそうな列</th><th>うかがった内容</th></tr>
         ${declaredRows.map(({ d, hints }) => `<tr>` +
-        `<td><b>${esc(fileNameOf(d.fromFile))}</b><div class="rnote">→ ${esc(fileNameOf(d.toFile))}</div></td>` +
+        `<td>${d.step ? `<div><span class="stepchip">ステップ${d.step}</span></div>` : ''}`
+        + `<b>${esc(fileNameOf(d.fromFile))}</b><div class="rnote">→ ${esc(fileNameOf(d.toFile))}</div></td>` +
         `<td>${esc(FILE_REL_LABELS[d.relType])}</td>` +
         `<td>${hints.length > 0
           ? hints.map(h => `<div class="kh"><b>${esc(h.name)}</b><span>${esc(h.note)}</span></div>`).join('')
-          : '<span class="dl-none">同じ名前の列が見つかりませんでした</span>'}</td>` +
+          : '<span class="dl-none">手がかりになる列名が見つかりませんでした</span>'}</td>` +
         `<td>${d.note.trim() !== '' ? esc(d.note) : '<span class="dl-none">—</span>'}</td>` +
         `</tr>`).join('\n        ')}
       </table>
@@ -2342,15 +2846,45 @@ ${secOn.flow ? `
     ${map ? `
     ${outputSections.map((sec, si) => {
       const secRegionOf = (k: string) => k.slice(0, k.lastIndexOf(':'));
-      const secMap = buildMap(`o${si}`, regions.filter(r => sec.regionIds.has(r.id)),
-        pairs.filter(p => sec.regionIds.has(p.from) && sec.regionIds.has(p.to)),
+      // 貼り付け元の受領ファイルを、この帳票の図へ点線のノードとして足す。
+      // ノードはファイル1つにつき1個（受領ブックの何番目のシートかまでは図では問わない）。
+      const secPastes = [...pasteOrigins].filter(([rid]) => sec.regionIds.has(rid));
+      // 入手元も上流も分からないまま残った表。黙って図に置くと「起点のデータ」に見えてしまうので、
+      // 図の下で名指しして確認事項にする。
+      const secOrphans = regions.filter(r => sec.regionIds.has(r.id)
+        && !pasteOrigins.has(r.id) && !pairs.some(p => p.to === r.id));
+      const pasteRegions: Region[] = [];
+      const pastePairs: PairAgg[] = [];
+      for (const [rid, o] of secPastes) {
+        // region.id は ':' を含まない約束（列名との区切りに使っている）ので '@' で作る
+        const pid = `paste-origin@${o.file}`;
+        if (!pasteRegions.some(x => x.id === pid)) {
+          const st = fileStats.get(o.file);
+          pasteRegions.push({
+            id: pid, file: o.file, sheet: st?.filename ?? o.file,
+            r0: 0, r1: 0, c0: 0, c1: 0, headerRow: null, columns: [], dataRowCount: st?.rowTotal ?? 0,
+          });
+          labels.set(pid, st?.filename ?? o.file);
+          roles.set(pid, st?.role === 'マスタ' ? 'マスタ' : '元データ');
+        }
+        pastePairs.push({
+          from: pid, to: rid, counts: {}, best: {}, total: 0,
+          declaredOnly: true, declaredLabel: '貼り付けと推定', declaredNote: o.note,
+        });
+      }
+      const secMap = buildMap(`o${si}`,
+        [...regions.filter(r => sec.regionIds.has(r.id)), ...pasteRegions],
+        [...pairs.filter(p => sec.regionIds.has(p.from) && sec.regionIds.has(p.to)), ...pastePairs],
         labels, copyQuestionByPair, roles,
         edges.filter(e => sec.regionIds.has(secRegionOf(e.from)) && sec.regionIds.has(secRegionOf(e.to))), pairKeys);
       return `
     ${subH(`最終アウトプット${OUT_NO[si] ?? `(${si + 1})`}　${sec.filename}`)}
     <div class="colchips tsheets"><span class="tsh">この中で再現する対象のシート</span>${sec.finalSheets.map(sh => `<span class="colchip">${esc(sh)}</span>`).join('')}</div>
-    ${sec.blocks.length === 0 ? `<p class="sec-lede"><b>この帳票の数値がどこから来ているのかを、いただいたファイルの中に見つけられませんでした。</b>`
+    ${sec.blocks.length === 0 ? `<p class="sec-lede"><b>この帳票の数値がどこから来ているのかを、数式の形ではいただいたファイルの中に見つけられませんでした。</b>`
       + `${srcQuestionRef ? `確認事項の <b>${srcQuestionRef}</b> に記載しています。` : 'お打ち合わせでご確認させてください。'}</p>` : ''}
+    ${secPastes.length > 0 ? `<p class="graph-guide">ブックの中の ${secPastes.length} シートは、受領ファイルを貼り付けたものと見ています。その入手元を図の<b>点線</b>で結んでいます（列の見出しの一致、またはうかがった内容が根拠です）。読み合わせでこの対応が合っているかをご確認ください。${secOrphans.length > 0
+      ? `${secOrphans.map(r => `<b>${esc(labels.get(r.id) ?? r.sheet)}</b>`).join('・')} は入手元を特定できませんでした。何から作っておられるかを教えてください。`
+      : ''}</p>` : ''}
     ${secMap ? `<div class="map-static map-scroll" data-graph="-o${si}">${secMap.svg}</div>
     ${spec.items.interactiveGraph ? `<div class="map-interactive relgraph-wrap" id="relgraph-wrap-o${si}" data-relgraph="-o${si}">
       <figure class="relgraph-stage lightmode" id="relgraph-o${si}" aria-label="表どうしの関係グラフ（操作可能）"></figure>
@@ -2373,6 +2907,7 @@ ${secOn.flow ? `
     <div class="legend">
       <span class="lg-h">線</span>
       ${GROUP_ORDER.map(g => `<span class="li"><span class="sw${GROUP_META[g].dashed ? ' dash' : ''}" style="border-color:${GROUP_META[g].color}"></span>${esc(GROUP_META[g].label)}</span>`).join('\n      ')}
+      ${secPastes.length > 0 ? `<span class="li"><span class="sw dot" style="border-color:${DECLARED_ONLY.color}"></span>点線＝貼り付け元と見ている受領ファイル</span>` : ''}
     </div>
     ${spec.items.interactiveGraph ? '<p class="tbl-note only-print">※ 本紙は静止画です。表をクリックすると計算ロジックが開く操作版は、ブラウザでご覧ください。</p>' : ''}` : ''}` : ''}
     ${sec.blocks.map((b, i) => renderLogicBlock(b, i + 1, regions, graph.keyLinks ?? [], labels, fileNameOf, showEr)).join('\n')}`;
@@ -2402,7 +2937,13 @@ ${secOn.flow ? `
       <div class="map-scroll">${renderRecipeSvg(r)}</div>
       ${r.noHeaderCols.length > 0 ? `<p class="tbl-note">※ ${esc(r.noHeaderCols.join('・'))} は見出しが空のため、列の位置でお呼びしています。何の列かを教えていただけますか。</p>` : ''}
     </div>`).join('\n')}
-    ${recipeOmitted > 0 ? `<p class="tbl-note">※ 関係の多い ${RECIPE_CAP} か所を載せています。ほか ${recipeOmitted} か所は下の一覧をご覧ください。</p>` : ''}
+    ${recipeTruncated > 0 || recipeValueOnly > 0 ? `<p class="tbl-note">※ ${
+      recipeTruncated > 0
+        ? `数式で作られている ${recipeTotal} か所のうち、関係の多い ${recipes.length} か所を載せています。残り ${recipeTruncated} か所`
+        : `数式で作られている ${recipes.length} か所を載せています。`
+    }${recipeValueOnly > 0
+      ? `${recipeTruncated > 0 ? 'と、' : ''}値が一致することから転記と考えている ${recipeValueOnly} か所は、下の一覧をご覧ください。`
+      : 'は下の一覧をご覧ください。'}</p>` : ''}
 
     <!-- 一覧は行数が多く、読み合わせでは普段たたんでおきたい。既定は閉じる -->
     <details class="fileblk">
@@ -2684,6 +3225,9 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
 .seg-list{font-size:12.5px;line-height:1.8}
 .seg-list p{margin:0}
 .seg-list p+p{margin-top:7px;padding-top:7px;border-top:1px dashed var(--line)}
+/* うかがった手順のステップ番号。図の帯と一覧を同じ番号で行き来できるようにする */
+.stepchip{display:inline-block;font-size:10.5px;font-weight:700;color:var(--blue);background:var(--blue-bg);
+  border:1px solid #C9DEF4;border-radius:6px;padding:1px 7px;margin-bottom:3px}
 /* 突合キーの候補。列名とその根拠（何をもってキーと見たか）を1行で並べる */
 .kh{line-height:1.5}
 .kh+.kh{margin-top:4px}
