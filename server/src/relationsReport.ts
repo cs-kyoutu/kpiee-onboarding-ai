@@ -241,9 +241,46 @@ interface Question {
   id: string; priority: 'high' | 'mid'; kind: string; title: string;
   /** 解析でわかったこと。機械が出した根拠文字列をそのまま載せない（顧客が読む文章にする） */
   analysis?: string;
+  /**
+   * 「どこの話か」の内訳。件数が多い設問で、文章に詰め込む代わりに箇条書きで並べる。
+   * 数千組を1文で言うと何も伝わらず、1組ずつ設問にすると読めない。その間を埋めるための欄。
+   */
+  detail?: string[];
   /** 伺いたいこと。複数あるときは配列で渡し、箇条書きで出す（1行に①②③を詰め込まない） */
   ask: string | string[];
   refPair?: string; // copy 質問→辺表・図から参照するための `${from}\u0000${to}`
+}
+
+/**
+ * 値一致（手修正推定）の対を、読み手が「どこの話か」を掴める形で扱うための情報。
+ *   kindOf … ブックをまたぐ / 同じブックの別シート / 同じシートの中。論点の重さがまるで違う
+ *   colsOf … 一致していた列名。「どこが」を列名で言えないと、読み手は確認のしようがない
+ */
+interface CopyInfo {
+  kindOf: (p: PairAgg) => 'cross' | 'sameBook' | 'sameSheet';
+  colsOf: (p: PairAgg) => string[];
+}
+
+function buildCopyInfo(regions: Region[], edges: Edge[]): CopyInfo {
+  const byId = new Map(regions.map(r => [r.id, r]));
+  const cols = new Map<string, string[]>();
+  for (const e of edges) {
+    if (e.type !== 'copy') continue;
+    const k = regionPairKey(regionIdOf(e.from), regionIdOf(e.to));
+    const col = colNameOf(e.to) || colNameOf(e.from);
+    if (col === '') continue;
+    const arr = cols.get(k) ?? [];
+    if (!arr.includes(col)) arr.push(col);
+    cols.set(k, arr);
+  }
+  return {
+    kindOf: (p) => {
+      const a = byId.get(p.from); const b = byId.get(p.to);
+      if (!a || !b || a.file !== b.file) return 'cross';
+      return a.sheet === b.sheet ? 'sameSheet' : 'sameBook';
+    },
+    colsOf: (p) => cols.get(regionPairKey(p.from, p.to)) ?? [],
+  };
 }
 
 function buildQuestions(
@@ -251,6 +288,7 @@ function buildQuestions(
   labels: Map<string, string>, roles: Map<string, Role>,
   fileRelAudit: FileRelAudit[], fileNameOf: (label: string) => string,
   declaredOut: DeclaredOutputIndex, sharedTemplates: SharedTemplateColumn[],
+  copyInfo: CopyInfo,
 ): Question[] {
   const qs: Omit<Question, 'id'>[] = [];
   // 設問では表の呼び名にファイル名を必ず添える。図の中では短いほうが読みやすいが、設問は
@@ -320,9 +358,11 @@ function buildQuestions(
     fileRelAudit.filter(a => a.verdict === 'matched').map(a => filePairKey(a.fromFile, a.toFile)),
   );
   const fileOfRegion = new Map(regions.map(r => [r.id, r.file]));
+  // 向きは値の一致からは決められないので、逆向きの登録でも「確認済み」として扱う
   const isConfirmed = (p: PairAgg): boolean => {
     const f = fileOfRegion.get(p.from); const t = fileOfRegion.get(p.to);
-    return !!f && !!t && f !== t && confirmedFilePairs.has(filePairKey(f, t));
+    if (!f || !t || f === t) return false;
+    return confirmedFilePairs.has(filePairKey(f, t)) || confirmedFilePairs.has(filePairKey(t, f));
   };
   const copyPairs = pairs
     .filter(p => (p.counts.copy ?? 0) > 0 && !isConfirmed(p))
@@ -332,7 +372,23 @@ function buildQuestions(
   // 規模のあるものだけを個別に出し、残りはまとめて1問にする。
   const cellsOf = (p: PairAgg): number =>
     Number((/(\d[\d,]*)\s*件/.exec(p.best.copy?.evidence ?? '')?.[1] ?? '0').replace(/,/g, ''));
-  const strongCopy = copyPairs.filter(p => (p.counts.copy ?? 0) >= 2 || cellsOf(p) >= 100);
+  // 一致していた列名を短く並べる。「どこが一致したのか」を列名で言えないと確認のしようがない
+  const colList = (p: PairAgg): string => {
+    const all = copyInfo.colsOf(p);
+    // 「AL列」のような位置の呼び名だけを並べても、読み手はどの項目か分からない。
+    // 名前のある列を優先し、名前が無いものは本数だけ言う。
+    const named = all.filter(c => !PLACEHOLDER_COL.test(c));
+    const anon = all.length - named.length;
+    if (named.length === 0) return anon > 0 ? `見出しのない列 ${anon} 列` : '';
+    return `${named.slice(0, 4).map(c => `「${c}」`).join('・')}`
+      + (named.length > 4 ? ` ほか${named.length - 4}列` : '')
+      + (anon > 0 ? `（ほかに見出しのない列 ${anon} 列）` : '');
+  };
+  // ブックをまたぐ一致だけを個別の設問にする。同じブックの中（とくに同じシートの中）の一致は
+  // 同じ様式の表が並んでいるためのことが多く、1件ずつ聞くと本当の論点が埋もれる。
+  const crossCopy = copyPairs.filter(p => copyInfo.kindOf(p) === 'cross');
+  const innerCopy = copyPairs.filter(p => copyInfo.kindOf(p) !== 'cross');
+  const strongCopy = crossCopy.filter(p => (p.counts.copy ?? 0) >= 2 || cellsOf(p) >= 100);
   const shownCopy = strongCopy.slice(0, 3);
   for (const p of shownCopy) {
     const from = fullName(p.from);
@@ -348,7 +404,7 @@ function buildQuestions(
       title: undirected
         ? `「${from}」と「${to}」に同じ数値が入っています。どちらを元として運んでおられますか？`
         : `「${to}」の一部の列は、「${from}」から手で貼っておられますか？`,
-      analysis: `${n} つの列で、数式が入っていないのに値が完全に一致していました${cellNote}。`
+      analysis: `一致していたのは ${colList(p) || `${n} つの列`} で、${n} 列ぶん${cellNote}が数式なしで完全に同じ値でした。`
         + '数式が残っていないため、どちらからどちらへ運ばれたのかまでは追えていません。',
       ask: undirected
         ? ['元として扱っておられるのはどちらですか', '貼り替えるのはいつのタイミングで、どなたが担当されていますか']
@@ -356,51 +412,59 @@ function buildQuestions(
            '2つの数値が食い違ったときは、どちらを正としておられますか'],
     });
   }
-  if (copyPairs.length > shownCopy.length) {
-    // 残りをまとめる問い。以前は件数だけを書いていたため「どこを見ればよいのか」が伝わらなかった。
-    // 規模の大きい順に実物の表の名前を挙げて、読み合わせで最初に開く場所を決められるようにする。
-    // また、個別カードが1件も出ていないときに「上と同じ」と書くと、存在しないカードを指してしまう。
-    const rest = copyPairs.filter(p => !shownCopy.includes(p));
-    // 表ペアのまま3件だけ挙げると、月次タブのように同じ形のシートが並ぶブックでは
-    //「②AMEX › 202604 と 202603」「202604 と 202602」…と、同じ話が並ぶだけで論点にならない。
-    // ブック単位へ畳んでから挙げると、「同じブックの中のシートどうし」なのか
-    //「ブックをまたぐ受け渡し」なのかが一目で分かる。
-    interface CopyGroup { from: string; to: string; pairs: number; cols: number; sameFile: boolean }
+  // ブックをまたぐ一致の残り。ファイル対へ畳み、代表の列名まで書いて「どこを見ればよいか」を残す
+  const restCross = crossCopy.filter(p => !shownCopy.includes(p));
+  if (restCross.length > 0) {
+    interface CopyGroup { from: string; to: string; pairs: number; cols: number; sample: PairAgg }
     const groups = new Map<string, CopyGroup>();
-    for (const p of rest) {
+    for (const p of restCross) {
       const f = fileOfRegion.get(p.from) ?? ''; const t = fileOfRegion.get(p.to) ?? '';
       const k = filePairKey(f, t);
       let g = groups.get(k);
-      if (!g) { g = { from: f, to: t, pairs: 0, cols: 0, sameFile: f === t }; groups.set(k, g); }
+      if (!g) { g = { from: f, to: t, pairs: 0, cols: 0, sample: p }; groups.set(k, g); }
       g.pairs++;
       g.cols += p.counts.copy ?? 0;
+      if ((p.counts.copy ?? 0) > (g.sample.counts.copy ?? 0)) g.sample = p;
     }
     const ordered = [...groups.values()].sort((a, b) => b.cols - a.cols || b.pairs - a.pairs);
-    const names = ordered.slice(0, 3).map(g => (g.sameFile
-      ? `「${fileNameOf(g.from)}」の中のシートどうし（${g.pairs} 組）`
-      : `「${fileNameOf(g.from)}」と「${fileNameOf(g.to)}」（${g.pairs} 組）`)).join('、')
-      + (ordered.length > 3 ? ` ほか${ordered.length - 3}組み合わせ` : '');
-    // 同じブックの中で1列ずつ一致しているだけなら、月次タブの様式の使い回しであることが多い。
-    // それを「優先度 高」で並べると、本当に確認したい受け渡しが埋もれる。
-    const allSameFileThin = rest.every(p => {
-      const f = fileOfRegion.get(p.from); const t = fileOfRegion.get(p.to);
-      return f === t && (p.counts.copy ?? 0) <= 1;
-    });
+    const lines = ordered.slice(0, 4).map(g =>
+      `${fileNameOf(g.from)} → ${fileNameOf(g.to)}：${g.pairs} 組（例: ${colList(g.sample) || '列名の取得なし'}）`);
     qs.push({
-      priority: allSameFileThin ? 'mid' : 'high', kind: '手修正の確認',
+      priority: 'high', kind: '手修正の確認',
       title: shownCopy.length > 0
-        ? `同じように値が一致する箇所が、ほかにも ${rest.length} 組あります。規模の大きいものから一緒に見ていただけますか。`
-        : `数式が無いのに値が一致している箇所が ${rest.length} 組あります。${allSameFileThin ? '同じ様式の使い回しでしょうか。' : '規模の大きいものから一緒に見ていただけますか。'}`,
-      analysis: `多い順に ${names} です。`
-        + (allSameFileThin
-          ? '同じブックの中のシートどうしで、1列ずつ同じ値が並んでいる形です。月ごとにシートを分けて同じ様式で作っておられる場合、項目名の列が各シートに同じ順で並ぶため、ここに出てきます。'
-          : 'いずれも数式が残っていないため、貼り付けておられるのか、たまたま同じ値が並んでいるだけなのかを Excel からは区別できません。')
-        + '1列だけ・セル数の少ないものは、区分名や単価のように同じ値が並んでいるだけのことも多く、すべてが転記作業とは限りません。',
-      ask: allSameFileThin
-        ? ['シートを月ごとに分けて、同じ様式で作っておられるという理解で合っていますか',
-           'この中に、ほかのファイルからコピーして貼っておられるものがあれば教えてください']
-        : ['この中に、毎月コピーして貼っておられるものはありますか',
-           'お打ち合わせで画面をお見せしますので、上に挙げた大きいものから順に、実際の作業かどうかを教えてください'],
+        ? `ほかにも、ブックをまたいで同じ値が入っている箇所が ${restCross.length} 組あります。貼り付けておられますか？`
+        : `ブックをまたいで同じ値が入っている箇所が ${restCross.length} 組あります。貼り付けておられますか？`,
+      analysis: '多い順に、次のファイル間で見つかっています。',
+      detail: lines,
+      ask: ['この中に、毎月コピーして貼っておられるものはありますか',
+            '貼り替えるのはいつのタイミングで、どなたが担当されていますか'],
+    });
+  }
+  // 同じブックの中の一致。同じ様式の表が繰り返し並ぶブックでは数千組になるため、
+  // 件数を数えるだけでは何も伝わらない。どのシートの何列かを代表で挙げて1問にまとめる。
+  if (innerCopy.length > 0) {
+    const bySheet = new Map<string, { file: string; sheet: string; pairs: number; cols: number; sample: PairAgg }>();
+    for (const p of innerCopy) {
+      const r = regionById.get(p.to);
+      if (!r) continue;
+      const k = `${r.file} ${r.sheet}`;
+      let g = bySheet.get(k);
+      if (!g) { g = { file: r.file, sheet: r.sheet, pairs: 0, cols: 0, sample: p }; bySheet.set(k, g); }
+      g.pairs++;
+      g.cols += p.counts.copy ?? 0;
+      if ((p.counts.copy ?? 0) > (g.sample.counts.copy ?? 0)) g.sample = p;
+    }
+    const ordered = [...bySheet.values()].sort((a, b) => b.cols - a.cols || b.pairs - a.pairs);
+    const lines = ordered.slice(0, 5).map(g =>
+      `${fileNameOf(g.file)} › ${g.sheet}：${g.pairs} 組（例: ${colList(g.sample) || '列名の取得なし'}）`);
+    qs.push({
+      priority: 'mid', kind: '同じ様式の繰り返し',
+      title: `同じブックの中で、同じ値が並んでいる表が ${innerCopy.length} 組あります。同じ様式を使い回しておられますか？`,
+      analysis: '拠点ごと・月ごとに同じ様式の表を並べておられる場合、項目名や予算の列が各表に同じ順で並ぶため、'
+        + 'ここに出てきます。数が多いので、どのシートに多いかだけを挙げます。',
+      detail: lines.concat(ordered.length > 5 ? [`ほか ${ordered.length - 5} シート`] : []),
+      ask: ['拠点ごと・月ごとに同じ様式で作っておられるという理解で合っていますか',
+            'この中に、ほかのファイルから貼っておられるものがあれば教えてください'],
     });
   }
 
@@ -516,12 +580,26 @@ function buildQuestions(
   const noKey = regions.filter(r => r.dataRowCount >= 20 && !r.keys?.grain
     && !(r.keys?.keys ?? []).some(k => k.role !== 'join'));
   if (noKey.length > 0) {
-    const names = noKey.slice(0, 3).map(r => `「${fullName(r.id)}」`).join('、')
-      + (noKey.length > 3 ? ` ほか${noKey.length - 3}表` : '');
+    // 1シートが複数の表に割れていると同じシート名が何度も並ぶので、シート単位でまとめる。
+    // どのシートに多いかは「どこか」の欄へ出す（設問の見出しに全部詰めると読めない）。
+    const bySheet = new Map<string, { file: string; sheet: string; n: number }>();
+    for (const r of noKey) {
+      const k = `${r.file} ${r.sheet}`;
+      const g = bySheet.get(k) ?? { file: r.file, sheet: r.sheet, n: 0 };
+      g.n++;
+      bySheet.set(k, g);
+    }
+    const sheets = [...bySheet.values()].sort((a, b) => b.n - a.n);
+    const names = sheets.slice(0, 3).map(s => `「${fileNameOf(s.file)} › ${s.sheet}」`).join('、')
+      + (sheets.length > 3 ? ` ほか${sheets.length - 3}シート` : '');
     qs.push({
       priority: 'mid', kind: 'キーの確認',
       title: `${names} は、何が決まると1行になる表でしょうか？`,
-      analysis: '重複のない列も、数式が突合に使っている列も見当たらず、1行の単位を読み取れませんでした。',
+      analysis: `重複のない列も、数式が突合に使っている列も見当たらず、1行の単位を読み取れませんでした（${sheets.length} シート・${noKey.length} 表）。`,
+      detail: sheets.length > 1
+        ? sheets.slice(0, 6).map(s => `${fileNameOf(s.file)} › ${s.sheet}${s.n > 1 ? `（${s.n} 表）` : ''}`)
+          .concat(sheets.length > 6 ? [`ほか ${sheets.length - 6} シート`] : [])
+        : undefined,
       ask: 'たとえば「受注ごと」「店舗×月ごと」のように、1行の単位を教えてください。',
     });
   }
@@ -667,14 +745,26 @@ function buildMap(
   // 分からなくなる（つながりが見つかっていないこと自体が確認したい論点なので、隠さず置く）。
   const isOut = (r: Region) => (roles.get(r.id) ?? '') === '最終アウトプット';
   const connected = regions.filter(r => weight.has(r.id) || isOut(r));
+  // 貼り付け元として結んだ表（declaredOnly）は関係の本数が 0 なので、重み順に切ると必ず落ちる。
+  // 落ちると本文だけが「◯シートの入手元を点線で結んでいます」と言って図に線が無い状態になるため、
+  // 最終アウトプットの次に優先して残す。
+  const declaredEnds = new Set(pairs.filter(p => p.declaredOnly).flatMap(p => [p.from, p.to]));
   const kept = connected
     .slice()
     // 同じ重みなら最終アウトプットを優先して残す（上限で切られて消えないように）
-    .sort((a, b) => (Number(isOut(b)) - Number(isOut(a)))
+    // 点線の両端を最優先で確保する。最終アウトプットの表が上限いっぱいまである帳票
+    //（1シートが何十もの表に割れているブック）では、これを後ろにすると点線が1本も残らない。
+    .sort((a, b) => (Number(declaredEnds.has(b.id)) - Number(declaredEnds.has(a.id)))
+      || (Number(isOut(b)) - Number(isOut(a)))
       || (weight.get(b.id) ?? 0) - (weight.get(a.id) ?? 0))
     .slice(0, MAX_NODES);
   const keptIds = new Set(kept.map(r => r.id));
-  const drawPairs = pairs.filter(p => keptIds.has(p.from) && keptIds.has(p.to)).slice(0, MAX_EDGES);
+  // 上限で切るときは「貼り付け元の点線」を先に確保し、次に関係の本数が多い順。
+  // 配列の順のまま切ると、後ろへ足した点線が真っ先に落ちて、本文だけが線の存在を語る形になる。
+  const drawPairs = pairs
+    .filter(p => keptIds.has(p.from) && keptIds.has(p.to))
+    .sort((a, b) => (Number(!!b.declaredOnly) - Number(!!a.declaredOnly)) || b.total - a.total)
+    .slice(0, MAX_EDGES);
   // 辺が1本も無くても、最終アウトプットが居るなら図は出す（「どれが目的地か」は示す）
   if (drawPairs.length === 0 && !kept.some(isOut)) return null;
 
@@ -1442,6 +1532,9 @@ function nameCloseness(a: string, b: string): number {
   return (2 * inter) / (ga.size + gb.size);
 }
 
+/** 1つの帳票につき図へ足す貼り付け元の上限。これを超えると図が「点線の束」になって読めない */
+const PASTE_PER_OUTPUT = 6;
+
 function buildPasteOrigins(
   regions: Region[], pairs: PairAgg[], outputFiles: Set<string>, stats: Map<string, FileStat>,
   declaredRels: DeclaredFileRel[], roles: Map<string, Role>,
@@ -1449,9 +1542,15 @@ function buildPasteOrigins(
   const fileOf = new Map(regions.map(r => [r.id, r.file]));
   const hasIn = new Set(pairs.map(p => p.to));
   const crossFileIn = new Set(pairs.filter(p => fileOf.get(p.from) !== fileOf.get(p.to)).map(p => p.to));
-  const outside = regions.filter(r => !outputFiles.has(r.file));
+  // 流入の本数。「帳票本体はどれか」を選ぶときの手掛かりに使う
+  const inDeg = new Map<string, number>();
+  for (const p of pairs) inDeg.set(p.to, (inDeg.get(p.to) ?? 0) + p.total);
+  // 断片のような小さい表は候補にしない。列名がいくつか合っただけで結ぶと、
+  // 同じ様式のシートが何十枚も並ぶブックでは総当たりの点線になってしまう。
+  const outside = regions.filter(r => !outputFiles.has(r.file) && r.dataRowCount >= 5);
   const nameOf = (label: string) => stats.get(label)?.filename ?? label;
-  const found = new Map<string, PasteOrigin>();
+  // 候補は (受け側の表) 単位で持ち、あとで「元ファイルごとに最良の1件」「帳票ごとに上限」で絞る
+  const cand: { to: string; toFile: string; from: string; origin: PasteOrigin; score: number }[] = [];
   for (const r of regions) {
     // 対象は「最終アウトプットのブックの中で、ほかのファイルから流れ込んでいない表」。
     // 同じブックの中だけで計算されている表も対象に含める — 受領データを貼り付けたうえで
@@ -1468,19 +1567,60 @@ function buildPasteOrigins(
       let inter = 0;
       for (const n of mine) if (theirs.has(n)) inter++;
       const min = Math.min(mine.size, theirs.size);
-      const strong = inter >= 3 && min > 0 && inter / min >= 0.6;
-      const close = nameCloseness(normNameForMatch(r.sheet), normNameForMatch(nameOf(s.file)));
-      if (!strong && (needStrong || close < 0.5)) continue;
-      const score = (strong ? 100 : 0) + inter + close * 10;
+      // 行数が桁違いなら、同じ列名が並んでいても貼り付け元とは考えにくい（別の粒度の表）
+      const ratio = r.dataRowCount > 0 && s.dataRowCount > 0
+        ? Math.max(r.dataRowCount, s.dataRowCount) / Math.min(r.dataRowCount, s.dataRowCount) : 99;
+      // 一致列は4列以上・少ない側の6割以上。7割まで上げると、貼り付け後に列を足している
+      // シート（元の13列のうち4列だけが残る等）が落ちて、別ファイルに取り違えられた。
+      const strong = inter >= 4 && min > 0 && inter / min >= 0.6 && ratio <= 2.5;
+      const ns = normNameForMatch(r.sheet); const nf = normNameForMatch(nameOf(s.file));
+      const close = nameCloseness(ns, nf);
+      // シート名がファイル名の中にそのまま入っている（サマリーの「③仮予算」シート ↔ ③仮予算….xlsx）
+      // なら、名前のほうが列の一致より確かな手がかり。同じ様式のシートが何枚も並ぶブックでは
+      // 列だけでは見分けがつかず、列で選ぶと別のファイルへ取り違える。
+      const named = ns.length >= 2 && (nf.includes(ns) || ns.includes(nf));
+      const nameOk = named || close >= 0.5;
+      // ブックの中で計算されているシートは、列が合っただけでは結ばない。
+      // 4本グラフのように「売上・仕入・変動費…」という一般的な列名が並ぶ表は、
+      // 予算ブックの拠点シートとも一致してしまい、無関係なファイルへ線が伸びる。
+      if (needStrong && !(strong && nameOk)) continue;
+      if (!needStrong && !strong && !nameOk) continue;
+      const score = (named ? 200 : 0) + (strong ? 100 : 0) + inter + close * 10;
       if (!best || score > best.score) best = { file: s.file, sheet: s.sheet, inter, strong, close, score };
     }
     if (!best) continue;
-    found.set(r.id, {
-      file: best.file,
-      note: best.strong
-        ? `${nameOf(best.file)}（${best.sheet}）と列の見出しが ${best.inter} 件一致します。これを貼り付けたものと見ています。`
-        : `お名前が近い ${nameOf(best.file)} を貼り付けたものと見ています（列の見出しの一致は確認できませんでした）。`,
+    cand.push({
+      to: r.id, toFile: r.file, from: best.file, score: best.score,
+      origin: {
+        file: best.file,
+        note: best.strong
+          ? `${nameOf(best.file)}（${best.sheet}）と列の見出しが ${best.inter} 件一致します。${best.score >= 200 ? 'シートのお名前も一致しており、' : ''}これを貼り付けたものと見ています。`
+          : `シートのお名前が ${nameOf(best.file)} と一致します。これを貼り付けたものと見ています（列の見出しの一致は確認できませんでした）。`,
+      },
     });
+  }
+
+  // 「元ファイルごとに、いちばん根拠の強い受け側1件」だけを残す。
+  // 同じ様式のシートが何十枚も並ぶブックでは、1つの元ファイルが何十枚とも一致してしまい、
+  // 図が点線の束になって「どこから来たのか」がかえって読めなくなる。
+  const found = new Map<string, PasteOrigin>();
+  const bestPerSource = new Map<string, typeof cand[number]>();
+  for (const c of cand) {
+    const k = `${c.toFile} ${c.from}`;
+    const cur = bestPerSource.get(k);
+    if (!cur || c.score > cur.score) bestPerSource.set(k, c);
+  }
+  // 帳票ごとに上限件数まで（根拠の強い順）
+  const perOutput = new Map<string, number>();
+  for (const c of [...bestPerSource.values()].sort((a, b) => b.score - a.score)) {
+    // 同じ表を複数の元ファイルが指したときは、根拠の強い方だけを採る。
+    // ここで弾かないと後から来たほうで上書きされ、先に決まっていた対応が黙って消える
+    // （④プロ得意先別実績 との対応が ① に奪われる、という取り違えが実際に起きた）。
+    if (found.has(c.to)) continue;
+    const n = perOutput.get(c.toFile) ?? 0;
+    if (n >= PASTE_PER_OUTPUT) continue;
+    perOutput.set(c.toFile, n + 1);
+    found.set(c.to, c.origin);
   }
 
   // うかがったブック関係が「帳票そのもの」へ向かっている場合は、列の一致が取れていなくても
@@ -1488,14 +1628,42 @@ function buildPasteOrigins(
   // 「この帳票の数値はどのファイルから来たのか」に直接あたる。
   for (const d of declaredRels) {
     if (!outputFiles.has(d.toFile) || outputFiles.has(d.fromFile)) continue;
-    if ([...found.values()].some(o => o.file === d.fromFile)) continue;
-    for (const t of regions) {
-      if (t.file !== d.toFile || roles.get(t.id) !== '最終アウトプット' || found.has(t.id)) continue;
-      found.set(t.id, {
-        file: d.fromFile,
-        note: `${nameOf(d.fromFile)} を土台として貼り付けたものとうかがっています（Excel 上に数式は残っていません）。`,
-      });
-    }
+    // 同じ元ファイルを二重に結ばないのは「この帳票の中で」の話。帳票ごとに数える。
+    // 全体で1回にすると、2つの帳票が同じファイルを元にしている案件で片方から線が消える。
+    const already = [...found.entries()].some(([rid, o]) => o.file === d.fromFile && fileOf.get(rid) === d.toFile);
+    if (already) continue;
+    if ((perOutput.get(d.toFile) ?? 0) >= PASTE_PER_OUTPUT) continue;
+    // 結ぶ先は「その帳票のいちばん大きい表」1つだけ。帳票が複数の表に分かれているブックで
+    // 全部に結ぶと、1本の受け渡しが何十本もの点線に見えてしまう。
+    // 結び先は、名前が元ファイルと対応するシート（サマリーの「⑭実績」など）を優先し、
+    // 無ければその帳票のいちばん大きい表にする
+    const nf = normNameForMatch(nameOf(d.fromFile));
+    const finals = regions.filter(t => t.file === d.toFile && roles.get(t.id) === '最終アウトプット');
+    const namedHit = finals.some(t => {
+      const nt = normNameForMatch(t.sheet);
+      return nt.length >= 2 && nf.includes(nt);
+    });
+    // 帳票が何枚もあるブックで、名前の手掛かりも無いまま「どれか1枚」へ結ぶと、
+    // 無関係なシート（利益乖離率など）へ線が伸びて誤読を生む。そういう時は結ばない
+    //（受け渡し自体は 2-2 の一覧に文章で残る）。
+    if (!namedHit && new Set(finals.map(t => t.sheet)).size > 2) continue;
+    const target = finals
+      .filter(t => !found.has(t.id))
+      .sort((a, b) => {
+        const na = normNameForMatch(a.sheet); const nb = normNameForMatch(b.sheet);
+        const ha = na.length >= 2 && nf.includes(na) ? 1 : 0;
+        const hb = nb.length >= 2 && nf.includes(nb) ? 1 : 0;
+        // 名前が合わないときは「いちばん多くの表から集めている表」＝帳票本体へ結ぶ。
+        // 行数だけで選ぶと、脇に置かれたグラフ用のシートへ線が伸びてしまう。
+        return (hb - ha) || ((inDeg.get(b.id) ?? 0) - (inDeg.get(a.id) ?? 0))
+          || (b.dataRowCount - a.dataRowCount);
+      })[0];
+    if (!target) continue;
+    perOutput.set(d.toFile, (perOutput.get(d.toFile) ?? 0) + 1);
+    found.set(target.id, {
+      file: d.fromFile,
+      note: `${nameOf(d.fromFile)} を土台として貼り付けたものとうかがっています（Excel 上に数式は残っていません）。`,
+    });
   }
   return found;
 }
@@ -2057,6 +2225,12 @@ const CODE_LIKE = /(コード|ｺｰﾄﾞ|CD|ID|No\.?|番号|区分)/i;
 const PLACEHOLDER_COL = /^[A-Z]{1,3}列$/;
 /** 名称の列。コードの列と突き合わせる候補にはしない */
 const NAME_COL = /(名称|名前|名)$/;
+/**
+ * 列名らしいか。見出しの無い表では、注意書きや説明文がそのまま列名として拾われることがあり
+ *（例:「下記のセルに入力をお願いします」）、それを突合キーの候補に並べると表が読めなくなる。
+ */
+const looksLikeColumn = (s: string): boolean =>
+  s.length <= 14 && !/[。、！？]/.test(s) && !/(ください|お願い|してください)/.test(s);
 const KEY_HINT_CAP = 4;
 
 interface KeyHint { name: string; note: string }
@@ -2084,7 +2258,7 @@ const normKeyName = (s: string): string => s
 function joinKeyHints(a: FileCols | undefined, b: FileCols | undefined): KeyHint[] {
   if (!a || !b) return [];
   const usable = (cols: Set<string>) => [...cols]
-    .filter(n => n.trim().length >= 2 && !PLACEHOLDER_COL.test(n));
+    .filter(n => n.trim().length >= 2 && !PLACEHOLDER_COL.test(n) && looksLikeColumn(n.trim()));
   const hits: (KeyHint & { score: number })[] = [];
   for (const name of usable(a.all)) {
     if (!b.all.has(name)) continue;
@@ -2416,7 +2590,7 @@ export function summarizeReportQuestions(input: RelationsReportInput): { count: 
   promoteDeclaredOutputRegions(regions, pairs, roles, declaredOut, new Set(resolved.labels), resolved.declared);
   const qs = buildQuestions(
     regions, pairs, graph.warnings ?? [], labels, roles, input.fileRelAudit ?? [], fileNameOf, declaredOut,
-    graph.sharedTemplates ?? [],
+    graph.sharedTemplates ?? [], buildCopyInfo(regions, (graph.edges ?? []) as Edge[]),
   );
   return { count: qs.length, titles: qs.map(q => `${q.id} ${q.title}`) };
 }
@@ -2468,8 +2642,12 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   const pasteOrigins = buildPasteOrigins(regions, pairs, outputFiles, fileStats, declaredRels, roles);
 
   const audit = input.fileRelAudit ?? [];
+  // 値一致（手修正推定）は「どこの話か」で意味がまるで違うので、性質と列名を引ける形で渡す。
+  // 同じシートの中の一致まで1件ずつ設問にすると、拠点別に同じ様式が並ぶブックでは数千件になる。
+  const copyInfo = buildCopyInfo(regions, edges);
   const questions = buildQuestions(
     regions, pairs, warnings, labels, roles, audit, fileNameOf, declaredOut, graph.sharedTemplates ?? [],
+    copyInfo,
   );
   const copyQuestionByPair = new Map<string, string>();
   for (const q of questions) if (q.refPair) copyQuestionByPair.set(q.refPair, q.id);
@@ -2576,8 +2754,22 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   // 内訳はすぐ下のファイル一覧に同じ数字が出ており、同じ内容を三度読ませていたため。
   // 残す価値があるのは「数式で追跡できた分と、追跡できず推定に留まる分の割合」だけなので、
   // それは 02 の導入文（これから何を説明するのか）と全体関係図の下へ文脈付きで移す。
-  const copyCount = pairs.filter(p => (p.counts.copy ?? 0) > 0).length;
-  const formulaCount = pairs.length - copyCount;
+  // ご登録の受け渡しで説明がつく（matched）ファイル対は、値一致の件数からも外す。
+  // 03 の設問と同じ数え方にしないと、導入文と設問の件数が食い違って読み手が混乱する。
+  const matchedFilePairs = new Set(
+    audit.filter(a => a.verdict === 'matched').map(a => filePairKey(a.fromFile, a.toFile)),
+  );
+  const fileOfR = new Map(regions.map(r => [r.id, r.file]));
+  const copyAll = pairs.filter(p => {
+    if ((p.counts.copy ?? 0) === 0) return false;
+    const f = fileOfR.get(p.from); const t = fileOfR.get(p.to);
+    if (!f || !t || f === t) return true;
+    // 向きは値の一致からは決められないので、逆向きの登録でも説明がついたものとして外す
+    return !(matchedFilePairs.has(filePairKey(f, t)) || matchedFilePairs.has(filePairKey(t, f)));
+  });
+  const copyCount = copyAll.filter(p => copyInfo.kindOf(p) === 'cross').length;   // ブックをまたぐ＝本当の論点
+  const copyInner = copyAll.length - copyCount;                                   // 同じブックの中＝様式の繰り返し
+  const formulaCount = pairs.length - copyAll.length;
   const matchedRels = audit.filter(a => a.verdict === 'matched').length;
   // 案件固有の前提（アウトプット相談で足したメモ）だけは自動生成の要約ではないので 01 に残す
   const premises = spec.notes;
@@ -2693,6 +2885,7 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
       <div class="qtitle">${esc(q.title)}</div>
       <dl class="qgrid">
         ${q.analysis ? `<dt>わかったこと</dt><dd>${esc(q.analysis)}</dd>` : ''}
+      ${q.detail && q.detail.length > 0 ? `<dt>どこか</dt><dd><ul class="qwhere">${q.detail.map(d => `<li>${esc(d)}</li>`).join('')}</ul></dd>` : ''}
         <dt>教えてください</dt><dd>${ask}</dd>
 
       </dl>
@@ -2791,12 +2984,17 @@ ${secOn.flow ? `
         : 'いただいたファイルが、どのシートから、どんな計算でつながっているかを確認します。'}</p>
       ${formulaCount > 0 || copyCount > 0 ? `<p class="sec-lede">${sentences(
         formulaCount > 0 ? '表どうしのつながりの大半は SUMIFS・VLOOKUP などの数式で、中身はそのまま読み取れました。' : '',
+        // 値が一致しているだけの組を「転記です」と言い切らない。同じ様式のシートを
+        // 並べているだけのこともあり、どちらかは Excel からは区別できない。
+        // ブックをまたぐ分と、同じブックの中（様式の繰り返し）は分けて数える — 混ぜると
+        // 「数万組が手作業」という誤った規模感になる。
         copyCount > 0
-          // 値が一致しているだけの組を「転記です」と言い切らない。同じ様式のシートを
-          // 並べているだけのこともあり、どちらかは Excel からは区別できない
-          ? `一方、<b>${copyCount} 組</b>は数式が残っておらず、値が一致していることだけが分かりました。`
-          : '数式が無いのに値が一致している組み合わせは見つかりませんでした。',
-        copyCount > 0 ? refQuestions : '',
+          ? `一方、<b>ブックをまたいで ${copyCount} 組</b>は数式が残っておらず、値が一致していることだけが分かりました。`
+          : 'ブックをまたいで値だけが一致している組み合わせは見つかりませんでした。',
+        copyInner > 0
+          ? `同じブックの中でも <b>${copyInner.toLocaleString()} 組</b>ありますが、拠点別・月別に同じ様式の表を並べておられるためと見ています。`
+          : '',
+        copyCount > 0 || copyInner > 0 ? refQuestions : '',
       )}</p>` : ''}
     </div>
     ${showFileFlow ? (fileFlow ? `
@@ -2851,8 +3049,10 @@ ${secOn.flow ? `
       const secPastes = [...pasteOrigins].filter(([rid]) => sec.regionIds.has(rid));
       // 入手元も上流も分からないまま残った表。黙って図に置くと「起点のデータ」に見えてしまうので、
       // 図の下で名指しして確認事項にする。
+      // シート単位で1回だけ挙げる（1シートが複数の表に分かれていると同じ名前が何度も並ぶ）
       const secOrphans = regions.filter(r => sec.regionIds.has(r.id)
-        && !pasteOrigins.has(r.id) && !pairs.some(p => p.to === r.id));
+        && !pasteOrigins.has(r.id) && !pairs.some(p => p.to === r.id))
+        .filter((r, i, arr) => arr.findIndex(x => x.file === r.file && x.sheet === r.sheet) === i);
       const pasteRegions: Region[] = [];
       const pastePairs: PairAgg[] = [];
       for (const [rid, o] of secPastes) {
@@ -2880,11 +3080,11 @@ ${secOn.flow ? `
       return `
     ${subH(`最終アウトプット${OUT_NO[si] ?? `(${si + 1})`}　${sec.filename}`)}
     <div class="colchips tsheets"><span class="tsh">この中で再現する対象のシート</span>${sec.finalSheets.map(sh => `<span class="colchip">${esc(sh)}</span>`).join('')}</div>
-    ${sec.blocks.length === 0 ? `<p class="sec-lede"><b>この帳票の数値がどこから来ているのかを、数式の形ではいただいたファイルの中に見つけられませんでした。</b>`
-      + `${srcQuestionRef ? `確認事項の <b>${srcQuestionRef}</b> に記載しています。` : 'お打ち合わせでご確認させてください。'}</p>` : ''}
-    ${secPastes.length > 0 ? `<p class="graph-guide">ブックの中の ${secPastes.length} シートは、受領ファイルを貼り付けたものと見ています。その入手元を図の<b>点線</b>で結んでいます（列の見出しの一致、またはうかがった内容が根拠です）。読み合わせでこの対応が合っているかをご確認ください。${secOrphans.length > 0
-      ? `${secOrphans.map(r => `<b>${esc(labels.get(r.id) ?? r.sheet)}</b>`).join('・')} は入手元を特定できませんでした。何から作っておられるかを教えてください。`
-      : ''}</p>` : ''}
+    ${sec.blocks.length === 0 ? `<p class="sec-lede"><b>ほかのファイルからこの帳票への受け渡しは、数式の形では見つけられませんでした。</b>`
+      + `${srcQuestionRef ? `確認事項の <b>${srcQuestionRef}</b> に記載しています。` : 'お打ち合わせでご確認させてください。'}`
+      + 'ブックの中での計算は、下の図と一覧に出ています。</p>' : ''}
+    ${secPastes.length > 0 ? `<p class="graph-guide">ブックの中の ${secPastes.length} シートは、受領ファイルを貼り付けたものと見ています。その入手元を図の<b>点線</b>で結んでいます（列の見出しの一致、またはうかがった内容が根拠です）。読み合わせでこの対応が合っているかをご確認ください。</p>` : ''}
+    ${secOrphans.length > 0 ? `<p class="graph-guide">入手元を特定できなかったシートが ${secOrphans.length} 枚あります：${secOrphans.slice(0, 6).map(r => `<b>${esc(r.sheet)}</b>`).join('・')}${secOrphans.length > 6 ? ` ほか ${secOrphans.length - 6} 枚` : ''}。何から作っておられるかを教えてください。</p>` : ''}
     ${secMap ? `<div class="map-static map-scroll" data-graph="-o${si}">${secMap.svg}</div>
     ${spec.items.interactiveGraph ? `<div class="map-interactive relgraph-wrap" id="relgraph-wrap-o${si}" data-relgraph="-o${si}">
       <figure class="relgraph-stage lightmode" id="relgraph-o${si}" aria-label="表どうしの関係グラフ（操作可能）"></figure>
@@ -3156,6 +3356,11 @@ details.fileblk[open]>summary::before{transform:rotate(90deg)}
 .qgrid{display:grid;grid-template-columns:96px 1fr;gap:6px 14px;font-size:13px;margin-top:6px}
 .qgrid dt{color:var(--sub);font-size:12px;padding-top:2px}
 .qgrid dd{line-height:1.75}
+/* 「どこか」の内訳。ファイル名・シート名・列名が縦に揃うと、読み合わせで指しながら追える */
+.qwhere{list-style:none;padding:0;margin:0;font-size:12.5px}
+.qwhere li{padding-left:14px;position:relative;line-height:1.7}
+.qwhere li+li{border-top:1px dotted var(--line)}
+.qwhere li::before{content:'・';position:absolute;left:0;color:var(--sub)}
 /* ご回答メモ。画面上でそのまま入力でき、内容はブラウザに保存される。印刷にもそのまま出る */
 .ansbox{margin-top:12px;display:block;width:100%;border:1.5px dashed var(--line);border-radius:10px;min-height:76px;padding:10px 12px;font-family:var(--body);font-size:13px;line-height:1.75;color:var(--text);background:#FCFDFE;resize:vertical}
 .ansbox::placeholder{color:var(--sub)}

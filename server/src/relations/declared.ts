@@ -133,7 +133,10 @@ export function auditFileRelations(graph: RelationGraph, declared: DeclaredFileR
     const fwd = detected.get(filePairKey(d.fromFile, d.toFile));
     const rev = detected.get(filePairKey(d.toFile, d.fromFile));
     if (fwd) {
+      // 逆向きも検出されていたら、それも同じ宣言で説明がつく（値の一致から向きは決められない）。
+      // ここで消さないと、同じ2ファイルの話が「一致」と「未宣言」の2件に分かれて並ぶ。
       consumed.add(filePairKey(d.fromFile, d.toFile));
+      consumed.add(filePairKey(d.toFile, d.fromFile));
       out.push({ fromFile: d.fromFile, toFile: d.toFile, verdict: 'matched', relType: d.relType, note: d.note, detectedTotal: fwd.total });
     } else if (rev) {
       consumed.add(filePairKey(d.toFile, d.fromFile));
