@@ -3026,6 +3026,10 @@ ${secOn.flow ? `
     ${declaredRows.length > 0 ? `
     ${subH('ファイル間の受け渡しと、突合キーの候補')}
     <p class="graph-guide">うかがった受け渡しの内容と、その突合に使えそうな列です。この理解で合っているかをご覧ください。</p>
+    <!-- 突合キーの候補は、取込設定を詰めるときに開く表。読み合わせで頭から全部読む内容ではないので
+         既定は閉じておく（印刷時は下部スクリプトが開く）。 -->
+    <details class="fileblk">
+      <summary><b>うかがった受け渡しと、突合キーの候補を開く</b><span class="rows">${declaredRows.length} 件</span></summary>
     <div style="overflow-x:auto">
       <table class="ot dl">
         <tr><th>ファイル間の受け渡し</th><th>種別</th><th>突合に使えそうな列</th><th>うかがった内容</th></tr>
@@ -3040,7 +3044,8 @@ ${secOn.flow ? `
         `</tr>`).join('\n        ')}
       </table>
     </div>
-    ${declaredOnlyPairs.length > 0 ? `<p class="tbl-note">※ 貼り付けた時点と元データの時点がずれていると、Excel の上では元と先の一致を確認できません。上の受け渡しについては、うかがった内容が手がかりになりますので、読み合わせでご確認をお願いします。</p>` : ''}` : ''}` : `
+    ${declaredOnlyPairs.length > 0 ? `<p class="tbl-note">※ 貼り付けた時点と元データの時点がずれていると、Excel の上では元と先の一致を確認できません。上の受け渡しについては、うかがった内容が手がかりになりますので、読み合わせでご確認をお願いします。</p>` : ''}
+    </details>` : ''}` : `
     <p class="sec-lede">ファイルをまたぐつながりは見つかりませんでした。各ファイルが独立して管理されている可能性があります。${refQuestions}</p>`) : ''}
 
     ${map ? `
