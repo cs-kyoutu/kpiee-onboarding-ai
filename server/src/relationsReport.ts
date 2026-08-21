@@ -6,13 +6,16 @@
 //   - セルの生値は載せない（列名・数式・行数などの構造情報のみ）— 社外共有しても原本数値が漏れない
 // summaryDoc.ts（Word/md のパッケージ資料）と同じ「保存済み派生結果から決定的に組み立てる」等級。
 //
-// 構成は4節。読み合わせの打ち合わせで上から順に説明していける並びにしてある:
-//   01 受領データ一覧 … どのブックが何で、各シートがどういう役割か（取込時に入力された情報）
-//   02 全体の流れと詳細ロジック … 全体関係図（ブック間）→ 詳細関係図（シート・表間）→ 詳細ロジック表
-//   03 ご確認いただきたい点 … 自動解析が「推定」に留まる箇所
-//   04 今後の進め方
-// 02 は必ず「全体 → 詳細」の順に降りる。1ブックの案件ではブック間の図が1箱になって意味を持たないため、
-// 全体の段を省いて詳細関係図から入る（従来の構成と同じ）。
+// 構成は5節。読み合わせの打ち合わせで上から順に説明していける並びにしてある:
+//   01 受領データ一覧 … どのブックが何で、各タブがどういう役割か（取込時に入力された情報）
+//   02 再現するアウトプットの確認 … 何を再現するのか・伺っている作り方・今回の前提
+//   03 ロジックの確認 … 全体関係図（ブック間）→ 最終アウトプットごとに「読み方 → でき方 → 確認欄」
+//   04 ご確認いただきたい点 … 自動解析が「推定」に留まる箇所
+//   05 今後の進め方
+// 02 は「合っているかを最初に確かめる」節。ここが違っていると 03 以降の読み方も変わるため先に置く。
+// 内容（spec.reproduce / howMade / assumptions / sheetGuide）が無い案件では節そのものを出さず、
+// 節番号を繰り上げる。03 は必ず「全体 → 帳票ごと」の順に降りる。1ブックの案件ではブック間の図が
+// 1箱になって意味を持たないため、全体の段を省いて帳票ごとの節から入る。
 import type {
   RelationGraph, Region, Edge, RelationWarning, KeyLink, SharedTemplateColumn,
 } from './preprocess/relations.js';
@@ -24,7 +27,9 @@ import {
   type Group, type PairAgg, type FilePair,
 } from './relations/fileGraph.js';
 import { FILE_REL_LABELS, type DeclaredFileRel, type FileRelAudit } from './relations/declared.js';
-import { DEFAULT_REPORT_SPEC, type ReportSpec } from './reportSpec.js';
+import {
+  DEFAULT_REPORT_SPEC, type ReportSpec, type ReportOutputBlock, type ReportOutputPlan,
+} from './reportSpec.js';
 
 /**
  * 取込時のファイル情報。「最終アウトプットはどれか」は業務知識なので自動推定より優先する。
@@ -196,6 +201,7 @@ function buildLabels(regions: Region[]): Map<string, string> {
   const perSheet = new Map<string, number>();
   for (const r of regions) perSheet.set(`${r.file}\u0000${r.sheet}`, (perSheet.get(`${r.file}\u0000${r.sheet}`) ?? 0) + 1);
   const seen = new Map<string, number>();
+  const used = new Set<string>();
   const labels = new Map<string, string>();
   for (const r of regions) {
     const sk = `${r.file}\u0000${r.sheet}`;
@@ -205,7 +211,19 @@ function buildLabels(regions: Region[]): Map<string, string> {
     // CSV 由来のシート名は一律「データ」で意味を持たないため、ファイル名をラベルにする
     const base = r.sheet === 'データ' && r.file ? r.file
       : ambiguous && r.file ? `${r.file} › ${r.sheet}` : r.sheet;
-    labels.set(r.id, (perSheet.get(sk) ?? 1) > 1 ? `${base} (${n})` : base);
+    // 1枚のシートが複数の表に割れているとき、通し番号 (2) では読み手が現物を探せない
+    //（「①サマリー (5)」と言われても、シートは1枚しかないので何のことか分からない）。
+    // 縦横に並ぶものを添えて、どの表の話かが読んで分かるようにする。軸が読めなかったときだけ
+    // セル範囲に落とす。Excel 上の位置は、01 節の表ブロックとロジック表の注記に残している。
+    const ax = axisLabel(r);
+    let name = base;
+    if ((perSheet.get(sk) ?? 1) > 1) {
+      name = `${base} ${ax === '' ? rangeOf(r) : ax}`;
+      // 軸の説明が同じになる表が2つあると呼び分けられない。そのときだけ番地に戻す
+      if (used.has(name)) name = `${base} ${rangeOf(r)}`;
+    }
+    used.add(name);
+    labels.set(r.id, name);
   }
   return labels;
 }
@@ -234,12 +252,178 @@ function keySummaryShort(r: Region): string {
 
 const rangeOf = (r: Region): string => `${colLetter(r.c0)}${r.r0}:${colLetter(r.c1)}${r.r1}`;
 
+/**
+ * 見出しの読めなかった列（`I列` のような位置の呼び方）を、意味の分かる呼び方へ直す。
+ * 横軸のまとまりと繰り返し単位が読めていれば、`I列` は「東京の売上」と言い直せる。
+ * 読み合わせでは列記号を言われても現物を指せないので、分かるものは全て言い直す。
+ */
+function prettyColumn(r: Region | undefined, name: string): string {
+  const m = /^([A-Z]{1,3})列$/.exec(name);
+  if (!m || !r?.axes?.colGroupSpans) return name;
+  let c = 0;
+  for (const ch of m[1]) c = c * 26 + (ch.charCodeAt(0) - 64);
+  const span = r.axes.colGroupSpans.find(s => c >= s.c0 && c <= s.c1);
+  if (!span) return name;
+  const units = r.axes.colUnits ?? [];
+  if (units.length === 0) return span.name;
+  return `${span.name}の${units[(c - span.c0) % units.length]}`;
+}
+
+/** 文の中に混ざった列記号（`A列 × B列` など）を、まとめて意味の分かる呼び方へ直す */
+function prettyText(r: Region | undefined, s: string): string {
+  return s.replace(/[A-Z]{1,3}列/g, m => prettyColumn(r, m));
+}
+
+/** 先頭 n 件だけ並べ、残りは「ほか N」でまとめる（total は省略前の総数） */
+function axisList(xs: string[], n: number, total?: number): string {
+  const shown = Math.min(n, xs.length);
+  const rest = (total ?? xs.length) - shown;
+  return xs.slice(0, shown).join('・') + (rest > 0 ? 'ほか' + String(rest) : '');
+}
+
+/**
+ * 表の呼び名に添える、縦横に何が並ぶかの説明。1枚のシートが複数の表に割れているときの
+ * 区別に使う。以前はセル番地（F42:BJ43）を添えていたが、番地では何の表か分からないため、
+ * 「（参考）年間仮予算・進捗率 × DF計・東京ほか17」のように中身で呼ぶ。
+ * 図のノードにも載るので短く。指標の内訳（売上・営業利益…）は axisDetail に回す。
+ */
+function axisLabel(r: Region): string {
+  const a = r.axes;
+  if (!a) return '';
+  // 呼び名は図のノードに収まる長さにする。2つまでなら並べ、3つ以上なら先頭1つと件数だけ
+  const brief = (xs: string[], total?: number): string =>
+    ((total ?? xs.length) <= 2 ? axisList(xs, 2, total) : axisList(xs, 1, total));
+  const rows = a.rowLabels ? brief(a.rowLabels, a.rowLabelTotal) : '';
+  const cols = a.colGroups ? brief(a.colGroups, a.colGroupTotal)
+    : a.colUnits ? brief(a.colUnits) : '';
+  const body = rows !== '' && cols !== '' ? rows + ' × ' + cols : rows || cols;
+  if (body === '') return '';
+  return (a.section ?? '') + body;
+}
+
+const SHAPE_SHEET_CAP = 4;  // 「この帳票の形」を書くシートの数（グラフのシートまで並べると長い）
+
+/** 最終アウトプットの節で「この帳票の形」を書くための、シート1枚ぶんの読み取り */
+interface SheetShape {
+  sheet: string;
+  /** 帯の区分。例: 【単月】【累計】（参考） */
+  sections: string[];
+  rowLabels: string[]; rowTotal: number;
+  /** 横に並ぶまとまり。左から順（例: 全社・DF計・東京…） */
+  groups: string[];
+  /** まとまり1つの中で繰り返される列。例: 売上・営業利益・経常利益 */
+  units: string[];
+  totals: { name: string; parts: string[]; partTotal: number }[];
+}
+
+/**
+ * 1枚のシートを「縦に何が、横に何が並び、どれが合計か」で言い直す。
+ * 1シートが複数の表に割れていても、読み手にとっては1枚の帳票なので、
+ * 同じ行範囲に並ぶ表をつなげて、横軸を左から右へ1本にまとめる。
+ */
+function buildSheetShape(regions: Region[], file: string, sheet: string): SheetShape | null {
+  const mine = regions.filter(r => r.file === file && r.sheet === sheet && r.axes);
+  if (mine.length === 0) return null;
+
+  // 横に一番広い帯を、この帳票の本体とみなす（上の見出し行を持つ帯がこれになる）
+  const bands = new Map<string, Region[]>();
+  for (const r of mine) {
+    const k = `${r.r0}:${r.r1}`;
+    const arr = bands.get(k);
+    if (arr) arr.push(r); else bands.set(k, [r]);
+  }
+  const width = (rs: Region[]) => rs.reduce((s, r) => s + (r.c1 - r.c0 + 1), 0);
+  const band = [...bands.values()].sort((a, b) => width(b) - width(a))[0];
+
+  const spans = band.flatMap(r => r.axes?.colGroupSpans ?? []).sort((a, b) => a.c0 - b.c0);
+  const groups = [...new Set(spans.map(s => s.name))];
+  const units = band.map(r => r.axes?.colUnits).find(u => u && u.length > 0) ?? [];
+  const rowsAxes = band.map(r => r.axes).find(a => a?.rowLabels)
+    ?? mine.map(r => r.axes).find(a => a?.rowLabels);
+  const sections = [...new Set(mine.map(r => r.axes?.section).filter((s): s is string => !!s))];
+
+  // 合計の関係はシート全体から集める（合計列と内訳列が別の表に分かれていることがある）
+  const totals = new Map<string, { name: string; parts: string[]; partTotal: number }>();
+  for (const r of mine) for (const t of r.axes?.colTotals ?? []) if (!totals.has(t.name)) totals.set(t.name, t);
+
+  const shape: SheetShape = {
+    sheet, sections, groups, units: [...units],
+    rowLabels: rowsAxes?.rowLabels ?? [], rowTotal: rowsAxes?.rowLabelTotal ?? 0,
+    totals: [...totals.values()],
+  };
+  const empty = shape.groups.length === 0 && shape.units.length === 0 && shape.rowLabels.length === 0;
+  return empty ? null : shape;
+}
+
+/** 「この帳票の形」の箇条書き。列記号やセル番地は使わず、並んでいるものの名前だけで書く */
+function renderSheetShape(s: SheetShape, showSheet: boolean): string {
+  const li: string[] = [];
+  if (s.groups.length > 0) {
+    const g = `<b>${esc(axisList(s.groups, 6))}</b>`;
+    li.push(s.units.length > 0
+      ? `横に ${g} が並び、そのひとつひとつに <b>${esc(s.units.join('・'))}</b> があります。`
+      : `横に ${g} が並びます。`);
+  } else if (s.units.length > 0) {
+    li.push(`横に <b>${esc(axisList(s.units, 8))}</b> が並びます。`);
+  }
+  if (s.rowLabels.length > 0) {
+    const r = `<b>${esc(axisList(s.rowLabels, 6, s.rowTotal))}</b>`;
+    li.push(s.sections.length > 1
+      ? `縦は ${r} で、これが <b>${esc(s.sections.join('・'))}</b> ごとに繰り返されます。`
+      : `縦は ${r} です。`);
+  }
+  for (const t of s.totals) {
+    li.push(`<b>${esc(t.name)}</b> は <b>${esc(axisList(t.parts, 4, t.partTotal))}</b> の合計です（数式で確認しております）。`);
+  }
+  if (li.length === 0) return '';
+  // シート名は先頭の項目に付ける。「横に…」が出せない帳票でも、どのシートの話かは要る
+  if (showSheet) li[0] = `<b>${esc(s.sheet)}</b>は、${li[0]}`;
+  return `<ul class="graph-guide">${li.map(x => `\n      <li>${x}</li>`).join('')}\n    </ul>`;
+}
+
+/** 01 節の表ブロックに出す、繰り返し単位まで含めた軸の説明 */
+function axisDetail(r: Region): string {
+  const a = r.axes;
+  if (!a) return '';
+  const rows = a.rowLabels ? axisList(a.rowLabels, 4, a.rowLabelTotal) : '';
+  const groups = a.colGroups ? axisList(a.colGroups, 4, a.colGroupTotal) : '';
+  const units = a.colUnits ? a.colUnits.slice(0, 4).join('・') : '';
+  const cols = groups !== '' && units !== '' ? groups + '（' + units + '）' : groups || units;
+  const parts: string[] = [];
+  if (rows !== '') parts.push('縦に ' + rows);
+  if (cols !== '') parts.push('横に ' + cols);
+  if (parts.length === 0) return '';
+  // 合計と内訳の関係が数式から読めていれば、それも1文で添える
+  const totals = (a.colTotals ?? [])
+    .map(t => t.name + ' は ' + axisList(t.parts, 3, t.partTotal) + ' の合計です。')
+    .join('');
+  return (a.section === undefined ? '' : a.section + 'の帯です。')
+    + parts.join('、') + ' が並びます。' + totals;
+}
+
+/**
+ * 01 の「タブごとの役割と中身」に出す、1タブぶんの「何が並ぶタブか」。
+ * 表が複数に割れていてもタブは1行で言い切りたいので、シート単位に読み直して
+ * 「縦: … ／ 横: …」の1行にする（axisDetail は表1つぶんの説明で、こちらより細かい）。
+ */
+function tabAxisText(regions: Region[], file: string, sheet: string): string {
+  const s = buildSheetShape(regions, file, sheet);
+  if (!s) return '';
+  const rows = s.rowLabels.length === 0 ? ''
+    : `縦: ${axisList(s.rowLabels, 4, s.rowTotal)}`
+      + (s.sections.length > 1 ? `（${s.sections.join('')}ごとに繰り返し）` : '');
+  const cols = s.groups.length === 0 && s.units.length === 0 ? ''
+    : `横: ${s.groups.length > 0 ? axisList(s.groups, 4) : ''}`
+      + (s.units.length > 0 ? `（${s.units.slice(0, 4).join('・')}）` : '');
+  return [rows, cols].filter(x => x !== '').join(' ／ ');
+}
+
 // ============================================================
 // ご確認いただきたい点（決定的な質問抽出）
 // ============================================================
 interface Question {
   id: string; priority: 'high' | 'mid'; kind: string; title: string;
-  /** 解析でわかったこと。機械が出した根拠文字列をそのまま載せない（顧客が読む文章にする） */
+  /** 解析で分かったこと。機械が出した根拠文字列をそのまま載せない（顧客が読む文章にする） */
   analysis?: string;
   /**
    * 「どこの話か」の内訳。件数が多い設問で、文章に詰め込む代わりに箇条書きで並べる。
@@ -300,25 +484,25 @@ function buildQuestions(
     const r = regionById.get(id);
     return r && r.file && !short.includes('›') && short !== r.file ? `${r.file} › ${short}` : short;
   };
-  // 受け渡しをうかがっているファイル。ここに出てくるファイルは「出所が分からない」対象から外す
+  // 受け渡しを伺っているファイル。ここに出てくるファイルは「出所が分からない」対象から外す
   const declaredFiles = new Set(fileRelAudit.filter(a => a.verdict !== 'detected_not_declared')
     .flatMap(a => [a.fromFile, a.toFile]));
 
-  // (0) うかがった受け渡しと、ファイルの中身が食い違っている箇所。
+  // (0) 伺った受け渡しと、ファイルの中身が食い違っている箇所。
   // ここに出すのは「いただいたデータを全部見たうえで、それでも分からなかったこと」だけにする。
   // 「自動検出できませんでした」はこちらの作業の報告であって、お客様が答えられる問いではない。
   // 受け渡しの一覧そのものは 02 に出ているので、ここで並べ直さない。
   for (const a of fileRelAudit.filter(x => x.verdict === 'direction_conflict')) {
     qs.push({
       priority: 'high', kind: 'データの受け渡し',
-      title: `「${fileNameOf(a.fromFile)}」と「${fileNameOf(a.toFile)}」は、うかがった向きと逆に見えます。どちらが元のデータでしょうか？`,
+      title: `「${fileNameOf(a.fromFile)}」と「${fileNameOf(a.toFile)}」は、伺った向きと逆に見えます。どちらが元のデータでしょうか。`,
       analysis: `値でみると、${a.detectedTotal.toLocaleString()} 件は「${fileNameOf(a.toFile)}」から「${fileNameOf(a.fromFile)}」へ運ばれた形になっていました。`,
-      ask: ['どちらを元として扱っておられますか',
-            '両方向に運んでおられる場合は、その手順もお聞かせください'],
+      ask: ['どちらを元として扱っていらっしゃいますか',
+            '両方向に運んでいらっしゃる場合は、その手順もお聞かせください'],
     });
   }
   // 貼り付けだけで運ばれていて、元をたどる手がかりがファイルに残っていない受け渡し。
-  // 分からないのは「いつ時点のデータを、どのタイミングで、どこまで貼っておられるか」なので、
+  // 分からないのは「いつ時点のデータを、どのタイミングで、どこまで貼っていらっしゃるか」なので、
   // 関係ごとに1問ずつ出さず、その1点にまとめて聞く。
   const undetected = fileRelAudit.filter(x => x.verdict === 'declared_not_detected');
   if (undetected.length > 0) {
@@ -330,13 +514,17 @@ function buildQuestions(
     const dsts = [...new Set(undetected.map(a => a.toFile))];
     const to = dsts.length === 1 ? `「${fileNameOf(dsts[0])}」へ` : 'それぞれの集計先へ';
     qs.push({
-      priority: 'high', kind: 'データの受け渡し',
-      title: `${names} から${to}は、数式ではなく値を貼る形で運んでおられるとうかがいました。毎月どの時点のデータを貼っておられますか？`,
+      priority: 'high', kind: '貼り付け時点の確認',
+      title: `${names} から${to}は、数式ではなく値を貼る形で運んでいらっしゃると伺いました。`
+        + '毎月どの時点のデータを貼っていらっしゃいますか。',
       analysis: 'いただいたファイルには貼り付けた後の値だけが残っていて、'
-        + 'どの時点のデータがどこまで入っているのかを、ファイルからは読み取れませんでした。',
-      ask: ['毎月どのタイミングで貼り替えておられますか',
-            '貼るのは全期間分ですか、当月分だけを足しておられますか',
-            '貼る前後に、行を足す・並べ替えるなどの作業はありますか'],
+        + 'いつ時点の数字がどこまで入っているのかを、ファイルからは読み取れませんでした。'
+        + 'どの時点の数字かをお教えいただけますと、kpiee 側でも同じ数字を再現できるようになります。',
+      detail: undetected.slice(0, 8).map(a => `${fileNameOf(a.fromFile)} → ${fileNameOf(a.toFile)}`)
+        .concat(undetected.length > 8 ? [`ほか ${undetected.length - 8} 件`] : []),
+      ask: ['毎月どの時点の数字を貼っていらっしゃいますか（例：月次決算の確定後、翌月◯日頃など）。',
+            '貼り付けは、どなたが、どのタイミングで行っていらっしゃいますか。',
+            '月によって貼る時点が変わることがございましたら、あわせてお聞かせください。'],
     });
   }
   const undeclaredPairs = fileRelAudit.filter(x => x.verdict === 'detected_not_declared');
@@ -346,8 +534,8 @@ function buildQuestions(
       + (undeclaredPairs.length > 3 ? ` ほか${undeclaredPairs.length - 3}組` : '');
     qs.push({
       priority: 'mid', kind: 'データの受け渡し',
-      title: `${names} には同じ数値が入っていました。この2つは受け渡しをしておられますか？`,
-      analysis: 'うかがった受け渡しには挙がっていない組み合わせですが、値が一致していました。',
+      title: `${names} には同じ数値が入っていました。この2つは受け渡しをしていらっしゃいますか。`,
+      analysis: '伺った受け渡しには挙がっていない組み合わせですが、値が一致していました。',
       ask: 'たまたま同じ数値になっているだけであれば、その旨をお知らせください。',
     });
   }
@@ -396,20 +584,20 @@ function buildQuestions(
     const rep = p.best.copy;
     const n = p.counts.copy ?? 0;
     const undirected = rep?.needsConfirmation;
-    // 根拠文字列（例: 値完全一致(11件, 手修正疑い)）はそのまま出さず、件数だけ拾って文章に混ぜる
+    // 根拠文字列（例: 値完全一致(11件, 手修正の可能性)）はそのまま出さず、件数だけ拾って文章に混ぜる
     const cells = /(\d[\d,]*)\s*件/.exec(rep?.evidence ?? '')?.[1];
     const cellNote = cells ? `（${cells} セル）` : '';
     qs.push({
       priority: 'high', kind: '手修正の確認', refPair: `${p.from}\u0000${p.to}`,
       title: undirected
-        ? `「${from}」と「${to}」に同じ数値が入っています。どちらを元として運んでおられますか？`
-        : `「${to}」の一部の列は、「${from}」から手で貼っておられますか？`,
+        ? `「${from}」と「${to}」に同じ数値が入っています。どちらを元として運んでいらっしゃいますか。`
+        : `「${to}」の一部の列は、「${from}」から手修正で合わせていらっしゃいますか。`,
       analysis: `一致していたのは ${colList(p) || `${n} つの列`} で、${n} 列ぶん${cellNote}が数式なしで完全に同じ値でした。`
         + '数式が残っていないため、どちらからどちらへ運ばれたのかまでは追えていません。',
       ask: undirected
-        ? ['元として扱っておられるのはどちらですか', '貼り替えるのはいつのタイミングで、どなたが担当されていますか']
+        ? ['元として扱っていらっしゃるのはどちらですか', '貼り替えるのはいつのタイミングで、どなたが担当されていますか']
         : ['この理解で合っていますでしょうか', '貼り替えるのはいつのタイミングで、どなたが担当されていますか',
-           '2つの数値が食い違ったときは、どちらを正としておられますか'],
+           '2つの数値が食い違ったときは、どちらを正としていらっしゃいますか'],
     });
   }
   // ブックをまたぐ一致の残り。ファイル対へ畳み、代表の列名まで書いて「どこを見ればよいか」を残す
@@ -432,11 +620,11 @@ function buildQuestions(
     qs.push({
       priority: 'high', kind: '手修正の確認',
       title: shownCopy.length > 0
-        ? `ほかにも、ブックをまたいで同じ値が入っている箇所が ${restCross.length} 組あります。貼り付けておられますか？`
-        : `ブックをまたいで同じ値が入っている箇所が ${restCross.length} 組あります。貼り付けておられますか？`,
+        ? `ほかにも、ブックをまたいで同じ値が入っている箇所が ${restCross.length} 組ございました。貼り付けていらっしゃいますか。`
+        : `ブックをまたいで同じ値が入っている箇所が ${restCross.length} 組ございました。貼り付けていらっしゃいますか。`,
       analysis: '多い順に、次のファイル間で見つかっています。',
       detail: lines,
-      ask: ['この中に、毎月コピーして貼っておられるものはありますか',
+      ask: ['この中に、毎月コピーして貼っていらっしゃるものはありますか',
             '貼り替えるのはいつのタイミングで、どなたが担当されていますか'],
     });
   }
@@ -457,14 +645,22 @@ function buildQuestions(
     const ordered = [...bySheet.values()].sort((a, b) => b.cols - a.cols || b.pairs - a.pairs);
     const lines = ordered.slice(0, 5).map(g =>
       `${fileNameOf(g.file)} › ${g.sheet}：${g.pairs} 組（例: ${colList(g.sample) || '列名の取得なし'}）`);
+    // 聞きたいのは「同じ様式かどうか」ではなく「ここは手修正で合わせているのか」。
+    // 様式が同じだけなら確認は要らず、手修正なら自動化できる範囲の話になる。
+    // 選択肢は1行ずつ渡す（1つの行に①②③を詰めると項目の途中で折り返して読めない）。
     qs.push({
-      priority: 'mid', kind: '同じ様式の繰り返し',
-      title: `同じブックの中で、同じ値が並んでいる表が ${innerCopy.length} 組あります。同じ様式を使い回しておられますか？`,
-      analysis: '拠点ごと・月ごとに同じ様式の表を並べておられる場合、項目名や予算の列が各表に同じ順で並ぶため、'
-        + 'ここに出てきます。数が多いので、どのシートに多いかだけを挙げます。',
+      priority: 'mid', kind: '手修正の確認',
+      title: `数式でつながっていないのに同じ値が並んでいる表が、同じブックの中に ${innerCopy.length} 組ございました。`
+        + 'ここは手修正で合わせていらっしゃいますか。',
+      analysis: '値が同じで、かつ数式のつながりが見つからない表を、こちらで自動的に数えたものです。'
+        + 'ただし、拠点ごと・月ごとに同じ様式を並べているだけ（項目名や予算の列が同じ順に並ぶ）の場合も'
+        + 'この数に入りますので、手修正なのか、様式が同じだけなのかは、ファイルからは見分けがつきませんでした。'
+        + '手修正の箇所が分かりますと、kpiee で自動化できる範囲がはっきりいたします。'
+        + '下の①〜③のうち、近いものを1つお選びいただくだけで結構です。',
       detail: lines.concat(ordered.length > 5 ? [`ほか ${ordered.length - 5} シート`] : []),
-      ask: ['拠点ごと・月ごとに同じ様式で作っておられるという理解で合っていますか',
-            'この中に、ほかのファイルから貼っておられるものがあれば教えてください'],
+      ask: ['①同じ様式を並べているだけで、数字はそれぞれ別に入っている。',
+            '②手修正で合わせている。',
+            '③一部が手修正（その場合は、手修正されているシートをお聞かせください）。'],
     });
   }
 
@@ -478,11 +674,11 @@ function buildQuestions(
       .join('、') + (top.length > 3 ? ` ほか${top.length - 3}列` : '');
     qs.push({
       priority: 'mid', kind: '共通マスタの確認',
-      title: `${names} は、複数のブックに同じ値で入っています。共通の元（マスタ・様式）はどれですか？`,
+      title: `${names} は、複数のブックに同じ値で入っています。共通の元（マスタ・様式）はどれでしょうか。`,
       analysis: '同じ値の列が3ブック以上にあり、いずれも数式を持ちません。'
         + '同じ様式を使い回している（部署コード・勘定科目などのマスタ）状態と見て、'
         + '個別の転記としては数えていません。',
-      ask: '①この一覧の「正」はどこで管理されていますか？ ②追加・変更があったとき、各ブックへどう反映していますか？',
+      ask: '①この一覧の「正」はどこで管理されていますか。 ②追加・変更があったとき、各ブックへどう反映していますか？',
     });
   }
 
@@ -517,9 +713,9 @@ function buildQuestions(
   if (mixed.length > 2) {
     qs.push({
       priority: 'mid', kind: '数式と手入力の混在',
-      title: `数式が部分的に消えているシートが、ほかに ${mixed.length - 2} 枚あります。一覧をお渡ししますので、後日ご確認いただけますか。`,
+      title: `数式が部分的に消えているシートが、ほかに ${mixed.length - 2} 枚あります。一覧をお渡しいたしますので、後日ご確認いただけますか。`,
       analysis: `上と同じ「数式列の一部が数値で上書きされている」状態が、ほかに ${mixed.length - 2} シートで見つかっています。`,
-      ask: '該当シートとセル位置の一覧をお渡しします。お手すきのときに、意図的な調整かどうかだけご確認いただけますと助かります。',
+      ask: '該当シートとセル位置の一覧をお渡しいたします。お手すきのときに、意図的な調整かどうかだけご確認いただけますと助かります。',
     });
   }
 
@@ -540,7 +736,7 @@ function buildQuestions(
       if (!declaredOut.hasSheet(r.file, r.sheet)) continue;
       declaredSheets.set(`${r.file}\u0000${r.sheet}`, { file: r.file, sheet: r.sheet });
     }
-    // 受け渡しをうかがっているファイルは「元が分からない」わけではないので外す
+    // 受け渡しを伺っているファイルは「元が分からない」わけではないので外す
     const untraced = [...declaredSheets]
       .filter(([k, v]) => !inflowSheets.has(k) && !declaredFiles.has(v.file)).map(([, v]) => v);
     if (untraced.length > 0) {
@@ -550,8 +746,8 @@ function buildQuestions(
         priority: 'high', kind: '最終帳票の元データ',
         title: `最終アウトプット ${untraced.length} シートについて、その数値の出どころが受領データの中に見当たりません。元になるファイルをご提供いただけますか？`,
         analysis: `${names} について、ほかのファイルから流れ込む数式も、値の一致も見つかりませんでした。`
-          + '別フォルダのファイルを参照している、リンクが切れている、または基幹システムの画面から直接貼っておられる、といった可能性があります。',
-        ask: ['これらの数値は、どこから持ってきておられますか（別の Excel ／ 基幹システム ／ 手入力）',
+          + '別フォルダのファイルを参照している、リンクが切れている、または基幹システムの画面から直接貼っていらっしゃる、といった可能性があります。',
+        ask: ['これらの数値は、どこから持ってきていらっしゃいますか（別の Excel ／ 基幹システム ／ 手入力）',
               '元になるファイルがあれば、そちらもご提供いただけますでしょうか'],
       });
     }
@@ -559,7 +755,7 @@ function buildQuestions(
 
   // (3) どの表ともつながらない表: まとめて1問
   // 最終帳票と指定された表は上の (2b) で扱うので、役割昇格により自然にここから外れる。
-  // 受け渡しをうかがっているファイルの表も外す — 出所はもう教えていただいており、それでも
+  // 受け渡しを伺っているファイルの表も外す — 出所はもう教えていただいており、それでも
   // つながりが見つからないことは 02 で「根拠なし」として示している。ここで聞き直さない。
   const orphans = regions.filter(r => roles.get(r.id) === '独立' && r.dataRowCount >= 3
     && !declaredFiles.has(r.file));
@@ -568,9 +764,9 @@ function buildQuestions(
       + (orphans.length > 4 ? ` ほか${orphans.length - 4}表` : '');
     qs.push({
       priority: 'mid', kind: '出所不明の表',
-      title: `${names} は、他のどの表ともつながりが見つかりませんでした。出所を教えてください。`,
+      title: `${names} は、他のどの表ともつながりが見つかりませんでした。出所をご教示ください。`,
       analysis: '受領データ内のどの表とも、数式・値の一致が見つかりませんでした。別ファイル・別システム由来の可能性があります。',
-      ask: '元データの所在（別Excel／基幹システム／手入力）と、現役で使われている表かどうかを教えてください。',
+      ask: '元データの所在（別Excel／基幹システム／手入力）と、現役で使われている表かどうかをご教示ください。',
     });
   }
 
@@ -594,23 +790,26 @@ function buildQuestions(
       + (sheets.length > 3 ? ` ほか${sheets.length - 3}シート` : '');
     qs.push({
       priority: 'mid', kind: 'キーの確認',
-      title: `${names} は、何が決まると1行になる表でしょうか？`,
-      analysis: `重複のない列も、数式が突合に使っている列も見当たらず、1行の単位を読み取れませんでした（${sheets.length} シート・${noKey.length} 表）。`,
+      title: `${names} は、行を1つに決められる列（キー）が見当たりませんでした。何を目印にすればよいか、ご教示いただけますでしょうか。`,
+      analysis: `重複のない列も、数式が突合に使っている列も見当たりませんでした（${sheets.length} シート・${noKey.length} 表）。`
+        + '行の並びそのものは読み取れる表もございますが、行を一意に決められる列がないため、'
+        + 'このまま kpiee に取り込むと同じ行が重なってしまいます。',
       detail: sheets.length > 1
         ? sheets.slice(0, 6).map(s => `${fileNameOf(s.file)} › ${s.sheet}${s.n > 1 ? `（${s.n} 表）` : ''}`)
           .concat(sheets.length > 6 ? [`ほか ${sheets.length - 6} シート`] : [])
         : undefined,
-      ask: 'たとえば「受注ごと」「店舗×月ごと」のように、1行の単位を教えてください。',
+      ask: ['科目コードや伝票番号のように、行を一意に決められる列をご教示いただけますでしょうか。',
+            '小計の行と明細の行が同じ表に並んでいる場合は、どれが小計かもあわせてお聞かせください。'],
     });
   }
 
   // (5) 運用の確認（固定）
   qs.push({
     priority: 'mid', kind: '運用の確認',
-    title: '毎月の更新について教えてください。',
-    ask: ['各ファイルはどのくらいの頻度で、どなたが更新されますか',
-          '今回いただいたもののほかに、報告や集計に使っておられるファイルはありますか',
-          'もう使っていない古いシートがあれば、あわせて教えてください'],
+    title: '毎月の更新について、お聞かせいただけますでしょうか。',
+    ask: ['各ファイルはどのくらいの頻度で、どなたが更新されていますか。',
+          '今回いただいたもののほかに、報告や集計に使っていらっしゃるファイルはありますか。',
+          '現在は使われていないシートがあれば、あわせてお聞かせください。'],
   });
 
   return qs
@@ -682,21 +881,46 @@ interface MapResult { svg: string; omittedNodes: number; omittedEdges: number; d
  * 右パネルで指標の作られ方を読ませるための素。表示は表あたり上位数件に絞る。
  */
 const ITEMS_PER_NODE = 14;   // 1表あたり出す項目数の上限（横持ち帳票は列が数百になる）
-const SOURCES_PER_ITEM = 4;  // 1項目あたり出す元の数
+const SOURCES_PER_ITEM = 4;  // 1項目あたり出す元の表の数
+const SRC_KEEP = 24;         // まとめる前に保持する「表・列」の数
+const COLS_PER_SRC = 6;      // 1つの表について並べる列名の数
+
+/**
+ * 元を表ごとにまとめて1行にする。列単位の辺をそのまま並べると、
+ * 同じ表の長い呼び名が列の数だけ繰り返されて読めなくなる。
+ * 自分自身が元のとき（同じ表の中での計算）は、呼び名を出さず「この表の」と書く。
+ */
+function foldSources(src: { label: string; col: string }[], own: string): string[] {
+  const order: string[] = [];
+  const byLabel = new Map<string, string[]>();
+  for (const s of src) {
+    let cols = byLabel.get(s.label);
+    if (!cols) { cols = []; byLabel.set(s.label, cols); order.push(s.label); }
+    cols.push(s.col);
+  }
+  return order.slice(0, SOURCES_PER_ITEM).map(label => {
+    const cols = byLabel.get(label)!;
+    const txt = cols.slice(0, COLS_PER_SRC).join('・')
+      + (cols.length > COLS_PER_SRC ? `ほか${cols.length - COLS_PER_SRC}` : '');
+    return label === own ? `この表の ${txt}` : `${label} の ${txt}`;
+  });
+}
 function buildColumnItems(
-  edges: Edge[], keptIds: Set<string>, labels: Map<string, string>,
+  edges: Edge[], keptIds: Set<string>, labels: Map<string, string>, regions: Region[],
 ): Map<string, GItem[]> {
+  const byId = new Map(regions.map(r => [r.id, r]));
   const regionOf = (k: string) => k.slice(0, k.lastIndexOf(':'));
   const colOf = (k: string) => k.slice(k.lastIndexOf(':') + 1);
-  // regionId → (colName → 項目)。同じ列に複数の辺が来たら元を足していく
-  const byRegion = new Map<string, Map<string, GItem & { _w: number }>>();
+  // regionId → (colName → 項目)。同じ列に複数の辺が来たら元を足していく。
+  // 元は「表・列」で持っておき、表示のときに表ごとにまとめる（同じ表の名前を4回並べない）
+  const byRegion = new Map<string, Map<string, GItem & { _w: number; _src: { label: string; col: string }[] }>>();
   for (const e of edges) {
     const rid = regionOf(e.to);
     if (!keptIds.has(rid)) continue;
-    const col = colOf(e.to);
+    const col = prettyColumn(byId.get(rid), colOf(e.to));
     const srcRid = regionOf(e.from);
     const srcLabel = labels.get(srcRid) ?? srcRid;
-    const srcCol = colOf(e.from);
+    const srcCol = prettyColumn(byId.get(srcRid), colOf(e.from));
     const g = groupOf(e.type);
     let cols = byRegion.get(rid);
     if (!cols) { cols = new Map(); byRegion.set(rid, cols); }
@@ -706,21 +930,23 @@ function buildColumnItems(
         col, how: GROUP_META[g].label.split('（')[0],
         // filter-key はキー結合なので数式そのものより「参照」の説明が要点。evidence は代表を1つ
         formula: shortText(e.evidence, 90),
-        from: [], _w: 0,
+        from: [], _w: 0, _src: [],
       };
       cols.set(col, it);
     }
-    const srcDisp = `${srcLabel}.${srcCol}`;
-    if (!it.from.includes(srcDisp) && it.from.length < SOURCES_PER_ITEM) it.from.push(srcDisp);
+    if (it._src.length < SRC_KEEP && !it._src.some(s => s.label === srcLabel && s.col === srcCol)) {
+      it._src.push({ label: srcLabel, col: srcCol });
+    }
     // データフローの辺（集計・転記・参照）を、キー(filter-key)より優先して代表にする
     it._w += g === 'ref' ? 1 : 3;
   }
   const out = new Map<string, GItem[]>();
   for (const [rid, cols] of byRegion) {
+    const own = labels.get(rid) ?? rid;
     const items = [...cols.values()]
-      .sort((a, b) => b._w - a._w || b.from.length - a.from.length)
+      .sort((a, b) => b._w - a._w || b._src.length - a._src.length)
       .slice(0, ITEMS_PER_NODE)
-      .map(({ _w, ...it }) => it);
+      .map(({ _w, _src, ...it }) => ({ ...it, from: foldSources(_src, own) }));
     if (items.length > 0) out.set(rid, items);
   }
   return out;
@@ -874,7 +1100,7 @@ function buildMap(
     const dec = p.declaredOnly === true;
     const g = dominantGroup(p);
     const meta = dec
-      ? { label: p.declaredLabel ?? 'うかがった内容', color: DECLARED_ONLY.color, dashed: true }
+      ? { label: p.declaredLabel ?? '伺った内容', color: DECLARED_ONLY.color, dashed: true }
       : GROUP_META[g];
     const k = [p.from, p.to].sort().join('|');
     const idx = seenPair.get(k) ?? 0;
@@ -919,7 +1145,13 @@ function buildMap(
     parts.push('<g>'
       + (isOut ? `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${(p.r + 5).toFixed(1)}" fill="none" stroke="${fill}" stroke-opacity="0.32" stroke-width="2"/>` : '')
       + `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${p.r}" fill="${fill}" stroke="#FCFDFE" stroke-width="1.5"/>`
-      + `<text x="${p.x.toFixed(1)}" y="${(p.y + p.r + 15).toFixed(1)}" font-size="${p.labelPx}" font-weight="${isOut ? 800 : 600}" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.6px">${esc(fitText((isOut ? '★ ' : '') + label, p.labelW, p.labelPx))}</text>`
+      // 呼び名は「シート名＋軸の説明」で長い。1行に押し込むと途中で切れて、図の上で
+      // どの表なのか分からなくなるため3行まで折り返す（段の間隔は 200px 前後あり、
+      // 円の半径が最大 26px なので3行でも下の段には届かない）
+      + `<text x="${p.x.toFixed(1)}" y="${(p.y + p.r + 15).toFixed(1)}" font-size="${p.labelPx}" font-weight="${isOut ? 800 : 600}" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.6px">`
+      + wrapText((isOut ? '★ ' : '') + label, p.labelW, p.labelPx, 3)
+        .map((ln, i) => `<tspan x="${p.x.toFixed(1)}" dy="${i === 0 ? 0 : p.labelPx + 2}">${esc(ln)}</tspan>`).join('')
+      + '</text>'
       + '</g>');
   }
   parts.push(...edgeLabels);
@@ -927,7 +1159,7 @@ function buildMap(
 
   // 列（項目）ごとの計算を集める。to がこの表の列である辺を列名でまとめ、
   // 「売上 ← （集計）← 元データ.売上」のように右パネルで読めるようにする。
-  const itemsByRegion = buildColumnItems(edges, keptIds, labels);
+  const itemsByRegion = buildColumnItems(edges, keptIds, labels, regions);
 
   // 操作版へ渡すデータ。初期座標は上の階層配置をそのまま種にする（同じ図から始まる）
   // 「シート」か、1シートの中に複数ある「表」か。呼び名がシート名なので区別が要る
@@ -945,12 +1177,14 @@ function buildMap(
     const declaredIns = ins.filter(p => p.declaredOnly);
     if (declaredIns.length === ins.length) {
       return `${declaredIns.map(p => p.declaredNote ?? '').filter(Boolean).join(' ')}`.trim()
-        || 'この表そのものの数式は残っておらず、受領ファイルからの貼り付けと見ています。';
+        || 'この表そのものの数式は残っておらず、受領ファイルからの貼り付けと見ております。';
     }
     // 数式で確定している流入だけで文を作る（貼り付け推定を混ぜると根拠の質が混ざる）
     const real = ins.filter(p => !p.declaredOnly);
-    const srcs = real.slice(0, 4).map(p => labels.get(p.from) ?? p.from);
-    const more = real.length > 4 ? ` ほか${real.length - 4}表` : '';
+    // 同じ表から複数の辺が来ることがある。呼び名が同じものは1回にまとめる
+    const allSrcs = [...new Set(real.map(p => labels.get(p.from) ?? p.from))];
+    const srcs = allSrcs.slice(0, 4);
+    const more = allSrcs.length > 4 ? ` ほか${allSrcs.length - 4}表` : '';
     const keys = [...new Set(real.map(p => prettyKey(pairKeys.get(regionPairKey(p.from, p.to)) ?? '').text)
       .filter(Boolean))].slice(0, 2);
     const proc = GROUP_META[dominantGroup(real[0])].label;
@@ -963,10 +1197,13 @@ function buildMap(
   const gnodes: GNode[] = kept.map(r => {
     const p = pos.get(r.id)!;
     const key = keySummaryShort(r);
+    // 呼び名から番地が消えたので、現物を Excel で開けるよう副題に位置を戻す
+    // （1シートが1表なら、シート名だけで開けるので出さない）
+    const loc = (perSheet.get(`${r.file} ${r.sheet}`) ?? 1) > 1 ? '・' + rangeOf(r) : '';
     return {
       id: r.id,
       label: labels.get(r.id) ?? r.sheet,
-      sub: key === '' ? `${r.dataRowCount.toLocaleString()}行` : `${r.dataRowCount.toLocaleString()}行 ／ ${key}`,
+      sub: `${r.dataRowCount.toLocaleString()}行${loc}` + (key === '' ? '' : ` ／ ${key}`),
       role: roles.get(r.id) ?? '',
       deg: weight.get(r.id) ?? 1,
       x: p.x, y: p.y,
@@ -981,7 +1218,7 @@ function buildMap(
     if (p.declaredOnly) {
       return {
         s: p.from, t: p.to, color: DECLARED_ONLY.color, dashed: true,
-        label: p.declaredLabel ?? 'うかがった内容', count: 0,
+        label: p.declaredLabel ?? '伺った内容', count: 0,
       };
     }
     const qid = g === 'copy' ? copyQuestionByPair.get(`${p.from}\u0000${p.to}`) : undefined;
@@ -1023,6 +1260,35 @@ function fitText(s: string, maxPx: number, fontPx: number): string {
   return out;
 }
 
+/**
+ * ラベルを幅に合わせて最大 lines 行へ折る。表の呼び名は「シート名＋軸の説明」で長いため、
+ * 1行に押し込むと途中で切れて、どの表なのか読めなくなる。
+ * 区切りとして自然な位置（空白・「×」・「・」の後ろ）を優先して折る。
+ */
+function wrapText(s: string, maxPx: number, fontPx: number, lines: number): string[] {
+  const wide = (ch: string) => (/[\x00-\xff｡-ﾟ]/.test(ch) ? fontPx * 0.6 : fontPx);
+  const chars = [...s];
+  const out: string[] = [];
+  let i = 0;
+  while (i < chars.length && out.length < lines) {
+    const last = out.length === lines - 1;
+    let acc = 0, end = i, breakAt = -1;
+    while (end < chars.length) {
+      const cw = wide(chars[end]);
+      // 最終行は「…」の分を空けておく（切れていることが分かるように）
+      if (acc + cw > maxPx - (last && end < chars.length - 1 ? fontPx : 0)) break;
+      acc += cw; end++;
+      if (/[ 　×・、]/.test(chars[end - 1])) breakAt = end;
+    }
+    if (end >= chars.length) { out.push(chars.slice(i, end).join('').trim()); i = end; break; }
+    if (last) { out.push(chars.slice(i, end).join('').trim() + '…'); i = chars.length; break; }
+    const cut = breakAt > i ? breakAt : end;
+    out.push(chars.slice(i, cut).join('').trim());
+    i = cut;
+  }
+  return out.filter(x => x !== '');
+}
+
 // ============================================================
 // キー関係図（ER 図）— キー列でつながる表どうしを、主キー/軸と 1:N で示す
 //
@@ -1034,7 +1300,7 @@ const ER = { W: 226, HEAD: 30, ROW: 22, GX: 148, GY: 26, PAD: 16, CAP: 20 };
 const OUT_NO = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩'];
 
 // ロジックブロックの一文の述語。GROUP_META のラベルをそのまま「〜しています」に繋ぐと、
-// copy が「シートが…から手修正推定しています」となり、推定しているのは解析側なのに
+// copy が「シートが…から手修正推定しております」となり、推定しているのは解析側なのに
 // シートが主語になってしまう。種別ごとに述語を持たせる。
 const BLOCK_PREDICATE: Record<Group, string> = {
   ref: '値を参照しています。',
@@ -1117,12 +1383,12 @@ function renderFormulaAnatomy(b: LogicBlock, fileNameOf: (l: string) => string):
   const f = b.repFormula;
   const howNote = (body: string) => `<div class="fx"><p class="fx-how">${body}</p></div>`;
   // 判定は関係の種別で行う。evidence の文字列で見分けようとすると、値一致の根拠文
-  //「値完全一致(66件, 手修正疑い)」の括弧を数式と誤認する。
+  //「値完全一致(66件, 手修正の可能性)」の括弧を数式と誤認する。
   if (b.group === 'copy' || !f) {
     // 数式ではなく値の一致から推定した区間（コピペ・貼り付け）
     return howNote('<b>この区間は数式ではなく、値のコピーで運ばれています。</b>'
       + 'Excel 上に計算の根拠が残らないため、どの列がどの列になるのかを自動では確定できません'
-      + `（値が一致していることから ${b.total.toLocaleString()} 本のつながりを推定しています）。`
+      + `（値が一致していることから ${b.total.toLocaleString()} 本のつながりを推定しております）。`
       + '<br>両ブックの行の並びが同じであることが前提になっているとみられます。'
       + 'どちらかで行を挿入・並べ替えすると、気づかないまま数値がずれます。'
       + '<br><b>kpieeで再現するには、対応づけの基準になる列（組織コード・科目コード等）の指定が必要です。</b>');
@@ -1256,7 +1522,14 @@ function buildErDiagram(regions: Region[], keyLinks: KeyLink[], labels: Map<stri
     return st ? (st.uniq === st.filled ? '1' : 'N') : '';
   };
 
-  const heightOf = (r: Region) => ER.HEAD + keysOf(r).length * ER.ROW + 6;
+  // 表の呼び名は「シート名＋軸の説明」で長い。2行必要な表が1つでもあれば見出し帯を高くする
+  //（ノードごとに帯の高さが違うと、並んだ箱の中身の位置がそろわず読みにくい）
+  const titleOf = (r: Region) => labels.get(r.id) ?? r.sheet;
+  const titleLines = (r: Region) => wrapText(titleOf(r), ER.W - 24, 12.5, 2);
+  const headH = layersSorted.some(([, regs]) => regs.some(r => titleLines(r).length > 1))
+    ? ER.HEAD + 16 : ER.HEAD;
+
+  const heightOf = (r: Region) => headH + keysOf(r).length * ER.ROW + 6;
   const layerHeights = layersSorted.map(([, regs]) => regs.reduce((s, r) => s + heightOf(r), 0) + (regs.length - 1) * ER.GY);
   const maxLayerH = Math.max(...layerHeights, 90);
 
@@ -1268,12 +1541,12 @@ function buildErDiagram(regions: Region[], keyLinks: KeyLink[], labels: Map<stri
     for (const r of regs) {
       const ks = keysOf(r);
       const rows = ks.map((k, i) => {
-        const cy = y + ER.HEAD + i * ER.ROW + ER.ROW / 2;
+        const cy = y + headH + i * ER.ROW + ER.ROW / 2;
         const key = `${r.id}:${k.column}`;
         rowY.set(key, cy);
         return { cy, mark: k.role === 'primary' ? '🔑' : '◇', label: k.column, primary: k.role === 'primary', connected: connectedKeys.has(key) };
       });
-      nodes.push({ id: r.id, x: ER.PAD + l * (ER.W + ER.GX), y, w: ER.W, h: heightOf(r), title: labels.get(r.id) ?? r.sheet, rows });
+      nodes.push({ id: r.id, x: ER.PAD + l * (ER.W + ER.GX), y, w: ER.W, h: heightOf(r), title: titleOf(r), rows });
       y += heightOf(r) + ER.GY;
     }
   });
@@ -1292,8 +1565,8 @@ function buildErDiagram(regions: Region[], keyLinks: KeyLink[], labels: Map<stri
   // コネクタ（エルボ）＋端点のカーディナリティ
   for (const p of pairMap.values()) {
     const na = nodeById.get(regionIdOf(p.a))!, nb = nodeById.get(regionIdOf(p.b))!;
-    const ya = rowY.get(p.a) ?? na.y + ER.HEAD / 2;
-    const yb = rowY.get(p.b) ?? nb.y + ER.HEAD / 2;
+    const ya = rowY.get(p.a) ?? na.y + headH / 2;
+    const yb = rowY.get(p.b) ?? nb.y + headH / 2;
     const bLeft = nb.x + nb.w <= na.x;
     const x1 = bLeft ? nb.x + nb.w : nb.x;
     const x2 = bLeft ? na.x : na.x + na.w;
@@ -1307,9 +1580,12 @@ function buildErDiagram(regions: Region[], keyLinks: KeyLink[], labels: Map<stri
   for (const n of nodes) {
     parts.push(`<g>`);
     parts.push(`<rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="9" fill="#fff" stroke="#C9D4E0" stroke-width="1.2"/>`);
-    parts.push(`<rect x="${n.x}" y="${n.y}" width="${n.w}" height="${ER.HEAD}" rx="9" fill="#0E2A47"/>`);
-    parts.push(`<rect x="${n.x}" y="${n.y + ER.HEAD - 9}" width="${n.w}" height="9" fill="#0E2A47"/>`);
-    parts.push(`<text x="${n.x + 12}" y="${n.y + 20}" font-size="12.5" font-weight="700" fill="#fff">${esc(fitText(n.title, n.w - 24, 12.5))}</text>`);
+    parts.push(`<rect x="${n.x}" y="${n.y}" width="${n.w}" height="${headH}" rx="9" fill="#0E2A47"/>`);
+    parts.push(`<rect x="${n.x}" y="${n.y + headH - 9}" width="${n.w}" height="9" fill="#0E2A47"/>`);
+    parts.push(`<text x="${n.x + 12}" y="${n.y + 20}" font-size="12.5" font-weight="700" fill="#fff">`
+      + wrapText(n.title, n.w - 24, 12.5, headH > ER.HEAD ? 2 : 1)
+        .map((ln, i) => `<tspan x="${n.x + 12}" dy="${i === 0 ? 0 : 15}">${esc(ln)}</tspan>`).join('')
+      + `</text>`);
     n.rows.forEach((row) => {
       const ty = row.cy + 4;
       if (row.connected) parts.push(`<rect x="${n.x + 3}" y="${row.cy - ER.ROW / 2}" width="${n.w - 6}" height="${ER.ROW}" fill="#EDF4FC"/>`);
@@ -1594,8 +1870,8 @@ function buildPasteOrigins(
       origin: {
         file: best.file,
         note: best.strong
-          ? `${nameOf(best.file)}（${best.sheet}）と列の見出しが ${best.inter} 件一致します。${best.score >= 200 ? 'シートのお名前も一致しており、' : ''}これを貼り付けたものと見ています。`
-          : `シートのお名前が ${nameOf(best.file)} と一致します。これを貼り付けたものと見ています（列の見出しの一致は確認できませんでした）。`,
+          ? `${nameOf(best.file)}（${best.sheet}）と列の見出しが ${best.inter} 件一致します。${best.score >= 200 ? 'シート名も一致しており、' : ''}これを貼り付けたものと見ております。`
+          : `シート名が ${nameOf(best.file)} と一致します。これを貼り付けたものと見ております（列の見出しの一致は確認できませんでした）。`,
       },
     });
   }
@@ -1623,8 +1899,8 @@ function buildPasteOrigins(
     found.set(c.to, c.origin);
   }
 
-  // うかがったブック関係が「帳票そのもの」へ向かっている場合は、列の一致が取れていなくても
-  // 土台として結ぶ。これは推測ではなくうかがった内容そのもので、しかも読み手がいちばん知りたい
+  // 伺ったブック関係が「帳票そのもの」へ向かっている場合は、列の一致が取れていなくても
+  // 土台として結ぶ。これは推測ではなく伺った内容そのもので、しかも読み手がいちばん知りたい
   // 「この帳票の数値はどのファイルから来たのか」に直接あたる。
   for (const d of declaredRels) {
     if (!outputFiles.has(d.toFile) || outputFiles.has(d.fromFile)) continue;
@@ -1662,10 +1938,136 @@ function buildPasteOrigins(
     perOutput.set(d.toFile, (perOutput.get(d.toFile) ?? 0) + 1);
     found.set(target.id, {
       file: d.fromFile,
-      note: `${nameOf(d.fromFile)} を土台として貼り付けたものとうかがっています（Excel 上に数式は残っていません）。`,
+      note: `${nameOf(d.fromFile)} を土台として貼り付けたものと伺っています（Excel 上に数式は残っていません）。`,
     });
   }
   return found;
+}
+
+// ============================================================
+// 03 の帳票ごとに並べるブロック（spec.outputPlans）
+// ============================================================
+
+// 確認欄の記号。04 の設問（Q-01..）と混ざらないよう、こちらは節番号＋英字にする
+const CHECK_MARKS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+
+/** 差し込み位置で受け取る自動生成分。ブロック指定が無い帳票では従来の順（レシピ→関係図）で出す */
+interface AutoBlocks { recipes: string; graph: string }
+
+/**
+ * 伺った作り方の流れ図。左＝読んでいるタブ、中＝突き合わせるもの、右＝でき上がる段階。
+ * 数式から起こすレシピ図（renderRecipeSvg）と違い、こちらは「ご説明どおりに描くとこうなります」の図で、
+ * 貼り付けで受け渡していて数式が残らない箇所も描ける。
+ * 最後の段は最終アウトプットなので赤で示す（表紙のタイル・関係図の凡例と同じ色）。
+ */
+function renderFlowSvg(b: Extract<ReportOutputBlock, { kind: 'flow' }>, name: string, uid: string): string {
+  const fill = (t: string): string => t.split('{名}').join(name);
+  const n = b.sources.length, m = b.stages.length;
+  // 左の箱（54px ピッチ）と右の段（74px ピッチ）の、高い方に合わせる
+  const H = Math.max(16 + 54 * n + 8, 74 * m + 18);
+  const mid = H / 2;
+  const arrow = `ar-${uid}`;
+  const kw = b.key === '' ? 0 : Math.max(43, Math.round(12.5 * [...b.key].length + 30));
+  const defs = `<defs><marker id="${arrow}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">`
+    + '<path d="M0,0 L10,5 L0,10 z" fill="#7A8794"/></marker></defs>';
+  const sources = b.sources.map((label, i) => {
+    const y = 16 + 54 * i;
+    const rows = wrapText(fill(label), 268, 12.5, 2);
+    const ty = y + (rows.length > 1 ? 19 : 26.5);
+    return `<rect x="8" y="${y}" width="300" height="44" rx="9" fill="#fff" stroke="#1F5FAE" stroke-opacity=".5"/>`
+      + `<text x="20" y="${ty}" font-size="12.5" fill="#0E2A47">`
+      + rows.map((r, j) => `<tspan x="20" dy="${j === 0 ? 0 : 15}">${esc(r)}</tspan>`).join('')
+      + '</text>'
+      // 「このブックのタブ」の添え書きは箱の右上。タブ名が2行になる箱では文字とぶつかるので置かない
+      + (b.sourceNote === '' || rows.length > 1 ? ''
+        : `<text x="298" y="${y + 15}" font-size="9.5" fill="#7A8794" text-anchor="end">${esc(b.sourceNote)}</text>`)
+      + `<path d="M308,${y + 22} C338,${y + 22} 342,${mid} 366,${mid}" fill="none" stroke="#B9C6D6" stroke-width="1.4"/>`;
+  }).join('');
+  const key = kw === 0
+    ? `<path d="M366,${mid} L626,${mid}" fill="none" stroke="#7A8794" stroke-width="1.6" marker-end="url(#${arrow})"/>`
+    : `<text x="${372 + kw / 2}" y="${mid - 24}" font-size="10" fill="#7A8794" text-anchor="middle">突き合わせるもの</text>`
+      + `<rect x="372" y="${mid - 16}" width="${kw}" height="32" rx="16" fill="#EAF2FB" stroke="#C9DEF4"/>`
+      + `<text x="${372 + kw / 2}" y="${mid + 5}" font-size="12.5" font-weight="700" fill="#1F5FAE" text-anchor="middle">${esc(b.key)}</text>`
+      + `<path d="M${372 + kw},${mid} L626,${mid}" fill="none" stroke="#7A8794" stroke-width="1.6" marker-end="url(#${arrow})"/>`;
+  const stages = b.stages.map((st, i) => {
+    const y = mid - (74 * m - 22) / 2 + 74 * i;
+    const last = i === m - 1;
+    return (i === 0 ? ''
+      : `<path d="M804,${y - 22} L804,${y - 6}" fill="none" stroke="#7A8794" stroke-width="1.6" marker-end="url(#${arrow})"/>`)
+      + `<rect x="636" y="${y}" width="336" height="52" rx="9" fill="${last ? '#FBEFEF' : '#F4F8FD'}" stroke="${last ? '#C0392B' : '#C9DEF4'}" stroke-opacity=".7"/>`
+      + `<text x="650" y="${y + 22.5}" font-size="12.5" font-weight="700" fill="#0E2A47">${esc(fitText(fill(st.title), 300, 12.5))}</text>`
+      + (st.note === '' ? ''
+        : `<text x="650" y="${y + 40}" font-size="10.5" fill="#7A8794">${esc(fitText(fill(st.note), 312, 10.5))}</text>`);
+  }).join('');
+  return `<svg viewBox="0 0 980 ${H}" role="img" aria-label="${esc(fill(b.title) || 'でき方')}の図">`
+    + `${defs}${sources}${key}${stages}</svg>`;
+}
+
+/**
+ * ブロック1つ分の HTML。
+ * 本文（箇条書き・導入・注記・表のセル）は担当者が書く文なので <b> をそのまま通す。
+ * 見出しとタブ名はエスケープする（受領ファイルの名前がそのまま入る）。
+ */
+function renderOutputBlock(b: ReportOutputBlock, mark: string, uid: string, auto: AutoBlocks): string {
+  switch (b.kind) {
+    case 'bullets':
+      return (b.title === '' ? '' : `<p class="sub-lede">${esc(b.title)}</p>\n    `)
+        + `<ul class="graph-guide">\n      ${b.items.map(i => `<li>${i}</li>`).join('\n      ')}\n    </ul>`
+        + b.notes.map(t => `\n    <p class="tbl-note">${t}</p>`).join('');
+    case 'table': {
+      // 左端のまとめ列は、まとめ名が入っているときだけ出す（無名の表で空の列が空くのを防ぐ）
+      const grouped = b.groups.some(g => g.label !== '');
+      const rows = b.groups.map(g => g.rows.map((r, i) => {
+        const head = !grouped ? ''
+          : i === 0
+            ? `<td rowspan="${g.rows.length}"><b>${esc(g.label)}</b>${g.note === '' ? '' : `<br><span class="rnote">${g.note}</span>`}</td>`
+            : '';
+        return `<tr${b.emphasize ? ' class="out"' : ''}>${head}${r.map(c => `<td>${c}</td>`).join('')}</tr>`;
+      }).join('\n        ')).join('\n        ');
+      return (b.title === '' ? '' : `<p class="sub-lede">${esc(b.title)}</p>\n    `)
+        + (b.lede === '' ? '' : `<p class="graph-guide">${b.lede}</p>\n    `)
+        + `<div style="overflow-x:auto">
+      <table class="ot">
+        ${b.head.length === 0 ? '' : `<tr>${b.head.map(h => `<th>${esc(h)}</th>`).join('')}</tr>\n        `}${rows}
+      </table>
+    </div>`
+        + b.notes.map(t => `\n    <p class="tbl-note">${t}</p>`).join('');
+    }
+    case 'summary':
+      return `<div class="summary">
+      ${b.title === '' ? '' : `<div class="stitle">${esc(b.title)}</div>`}
+      <ul>
+        ${b.items.map(i => `<li>${i}</li>`).join('\n        ')}
+      </ul>
+    </div>`;
+    case 'check':
+      return `<div class="chk">
+      <div class="chk-h">ここをご確認ください　${esc(mark)}</div>
+      <p class="chk-q">${b.question}</p>
+      ${b.detail.length === 0 ? '' : `<p class="chk-a">${sentences(...b.detail)}</p>`}
+      <textarea class="ansbox" id="chk-${uid}" placeholder="この場でご入力いただけます"></textarea>
+    </div>`;
+    case 'flow': {
+      // repeat が入っていれば指標ごとに同じ図を繰り返す（{名} が指標名になる）
+      const names = b.repeat.length > 0 ? b.repeat : [''];
+      const fill = (t: string, nm: string): string => t.split('{名}').join(nm);
+      return (b.lede === '' ? '' : `<p class="sec-lede">${b.lede}</p>\n    `)
+        + names.map((nm, i) => `<div class="rcp">
+      ${b.title === '' ? '' : `<p class="sub-lede">${esc(fill(b.title, nm))}</p>`}
+      ${b.text === '' ? '' : `<p class="rcp-t">${fill(b.text, nm)}</p>`}
+      <div class="map-scroll">${renderFlowSvg(b, nm, `${uid}-${i}`)}</div>
+      ${b.note === '' ? '' : `<p class="tbl-note">${fill(b.note, nm)}</p>`}
+    </div>`).join('\n    ');
+    }
+    case 'recipes': return auto.recipes;
+    case 'graph': return auto.graph;
+  }
+}
+
+/** 帳票（ファイル）に対応する読み方の指定。ファイル名は前方一致でも拾う */
+function planFor(plans: ReportOutputPlan[], filename: string): ReportOutputPlan | undefined {
+  return plans.find(p => p.file === filename)
+    ?? plans.find(p => filename.startsWith(p.file) || p.file.startsWith(filename));
 }
 
 function buildOutputSections(
@@ -1717,8 +2119,9 @@ function renderLogicBlock(
     const i = l.lastIndexOf('›');
     return i >= 0 ? l.slice(i + 1).trim() : l;
   };
+  // ラベルにセル範囲が入っている（1シートが複数の表に割れている）ときは、注記で繰り返さない
   const keyRows = keyed.slice(0, 8).map(r => `<tr>`
-    + `<td><b>${esc(sheetLabel(r))}</b><div class="rnote">${esc(rangeOf(r))}・${r.dataRowCount.toLocaleString()}行</div></td>`
+    + `<td><b>${esc(sheetLabel(r))}</b><div class="rnote">${sheetLabel(r).endsWith(rangeOf(r)) ? '' : `${esc(rangeOf(r))}・`}${r.dataRowCount.toLocaleString()}行</div></td>`
     + `<td>${esc(cappedKeys(r))}</td>`
     + `<td>${esc(cappedGrain(r))}</td>`
     + `<td>${esc(joinKeysOf(r))}</td>`
@@ -1744,14 +2147,14 @@ function renderLogicBlock(
       <p class="tbl-note">※「1行を決めるキー」は、値が重複していないことを確認できた列だけを載せています。
       「照合に使う列」は数式が突合の条件に使っている列で、必ずしも1行を決めるとは限りません。</p>
       ${keyed.length > 8 ? `<p class="tbl-note">※ キーが特定できた ${keyed.length} 表のうち上位8表。</p>` : ''}
-      ${keyed.length < mine.length ? `<p class="tbl-note">※ このブロックの ${mine.length} 表のうち ${mine.length - keyed.length} 表は、1行を決める列を特定できていません。03 でお伺いします。</p>` : ''}
+      ${keyed.length < mine.length ? `<p class="tbl-note">※ このブロックの ${mine.length} 表のうち ${mine.length - keyed.length} 表は、1行を決める列を特定できていません。03 で伺います。</p>` : ''}
     </div>` : `<div class="lb-step"><span class="lb-st">関係する表のキーと1行の定義</span>
-      <p class="tbl-note">このブロックの ${mine.length} 表では、1行を決める列（キー）を特定できませんでした。${b.byKey ? '' : '上記のとおりセル位置で対応しているため、キー列が数式に現れません。'}03 でお伺いします。</p>
+      <p class="tbl-note">このブロックの ${mine.length} 表では、1行を決める列（キー）を特定できませんでした。${b.byKey ? '' : '上記のとおりセル位置で対応しているため、キー列が数式に現れません。'}03 で伺います。</p>
     </div>`}
 
     ${er ? `<div class="lb-step"><span class="lb-st">キー関係図（ER）— 上記の表だけ</span>
       <div class="map-scroll er-scroll">${er.svg}</div>
-      ${er.omitted > 0 ? `<p class="tbl-note">※ キーでつながる表を優先して表示しています。ほか ${er.omitted} 表は省略しました。</p>` : ''}
+      ${er.omitted > 0 ? `<p class="tbl-note">※ キーでつながる表を優先して表示しております。ほか ${er.omitted} 表は省略しております。</p>` : ''}
     </div>` : showEr ? `<div class="lb-step"><span class="lb-st">キー関係図（ER）</span>
       <p class="tbl-note">このブロックには、キー列で結ばれる表の対がありません${b.byKey ? '' : '。セル位置で対応しているため、結合キーがありません'}。</p>
     </div>` : ''}
@@ -1840,7 +2243,7 @@ const FF = { W: 1280, PAD: 64, HEAD: 26, ROW: 150 };
  * 「担当者の説明だけが根拠」であることを、色と線種で他の4種とはっきり分ける
  * （実線＝数式、粗い破線＝値一致の推定、点線グレー＝Excel 上に根拠なし）。
  */
-const DECLARED_ONLY = { label: '点線＝うかがった内容のみで、Excel上に根拠なし', color: '#7A8794', cls: 'declared', dashed: true };
+const DECLARED_ONLY = { label: '点線＝伺った内容のみ（Excel 上に数式が残っていないもの）', color: '#7A8794', cls: 'declared', dashed: true };
 /** ご登録の種別 → 線の色に使う分類。種別が未設定なら転記として扱う */
 const DECLARED_REL_GROUP: Record<string, Group> = {
   aggregate: 'agg', reference: 'ref', transcribe: 'move', manual_copy: 'copy', unknown: 'move',
@@ -1946,13 +2349,18 @@ function buildFileFlow(stats: Map<string, FileStat>, filePairs: FilePair[], outp
     const isOut = outputs.has(s.label);
     const orphanOut = isOut && s.inFiles.size === 0;
     const sub = `${s.sheets.length}シート ／ ${s.regionCount}表 ／ ${s.rowTotal.toLocaleString()}行`;
+    const nameLines = wrapText(isOut && !s.filename.startsWith('★') ? `★ ${s.filename}` : s.filename, 250, 11.5, 2);
     parts.push('<g>'
       + (isOut
         ? `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${(p.r + 5).toFixed(1)}" fill="none" stroke="${fill}" stroke-opacity="0.32" stroke-width="2"${orphanOut ? ' stroke-dasharray="5 4"' : ''}/>`
         : '')
       + `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${p.r}" fill="${fill}" stroke="#FCFDFE" stroke-width="1.5"/>`
-      + `<text x="${p.x.toFixed(1)}" y="${(p.y + p.r + 14).toFixed(1)}" font-size="11.5" font-weight="${isOut ? 800 : 700}" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">${esc(fitText(isOut && !s.filename.startsWith('★') ? `★ ${s.filename}` : s.filename, 250, 11.5))}</text>`
-      + `<text x="${p.x.toFixed(1)}" y="${(p.y + p.r + 28).toFixed(1)}" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">${esc(sub)}${orphanOut ? '（つながり未検出）' : ''}</text>`
+      // ファイル名は日付・版が付いて長い。1行に押し込むと「③仮予算 20260410 2027年3月期 DF予算編…」
+      // のように肝心のところで切れるので2行まで折り返し、その分だけ下の注記をずらす
+      + `<text x="${p.x.toFixed(1)}" y="${(p.y + p.r + 14).toFixed(1)}" font-size="11.5" font-weight="${isOut ? 800 : 700}" fill="#0E2A47" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3.4px">`
+      + nameLines.map((ln, i) => `<tspan x="${p.x.toFixed(1)}" dy="${i === 0 ? 0 : 13}">${esc(ln)}</tspan>`).join('')
+      + '</text>'
+      + `<text x="${p.x.toFixed(1)}" y="${(p.y + p.r + 28 + (nameLines.length - 1) * 13).toFixed(1)}" font-size="9.5" fill="#7A8794" text-anchor="middle" style="paint-order:stroke;stroke:#FCFDFE;stroke-width:3px">${esc(sub)}${orphanOut ? '（つながり未検出）' : ''}</text>`
       + '</g>');
   }
   parts.push('</svg>');
@@ -2083,7 +2491,7 @@ function buildStepFlow(
   }
 
   const parts: string[] = [];
-  parts.push(`<svg viewBox="0 0 ${SFL.W} ${height}" role="img" aria-label="うかがった手順に沿ったファイルどうしの関係図">`);
+  parts.push(`<svg viewBox="0 0 ${SFL.W} ${height}" role="img" aria-label="伺った手順に沿ったファイルどうしの関係図">`);
   parts.push('<defs>');
   for (const g of GROUP_ORDER) {
     parts.push(`<marker id="sf-${g}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${GROUP_META[g].color}" fill-opacity="0.85"/></marker>`);
@@ -2294,7 +2702,7 @@ function joinKeyHints(a: FileCols | undefined, b: FileCols | undefined): KeyHint
           name: `${an} ＝ ${bn}`,
           score: (same ? 50 : 20) + (ka ? 2 : 0) + (kb ? 2 : 0),
           note: same ? 'コードの書き方が違うだけで、同じものを指していそうです'
-            : 'お名前が近いので、この2つを突き合わせておられそうです',
+            : '名称が近いので、この2つを突き合わせていらっしゃるようです',
         });
       }
     }
@@ -2309,10 +2717,10 @@ function joinKeyHints(a: FileCols | undefined, b: FileCols | undefined): KeyHint
     const pa = pick(a); const pb = pick(b);
     if (pa.length > 0 || pb.length > 0) {
       if (pa.length > 0) {
-        hits.push({ name: `元の側：${pa.join('・')}`, score: 10, note: 'この中のどれで突き合わせておられますか' });
+        hits.push({ name: `元の側：${pa.join('・')}`, score: 10, note: 'この中のどれで突き合わせていらっしゃいますか' });
       }
       if (pb.length > 0) {
-        hits.push({ name: `先の側：${pb.join('・')}`, score: 9, note: 'お名前が一致する列が無いため、対応を教えてください' });
+        hits.push({ name: `先の側：${pb.join('・')}`, score: 9, note: '名称が一致する列が無いため、対応をご教示ください' });
       }
     }
   }
@@ -2384,7 +2792,7 @@ interface Recipe {
   dstKind: string;                               // それがシートなのか、シート内の1つの表なのか
   dstIsOutput: boolean;                          // 最終アウトプットそのものか
   dstCols: string[];                             // そこにできる項目（列）
-  srcs: { label: string; kind: string; key: string; group: Group }[];
+  srcs: { label: string; kind: string; key: string; group: Group; evidence: string }[];
   keys: string[];                                // 突合に使われているキー（重複除く）
   /**
    * どうやって元と先を対応づけているか。
@@ -2416,6 +2824,9 @@ function prettyKey(raw: string): { text: string; noHeader: string[] } {
   return { text: [...new Set(parts)].join('・'), noHeader: [...new Set(noHeader)] };
 }
 
+/** 引き当て・集計の関数。式にこれがあれば「キーで突き合わせている」側として扱う */
+const LOOKUP_FN = /\b(VLOOKUP|HLOOKUP|XLOOKUP|LOOKUP|MATCH|INDEX|SUMIFS?|COUNTIFS?|AVERAGEIFS?|GETPIVOTDATA|FILTER)\s*\(/i;
+
 const RECIPE_CAP = 6;        // 載せる行き先の数。多いと「結局どれを見ればいいのか」が消える
 const RECIPE_SRC_CAP = 4;    // 1つの行き先につき並べる元の数
 const RECIPE_COL_CAP = 5;    // 1つの行き先につき挙げる項目数
@@ -2436,6 +2847,7 @@ function buildRecipes(
   // 図では短い呼び名でよいが、ここは「何からできるか」を言い切る場所なのでファイル名まで書く
   const shortLabels = buildLabels(regions);
   const fileOf = new Map(regions.map(r => [r.id, r.file]));
+  const regionById = new Map(regions.map(r => [r.id, r]));
   // 呼び名だけでは、それがシートなのか列なのか読み手に伝わらない。1シートに表が1つなら
   // 「シート」、同じシートに複数の表があるならその中の「表」と呼び分けて必ず添える。
   const perSheet = new Map<string, number>();
@@ -2454,8 +2866,11 @@ function buildRecipes(
   }
   // 行き先の表ごとに、元の表・キー・できる項目を集める。
   // 値の一致だけの関係（copy）はここでは扱わない — 「こう作られています」と言い切れる話ではなく、
-  // 03 で「実際に貼っておられますか」と伺う対象なので、混ぜると推定が事実として読まれる。
-  const byDst = new Map<string, { cols: Set<string>; srcs: Map<string, { key: string; group: Group; n: number }> }>();
+  // 03 で「実際に貼っていらっしゃいますか」と伺う対象なので、混ぜると推定が事実として読まれる。
+  const byDst = new Map<string, {
+    cols: Set<string>;
+    srcs: Map<string, { key: string; group: Group; n: number; evidence: string }>;
+  }>();
   for (const e of edges) {
     if (e.type === 'copy') continue;
     const from = regionIdOf(e.from); const to = regionIdOf(e.to);
@@ -2469,8 +2884,15 @@ function buildRecipes(
     if (col) d.cols.add(col);
     const g = groupOf(e.type);
     const cur = d.srcs.get(from);
-    if (cur) cur.n++;
-    else d.srcs.set(from, { key: pairKeys.get(regionPairKey(from, to)) ?? '', group: g, n: 1 });
+    if (cur) { cur.n++; if (cur.evidence === '') cur.evidence = e.evidence ?? ''; }
+    else {
+      d.srcs.set(from, {
+        key: pairKeys.get(regionPairKey(from, to)) ?? '', group: g, n: 1,
+        // 「キーで突き合わせているか」は種別だけでは決まらない。IFERROR(VLOOKUP(...)) のように
+        // 引き当ての式が転記として分類されることがあるので、式そのものも見る
+        evidence: e.evidence ?? '',
+      });
+    }
   }
   const totalOf = new Map(pairs.map(p => [p.to, p.total]));
   // 読み手の関心は最終アウトプットが何からできるか。まずそれ、次に関係の多い順。
@@ -2486,19 +2908,20 @@ function buildRecipes(
       const one = files.size === 1 ? fileOf.get(dstId) : undefined;
       const nameOf = (id: string) => (one ? shortLabels.get(id) ?? id : labels.get(id) ?? id);
       const srcs = picked.map(([sid, v]) => ({
-        label: nameOf(sid), kind: kindOf(sid), key: v.key, group: v.group,
+        label: nameOf(sid), kind: kindOf(sid), key: v.key, group: v.group, evidence: v.evidence,
       }));
       const keys = [...new Set(srcs.flatMap(s => (s.key ? [prettyKey(s.key).text] : [])).filter(Boolean))];
-      // キーが取れないときの意味は2通り。引き当ての式（VLOOKUP 等）なら「照合列を読み取れなかった」、
-      // そうでなければ「そもそもキーで突き合わせておらず、同じ位置のセルを指している」。
+      // キーが取れないときの意味は2通り。引き当て・集計の式（VLOOKUP・SUMIFS 等）なら
+      // 「照合列を読み取れなかった」、式が単なるセル参照や四則演算なら「キーで突き合わせていない」。
+      // 種別だけでは決められない — IFERROR(VLOOKUP(...)) が転記として分類されることがある。
       const match: Recipe['match'] = keys.length > 0 ? 'key'
-        : srcs.some(s => s.group === 'ref') ? 'unknown' : 'position';
+        : srcs.some(s => s.group === 'ref' || LOOKUP_FN.test(s.evidence)) ? 'unknown' : 'position';
       return {
         file: one,
         dst: nameOf(dstId),
         dstKind: kindOf(dstId),
         dstIsOutput: roles.get(dstId) === '最終アウトプット',
-        dstCols: [...d.cols].slice(0, RECIPE_COL_CAP),
+        dstCols: [...d.cols].slice(0, RECIPE_COL_CAP).map(c => prettyColumn(regionById.get(dstId), c)),
         srcs,
         keys,
         match,
@@ -2514,10 +2937,23 @@ function buildRecipes(
 /** 1件ぶんの図。左に元の表、中央に突合キー、右にできる表。 */
 const RCP = { W: 980, SRC_W: 320, DST_W: 300, ROW: 42, BOX_H: 32 };
 function renderRecipeSvg(r: Recipe): string {
-  const h = Math.max(96, r.srcs.length * RCP.ROW + 22);
+  // 表の呼び名は「シート名＋軸の説明」で長い。1行に収まらないものが1つでもあれば、
+  // 箱の高さと行間を広げて2行で見せる（切ってしまうと、どの表なのか読めなくなる）
+  const srcLines = r.srcs.map(s => wrapText(s.label, RCP.SRC_W - 66, 12.5, 2));
+  const dstLines = wrapText((r.dstIsOutput ? '★ ' : '') + r.dst, RCP.DST_W - 66, 12.5, 2);
+  const twoLine = srcLines.some(l => l.length > 1) || dstLines.length > 1;
+  const boxH = twoLine ? 46 : RCP.BOX_H;
+  const rowH = twoLine ? RCP.ROW + 14 : RCP.ROW;
+  /** 箱の中央にそろえて、1行なら中央・2行なら上下に振り分けて置く */
+  const boxText = (x: number, mid: number, lines: string[], attrs: string): string =>
+    `<text x="${x}" y="${(mid + (lines.length > 1 ? -3 : 4.5)).toFixed(1)}" ${attrs}>`
+    + lines.map((ln, i) => `<tspan x="${x}" dy="${i === 0 ? 0 : 15}">${esc(ln)}</tspan>`).join('')
+    + '</text>';
+
+  const h = Math.max(96, r.srcs.length * rowH + 22);
   const cy = h / 2;
   const keyText = r.match === 'key' ? shortText(r.keys.join('・'), 26)
-    : r.match === 'position' ? 'セルの位置で対応'
+    : r.match === 'position' ? '同じ行どうしで対応'
       : '照合の列を読み取れず';
   const keyCaption = r.match === 'key' ? '突き合わせる列' : '対応のしかた';
   const keyW = Math.min(280, 26 + keyText.length * 12);
@@ -2529,10 +2965,10 @@ function renderRecipeSvg(r: Recipe): string {
   const kindTag = (x: number, y: number, w: number, text: string) =>
     `<text x="${x + w - 12}" y="${y + 20}" font-size="10" fill="#7A8794" text-anchor="end">${esc(text)}</text>`;
   r.srcs.forEach((s, i) => {
-    const y = 11 + i * RCP.ROW;
-    const scy = y + RCP.BOX_H / 2;
-    p.push(`<rect x="8" y="${y}" width="${RCP.SRC_W}" height="${RCP.BOX_H}" rx="9" fill="#fff" stroke="${GROUP_META[s.group].color}" stroke-opacity=".45"/>`);
-    p.push(`<text x="20" y="${scy + 4.5}" font-size="12.5" fill="#0E2A47">${esc(fitText(s.label, RCP.SRC_W - 66, 12.5))}</text>`);
+    const y = 11 + i * rowH;
+    const scy = y + boxH / 2;
+    p.push(`<rect x="8" y="${y}" width="${RCP.SRC_W}" height="${boxH}" rx="9" fill="#fff" stroke="${GROUP_META[s.group].color}" stroke-opacity=".45"/>`);
+    p.push(boxText(20, scy, srcLines[i], 'font-size="12.5" fill="#0E2A47"'));
     p.push(kindTag(8, y, RCP.SRC_W, s.kind));
     p.push(`<path d="M${8 + RCP.SRC_W},${scy} C${8 + RCP.SRC_W + 40},${scy} ${keyX - 40},${cy} ${keyX - 4},${cy}" fill="none" stroke="#B9C6D6" stroke-width="1.4"/>`);
   });
@@ -2540,22 +2976,24 @@ function renderRecipeSvg(r: Recipe): string {
   p.push(`<rect x="${keyX}" y="${cy - 15}" width="${keyW}" height="30" rx="15" fill="#EAF2FB" stroke="#C9DEF4"/>`);
   p.push(`<text x="${keyX + keyW / 2}" y="${cy + 4.5}" font-size="12.5" font-weight="700" fill="#1F5FAE" text-anchor="middle">${esc(fitText(keyText, keyW - 18, 12.5))}</text>`);
   p.push(`<path d="M${keyX + keyW},${cy} L${dstX - 8},${cy}" fill="none" stroke="#7A8794" stroke-width="1.6" marker-end="url(#rcp-ar)"/>`);
-  p.push(`<rect x="${dstX}" y="${cy - RCP.BOX_H / 2}" width="${RCP.DST_W}" height="${RCP.BOX_H}" rx="9" fill="#FBEFEF" stroke="#C0392B" stroke-opacity=".5"/>`);
-  p.push(`<text x="${dstX + 14}" y="${cy + 4.5}" font-size="12.5" font-weight="700" fill="#0E2A47">${esc(fitText((r.dstIsOutput ? '★ ' : '') + r.dst, RCP.DST_W - 66, 12.5))}</text>`);
-  p.push(kindTag(dstX, cy - RCP.BOX_H / 2, RCP.DST_W, r.dstKind));
+  p.push(`<rect x="${dstX}" y="${cy - boxH / 2}" width="${RCP.DST_W}" height="${boxH}" rx="9" fill="#FBEFEF" stroke="#C0392B" stroke-opacity=".5"/>`);
+  p.push(boxText(dstX + 14, cy, dstLines, 'font-size="12.5" font-weight="700" fill="#0E2A47"'));
+  p.push(kindTag(dstX, cy - boxH / 2, RCP.DST_W, r.dstKind));
   // できるものが列なら、その列名を行き先の箱の下に出す（何ができるのかが箱だけでは分からない）
   const made = r.dstCols.length > 0 ? `できる列: ${r.dstCols.join('・')}` : 'この中の数値ができます';
-  p.push(`<text x="${dstX + 14}" y="${cy + RCP.BOX_H / 2 + 16}" font-size="10.5" fill="#7A8794">${esc(fitText(made, RCP.DST_W - 20, 10.5))}</text>`);
+  p.push(`<text x="${dstX + 14}" y="${cy + boxH / 2 + 16}" font-size="10.5" fill="#7A8794">${esc(fitText(made, RCP.DST_W - 20, 10.5))}</text>`);
   p.push('</svg>');
   return p.join('');
 }
 
 function buildDetailRows(
   pairs: PairAgg[], labels: Map<string, string>, pairKeys: Map<string, string>,
-  copyQuestionByPair: Map<string, string>,
+  copyQuestionByPair: Map<string, string>, regions: Region[],
 ): { rows: string[]; omitted: number } {
+  const byId = new Map(regions.map(r => [r.id, r]));
   const endLabel = (key: string) => {
-    const rid = regionIdOf(key); const col = colNameOf(key);
+    const rid = regionIdOf(key);
+    const col = prettyColumn(byId.get(rid), colNameOf(key));
     const l = labels.get(rid) ?? rid;
     return col ? `${esc(l)}<span class="dl-col">${esc(col)}</span>` : esc(l);
   };
@@ -2576,7 +3014,12 @@ function buildDetailRows(
     const proc = processLabel(g, e.evidence);
     rows.push(`<tr>` +
       `<td>${endLabel(e.from)}</td>` +
-      `<td class="mono">${key ? esc(key) : '<span class="dl-none">（キー未特定）</span>'}</td>` +
+      // キーが取れない理由は2通り。引き当て・集計の式なら読み取れなかっただけ、
+    // ただのセル参照ならそもそもキーで突き合わせていない。同じ言い方にすると取り違える。
+    `<td class="mono">${key ? esc(key)
+      : LOOKUP_FN.test(e.evidence)
+        ? '<span class="dl-none">（照合列を読み取れず）</span>'
+        : '<span class="dl-none">（キーなし・同じ行の位置で対応）</span>'}</td>` +
       `<td><span class="rel ${GROUP_META[g].cls}">${esc(GROUP_META[g].label.split('（')[0])}</span>` +
         `${proc ? `<div class="dl-proc">${esc(proc)}</div>` : ''}</td>` +
       `<td>${endLabel(e.to)}</td>` +
@@ -2672,7 +3115,7 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   // 「元データが辿れない最終アウトプット」を 03 の該当設問へ結ぶ。番号を書かないと
   // 図に「つながり未検出」とだけ出て、どこで確認すればよいのか読み手に伝わらない。
   const srcQuestionRef = questions.find(q => q.kind === '最終帳票の元データ')?.id ?? '';
-  // うかがった手順のステップが登録されていれば、全体関係図はステップ帯で描く。
+  // 伺った手順のステップが登録されていれば、全体関係図はステップ帯で描く。
   // 手順が無い案件（大半）はこれまでどおり流れの段で描く。
   const stepFlow = buildStepFlow(fileStats, declaredRels, outputFiles, detectedPairKeys);
   const fileFlow = stepFlow?.svg ?? buildFileFlow(fileStats, flowPairs, outputFiles);
@@ -2685,6 +3128,8 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   // ---- 何を載せるか（アウトプット相談の指定）----
   // 未指定なら全部出す＝従来と同じ。関係図（ノード形式）は指定対象に無く、常に出る。
   const spec = input.spec ?? DEFAULT_REPORT_SPEC;
+  // 保存済みの指定には overview が無いことがある（項目を後から足したため）
+  const overview = spec.overview ?? [];
 
   // ---- 02 全体（ブック間）→ 詳細（シート・表間）の2段構え ----
   // 全体はファイル単位のフロー図、詳細は表単位のノード図（ER＋関係マップ＋操作版）。
@@ -2696,7 +3141,7 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   // ER はロジック別ブロックの結論として各ブロック内に出す（1枚の巨大な図としては出さない）。
   // 「ER を出さない」指定はブロック側へ渡して尊重する — ここで図を作らないだけでは効かない。
   const showEr = spec.items.erDiagram;
-  const { rows: detailRows, omitted: detailOmitted } = buildDetailRows(pairs, labels, pairKeys, copyQuestionByPair);
+  const { rows: detailRows, omitted: detailOmitted } = buildDetailRows(pairs, labels, pairKeys, copyQuestionByPair, regions);
   // 「何と何を、何で突き合わせて、何ができるか」を行き先ごとに1文＋1枚の図で示す
   const { list: recipes, total: recipeTotal } = buildRecipes(edges, pairs, regions, pairKeys, roles);
   // 省いた分は性質が2つある。混ぜて1つの数にすると「6か所を載せています」と出るのに
@@ -2724,8 +3169,15 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
 
   // ---- 節番号 ----
   // 出さない節がある場合は繰り上げる（01 の次が 03 になると読み合わせで指示が噛み合わなくなる）。
+  // 02「再現するアウトプットの確認」は、伺った作り方（再現するもの・作られ方・前提・指示メモ）が
+  // 何かしらある案件だけ。何も無いまま節を作ると、見出しだけの空の節が読み合わせの先頭に来る。
+  const reproduceItems = spec.reproduce.length > 0 ? spec.reproduce : spec.overview;
+  const assumeItems = spec.assumptions.length > 0 ? spec.assumptions : spec.notes;
+  const hasOutcome = reproduceItems.length > 0 || spec.howMade.length > 0
+    || assumeItems.length > 0 || spec.sheetGuide.length > 0;
   const secOn = {
     inventory: spec.sections.inventory,
+    outcome: hasOutcome,
     flow: spec.sections.flow,
     questions: spec.sections.questions,
     nextSteps: spec.sections.nextSteps,
@@ -2733,17 +3185,28 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   let secCount = 0;
   const secNo = (on: boolean) => (on ? String(++secCount).padStart(2, '0') : '');
   const noInventory = secNo(secOn.inventory);
+  const noOutcome = secNo(secOn.outcome);
   const noFlow = secNo(secOn.flow);
   const noQuestions = secNo(secOn.questions);
   const noNext = secNo(secOn.nextSteps);
   // 本文から他の節を指す言い方（節を出していないときは節番号で誘導しない）
   const refQuestions = noQuestions ? `詳しくは ${noQuestions} の確認事項をご覧ください。` : '';
 
-  // 02 の小見出しは連番。1ファイル案件では「全体（ブック間）」が無い分だけ番号が繰り上がる。
-  // 小見出しの番号は「2-1」の形（節番号の 0 詰めは外す）。
-  const flowNo = noFlow.replace(/^0/, '') || '2';
+  // 03 の小見出しは連番。1ファイル案件では「全体（ブック間）」が無い分だけ番号が繰り上がる。
+  // 小見出しの番号は「3-1」の形（節番号の 0 詰めは外す）。
+  const flowNo = noFlow.replace(/^0/, '') || '3';
   let subNo = 0;
-  const subH = (title: string) => `<h3 class="sub-h"><span class="n">${flowNo}-${++subNo}</span>　${esc(title)}</h3>`;
+  // 03 の各節は同じつながりを別の切り口から見たもの。切り口を札で添えないと、
+  // 読む側は節ごとに「前と同じ話か」を判断しながら読むことになる。
+  const subH = (title: string, lens = '') =>
+    `<h3 class="sub-h"><span class="n">${flowNo}-${++subNo}</span>　${esc(title)}`
+    + `${lens ? `<span class="lens">切り口：${esc(lens)}</span>` : ''}</h3>`;
+  // 02 の小見出しも同じ形。節番号が違うだけなので採番だけ別に持つ
+  const outcomeNo = noOutcome.replace(/^0/, '') || '2';
+  let subNoOut = 0;
+  const subHOut = (title: string, lens = '') =>
+    `<h3 class="sub-h"><span class="n">${outcomeNo}-${++subNoOut}</span>　${esc(title)}`
+    + `${lens ? `<span class="lens">切り口：${esc(lens)}</span>` : ''}</h3>`;
 
   const dateStr = input.generatedAt.toISOString().slice(0, 10);
   // 本文（ヘッダ）は和暦式の表記にする。フッタの生成日時は機械可読のまま dateStr を使う
@@ -2762,10 +3225,48 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   // 02 を「ロジック別ブロック」で説明するための分割。ER はブロックの結論として各ブロック内に出す。
   const logicBlocks = buildLogicBlocks(regions, pairs, filePairs, outputFiles);
   const isolatedFiles = [...fileStats.values()].filter(s => s.role === '独立');
-  // 02 は最終アウトプットごとに「関係図 → ロジック」を1セットで並べる
+  // 03 は最終アウトプットごとに「読み方 → でき方 → 確認欄」を1セットで並べる
   const outputSections = buildOutputSections(
     regions, pairs, roles, outputFiles, logicBlocks, declaredOut, fileNameOf,
   );
+  // 確認欄の記号（03-A…）は本文に出てくる順に振る。表紙の道案内から「03-A・03-B」と
+  // 先に呼ぶため、節を組み立てる前にここで決めておく。
+  const checkMark = new Map<ReportOutputBlock, string>();
+  for (const sec of outputSections) {
+    for (const b of planFor(spec.outputPlans, sec.filename)?.blocks ?? []) {
+      if (b.kind === 'check' && checkMark.size < CHECK_MARKS.length) {
+        checkMark.set(b, `${noFlow || '03'}-${CHECK_MARKS[checkMark.size]}`);
+      }
+    }
+  }
+  const checkMarks = [...checkMark.values()];
+  // 2つまでは並べて、3つ以上は範囲で言う（「03-A〜03-D」）
+  const checkRange = checkMarks.length === 0 ? ''
+    : checkMarks.length <= 2 ? checkMarks.join('・')
+      : `${checkMarks[0]}〜${checkMarks[checkMarks.length - 1]}`;
+  // 取込時に指定されたシート役割（ファイルラベル → シート名 → 役割）
+  const sheetRoleOf = new Map<string, Record<string, string> | undefined>();
+  const kindOfFile = new Map<string, string | undefined>();
+  for (const a of input.artifacts ?? []) {
+    sheetRoleOf.set(fileLabelOf(a.filename), a.sheetRoles);
+    kindOfFile.set(fileLabelOf(a.filename), a.kind);
+  }
+  // 貼り付けで受け渡しているタブ＝最終アウトプットのブックの中で、そのブックのどの表からも
+  // 作られていないタブ（＝外から値が入ってきているタブ）。Excel に根拠が残らないのはここなので、
+  // 本数を表紙のタイルに出して「ここはご説明が根拠です」と先に伝える。
+  const pastedInto = new Set<string>();
+  for (const sec of outputSections) {
+    for (const r of regions.filter(x => x.file === sec.file)) {
+      if (declaredOut.hasSheet(r.file, r.sheet)) continue;  // 帳票そのものは除く
+      // インプットとして指定されたタブだけを数える。中間シート（作業用・メモ）は受け渡しではない
+      if ((sheetRoleOf.get(r.file) ?? {})[r.sheet] !== 'input_data') continue;
+      if (pairs.some(pr => pr.to === r.id)) continue;       // ブックの中で計算されている
+      pastedInto.add(`${r.file} ${r.sheet}`);
+    }
+  }
+  const pasteTabCount = pastedInto.size;
+  // 01 のタイルに出す「再現するアウトプット」のシート名（最終帳票として指定されたもの）
+  const finalSheetNames = [...new Set(outputSections.flatMap(s => s.finalSheets))];
 
   // ---- 01 の「まとめ」で使っていた数字 ----
   // まとめの箇条書きは廃止した。受領ファイル数・シート数・最終アウトプットはすぐ上のタイルに、
@@ -2786,7 +3287,6 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
     return !(matchedFilePairs.has(filePairKey(f, t)) || matchedFilePairs.has(filePairKey(t, f)));
   });
   const copyCount = copyAll.filter(p => copyInfo.kindOf(p) === 'cross').length;   // ブックをまたぐ＝本当の論点
-  const copyInner = copyAll.length - copyCount;                                   // 同じブックの中＝様式の繰り返し
   const formulaCount = pairs.length - copyAll.length;
   const matchedRels = audit.filter(a => a.verdict === 'matched').length;
   // 案件固有の前提（アウトプット相談で足したメモ）だけは自動生成の要約ではないので 01 に残す
@@ -2804,12 +3304,6 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
     { role: '最終アウトプット', cls: 'out', label: '最終アウトプット' },
     { role: '独立', cls: 'iso', label: 'つながりが見つからなかったファイル' },
   ];
-  const sheetRoleOf = new Map<string, Record<string, string> | undefined>();
-  const kindOfFile = new Map<string, string | undefined>();
-  for (const a of input.artifacts ?? []) {
-    sheetRoleOf.set(fileLabelOf(a.filename), a.sheetRoles);
-    kindOfFile.set(fileLabelOf(a.filename), a.kind);
-  }
   const REGION_CAP_PER_FILE = 8;
   const renderFileBlock = (s: FileStat): string => {
     {
@@ -2827,52 +3321,116 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
       }).join('');
       const regionBlocks = myRegions.slice(0, REGION_CAP_PER_FILE).map(r => {
         const keyCols = new Set((r.keys?.keys ?? []).map(k => k.column));
-        const chips = r.columns.slice(0, 24).map(c => {
+        // 見出しの読めなかった列は、意味の分かる呼び方（東京の売上）へ直してから並べる。
+        // 直しようが無いものだけが残った表は、列記号（A列 B列 …）を並べても読めないので出さない。
+        // 何が並ぶ表なのかは、下の軸の説明で伝わる。
+        const shown = r.columns.slice(0, 24)
+          .map(c => ({ ...c, disp: prettyColumn(r, c.name) }))
+          .filter(c => !/^[A-Z]{1,3}列$/.test(c.disp));
+        const chips = shown.map(c => {
           const cls = keyCols.has(c.name) ? 'colchip key'
             : c.mixedFormula ? 'colchip manual'
             : c.hasFormula ? 'colchip formula'
             : c.manualNumeric > 0 ? 'colchip manual' : 'colchip';
           const mark = c.mixedFormula ? ' ⚠' : '';
-          return `<span class="${cls}">${esc(c.name)}${mark}</span>`;
+          return `<span class="${cls}">${esc(c.disp)}${mark}</span>`;
         }).join('');
-        const more = r.columns.length > 24 ? `<span class="colchip">…他${r.columns.length - 24}列</span>` : '';
+        const more = chips !== '' && r.columns.length > 24 ? `<span class="colchip">…他${r.columns.length - 24}列</span>` : '';
         const keyNote = r.keys?.grain
-          ? `<p class="key-note">セルは <b>${esc(r.keys.grain)}</b> の組合せで決まります。</p>`
+          ? `<p class="key-note">セルは <b>${esc(prettyText(r, r.keys.grain))}</b> の組合せで決まります。</p>`
           : r.keys?.axisNote
-          ? `<p class="key-note">${esc(r.keys.axisNote)}</p>`
+          ? `<p class="key-note">${esc(prettyText(r, r.keys.axisNote))}</p>`
           : keyCols.size > 0
-            ? `<p class="key-note"><b>${esc(keySummary(r))}</b> が1行を決めるキーと推定しています。</p>`
+            ? `<p class="key-note"><b>${esc(prettyText(r, keySummary(r)))}</b> が1行を決めるキーと推定しております。</p>`
             : '';
-        const mixedCols = r.columns.filter(c => c.mixedFormula).map(c => c.name);
+        const mixedCols = r.columns.filter(c => c.mixedFormula).map(c => prettyColumn(r, c.name));
         const mixedNote = mixedCols.length > 0
-          ? `<p class="rnote">⚠ ${esc(mixedCols.slice(0, 3).join('、'))} 列で数式と手入力の混在があります。</p>` : '';
+          ? `<p class="rnote">⚠ ${esc(mixedCols.slice(0, 3).join('、'))} で数式と手入力の混在があります。</p>` : '';
+        // 縦横に何が並ぶ表なのか。1シートが複数の表に割れているとき、番地だけでは区別が付かない
+        const axisNote = axisDetail(r) === '' ? '' : `<p class="key-note">${esc(axisDetail(r))}</p>`;
         return `<div class="rblock">
           <div class="rhead"><b>${esc(r.sheet)}</b><span class="loc">${esc(rangeOf(r))}</span>` +
           `<span class="rows">${r.dataRowCount.toLocaleString()}行 × ${r.columns.length}列</span>` +
           `<span class="rrole">${esc(roles.get(r.id) ?? '')}</span></div>
-          <div class="colchips">${chips}${more}</div>${keyNote}${mixedNote}
+          <div class="colchips">${chips}${more}</div>${axisNote}${keyNote}${mixedNote}
         </div>`;
       }).join('\n');
       const moreRegions = myRegions.length > REGION_CAP_PER_FILE
-        ? `<p class="tbl-note">※ 行数の多い上位 ${REGION_CAP_PER_FILE} 表を掲載しています。このファイルには全 ${myRegions.length} 表あります。</p>` : '';
+        ? `<p class="tbl-note">※ 行数の多い上位 ${REGION_CAP_PER_FILE} 表を掲載しております。このファイルには全 ${myRegions.length} 表あります。</p>` : '';
       // 旧一覧表にしか無かった補足（どのシートが対象か／つながり未検出）を見出しへ引き継ぐ
       const finalSheets = s.sheets.filter(sh => declaredOut.hasSheet(s.label, sh));
-      const note = s.role === '最終アウトプット' && finalSheets.length > 0
+      const isOut = s.role === '最終アウトプット';
+      const note = isOut && finalSheets.length > 0
         ? `<span class="rnote">対象シート: ${esc(shortText(finalSheets.join('、'), 56))}</span>`
         : s.role === '独立' ? '<span class="rnote">他のファイルとのつながりが見つかっていません</span>' : '';
+      // 表数・行数は解析の規模であって読み手の関心事ではないので、シート数だけを見出しに出す
       const head = `<span class="fname"><b>${esc(s.filename)}</b>${note}</span>`
-        + `<span class="rows">${s.sheets.length}シート ／ ${s.regionCount}表 ／ ${s.rowTotal.toLocaleString()}行</span>`;
-      // 中身を出さない指定のときは開閉させない（開いても何も無い三角は押させない）
-      if (!spec.items.sheetDetails) return `    <div class="fileblk"><div class="fbrow">${head}</div></div>`;
-      return `    <details class="fileblk">
+        + `<span class="rows">${s.sheets.length}シート</span>`;
+      if (!isOut && !spec.items.sheetDetails && s.sheets.length === 0) {
+        return `    <div class="fileblk"><div class="fbrow">${head}</div></div>`;
+      }
+      // 最終アウトプットのブックは「タブごとの役割と中身」の表で見せる。どのタブが帳票で、
+      // 何が並び、どこから来るのかが1行で並ぶと、開いたまま読み合わせができる。
+      const guide = spec.sheetGuide.find(g => g.file === s.filename);
+      const sourceOf = new Map((guide?.rows ?? []).map(r => [r.tab, r.source]));
+      const tabTable = !isOut ? '' : `<p class="sub-lede">タブごとの役割と中身</p>
+        <div style="overflow-x:auto">
+          <table class="ot">
+            <tr><th>タブ</th><th>役割</th><th>何が並ぶタブか</th>${sourceOf.size > 0 ? '<th>入手元（伺った内容）</th>' : ''}</tr>
+            ${s.sheets.map(name => {
+              const role = roleMap?.[name] ?? (kind && kind !== 'mixed' ? kind : undefined);
+              const label = declaredOut.hasSheet(s.label, name) ? '最終帳票'
+                : role ? (SHEET_ROLE_LABELS[role] ?? role) : '未指定';
+              const axis = tabAxisText(regions, s.label, name);
+              return `<tr${declaredOut.hasSheet(s.label, name) ? ' class="out"' : ''}>`
+                + `<td><b>${esc(name)}</b></td><td>${esc(label)}</td>`
+                + `<td>${axis === '' ? '<span class="dl-none">—</span>' : esc(axis)}</td>`
+                + `${sourceOf.size > 0 ? `<td>${sourceOf.get(name) === undefined ? '<span class="dl-none">—</span>' : esc(sourceOf.get(name)!)}</td>` : ''}</tr>`;
+            }).join('\n            ')}
+          </table>
+        </div>
+        <p class="tbl-note">「何が並ぶタブか」は、いただいたファイルの見出しから読み取った内容です。${sourceOf.size > 0 ? `「入手元」は ${esc(spec.howMadeSource || '指示メモ')}に書かれている内容です。` : ''}</p>`;
+      // ブックの中だけで完結している集計（月別の表を SUMIF でまとめる等）は、そのブックの
+      // 話なのでここに置く。関係の一覧は行数が多いので既定は閉じておく。
+      const ownPairs = pairs.filter(p =>
+        fileOfR.get(p.from) === s.label && fileOfR.get(p.to) === s.label);
+      const fileNote = spec.fileNotes.find(n => n.file === s.filename)?.note ?? '';
+      // 一覧を添えるのは、そのブックの中の集計について一言いただいているファイルだけ。
+      // 全ファイルに 30 行の表を付けると、01 が関係表の束になって読み合わせで開けなくなる。
+      const inner = ownPairs.length === 0 || fileNote === '' || !spec.items.detailLogic ? '' : (() => {
+        const { rows, omitted } = buildDetailRows(ownPairs, labels, pairKeys, copyQuestionByPair, regions);
+        return `<p class="sub-lede">シートの中の集計（付録）</p>
+        <p class="graph-guide">${sentences(
+          fileNote,
+          `数式でつながっている箇所は、このファイルの中で <b>${ownPairs.length}</b> 件ございました。`,
+          omitted > 0 ? `そのうち流れの順に上位 ${rows.length} 件を下に載せております。` : '',
+        )}</p>
+        <details class="fileblk">
+          <summary><b>関係の一覧を開く</b><span class="rows">${rows.length} 件</span></summary>
+          <div style="overflow-x:auto">
+            <table class="ot dl">
+              <tr><th>元の表・列</th><th>キー</th><th>処理</th><th>先の表・列</th><th>根拠</th><th>確度</th></tr>
+              ${rows.join('\n              ')}
+            </table>
+          </div>
+        </details>`;
+      })();
+      return `    <details class="fileblk${isOut ? ' out' : ''}">
       <summary>${head}</summary>
       <div class="rbody">
-        <p class="sub-lede">取込時にご指定・ご確認いただいたシートの役割</p>
-        <div class="srchips">${roleChips || '<span class="dl-none">シート情報なし</span>'}</div>
-        <p class="sub-lede">表と列の構成</p>
-        ${regionBlocks || '<p class="dl-none">表を検出できませんでした。</p>'}
-        ${moreRegions}
+        <!-- そのブックについて伺っている一言は、中身より先に置く（何のブックかが分かってから中身を読む） -->
+        ${fileNote !== '' && inner === '' ? `<p class="graph-guide">${fileNote}</p>` : ''}
+        ${isOut ? tabTable : `<p class="sub-lede">取込時にご指定・ご確認いただいたシートの役割</p>
+        <div class="srchips">${roleChips || '<span class="dl-none">シート情報なし</span>'}</div>`}
+        ${inner}
       </div>
+      ${spec.items.sheetDetails ? `<details class="fileblk">
+        <summary><b>表と列の構成を開く</b><span class="rows">${s.regionCount}表 ／ ${s.rowTotal.toLocaleString()}行</span></summary>
+        <div class="rbody">
+          ${regionBlocks || '<p class="dl-none">表を検出できませんでした。</p>'}
+          ${moreRegions}
+        </div>
+      </details>` : ''}
     </details>`;
     }
   };
@@ -2889,7 +3447,7 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   // 表に残るのは「一致」の行だけ＝読み手が何もしなくてよい行だけになっていたため。
 
   // ---- 質問カード ----
-  // 見出しは「分析結果／伺いたいこと」ではなく「わかったこと／教えてください」。前者は資料が
+  // 見出しは「分析結果／伺いたいこと」ではなく「分かったこと／ご教示ください」。前者は資料が
   // 自分の処理を報告する言い方で、担当者が相手に尋ねている文章に読めない。
   // 回答欄は textarea。画面でそのまま書き込め、内容はブラウザに保存される（下部スクリプト）。
   const qCards = questions.map(q => {
@@ -2905,27 +3463,56 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
       <div class="qhead"><span class="qid" id="${anchor}">${q.id}</span><span class="qtag ${q.priority === 'high' ? 'high' : 'mid'}" data-role="priority">優先度 ${q.priority === 'high' ? '高' : '中'}</span><span class="qtag kind" data-role="kind">${esc(q.kind)}</span><span class="qcard-tools" hidden><button type="button" class="qdel" title="この設問を消す">削除</button></span></div>
       <div class="qtitle" data-role="title">${esc(q.title)}</div>
       <dl class="qgrid">
-        <dt data-for="analysis"${noAnalysis ? ' hidden' : ''}>わかったこと</dt><dd data-role="analysis"${noAnalysis ? ' hidden' : ''}>${esc(q.analysis ?? '')}</dd>
+        <dt data-for="analysis"${noAnalysis ? ' hidden' : ''}>分かったこと</dt><dd data-role="analysis"${noAnalysis ? ' hidden' : ''}>${esc(q.analysis ?? '')}</dd>
         <dt data-for="where"${noWhere ? ' hidden' : ''}>どこか</dt><dd data-role="where"${noWhere ? ' hidden' : ''}><ul class="qwhere">${(q.detail ?? []).map(d => `<li>${esc(d)}</li>`).join('')}</ul></dd>
-        <dt>教えてください</dt><dd data-role="ask">${ask}</dd>
+        <dt>ご教示ください</dt><dd data-role="ask">${ask}</dd>
       </dl>
       <label class="ans-h" for="ans-${anchor}">ご回答メモ</label>
       <textarea class="ansbox" id="ans-${anchor}" placeholder="この場でご入力いただけます"></textarea>
     </div>`;
   }).join('\n');
 
+  // 02-1 の締め。どこまで数式で追えて、どこから追えないのかを先に伝えておくと、
+  // 03 の「見つけられませんでした」が解析漏れではなく、資料の作り方の話として読める。
+  const howMadeNext = [
+    formulaCount > 0 ? 'ブックの中の計算は数式が残っており、そのまま読み取れました。' : '',
+    copyCount > 0 || declaredOnlyPairs.length > 0
+      ? '一方<b>ブックをまたぐ受け渡しは値を貼る形</b>のため数式が残らず、ファイルだけでは追いきれませんでした。' : '',
+    secOn.flow ? `そこは上のご説明を基に、${noFlow} で1つずつ確認させていただけますでしょうか。` : '',
+  ].filter(Boolean).join('');
+
+  // 表紙のすぐ下に置く道案内。節の並びと、それぞれで何をするかを1行ずつ。
+  // 「はじめに（全体像）」はここではなく 02-1「再現するもの」で読ませる（結論と根拠を同じ節に置く）。
+  const roadmap: { no: string; title: string; text: string }[] = [
+    secOn.inventory ? { no: noInventory, title: '受領データ一覧',
+      text: 'いただいたファイルと、その中のタブがそれぞれ何のためのものかを確認します。' } : null,
+    secOn.outcome ? { no: noOutcome, title: '再現するアウトプットの確認',
+      text: `kpiee で<b>何を再現するのか</b>と、伺っている作り方・今回の前提をご確認いただきます。`
+        + `以降の内容はここを前提に組み立てておりますので、はじめに置いております。` } : null,
+    secOn.flow ? { no: noFlow, title: 'ロジックの確認',
+      text: `<b>再現するアウトプットを1つずつ</b>、何から・何を突き合わせて作られているかを図で確認します。`
+        + `相違する点は図の下の欄にご記入いただけますと幸いです。`
+        + `${checkRange ? `あわせて、その場で伺いたい点を <b>${checkRange}</b> として図のそばに置いております。` : ''}` } : null,
+    secOn.questions ? { no: noQuestions, title: 'ご確認いただきたい点',
+      text: `${secOn.flow ? `${noFlow} で伺う内容のほかに、` : ''}いただいたファイルからは判断がつかなかった点をまとめています。` } : null,
+    secOn.nextSteps ? { no: noNext, title: '今後の進め方',
+      text: 'この読み合わせのあと、どのように進めるかをご説明します。' } : null,
+  ].filter((r): r is { no: string; title: string; text: string } => r !== null);
+
   // 表題。冒頭に節の並び（01→02→…）は書かない。すぐ下に節そのものが続くため重複になる。
   const reportTitle = spec.title || 'ご提供データの構造分析レポート';
-  const heroH1 = spec.title
-    ? `<h1>${esc(spec.title)}</h1>`
-    : '<h1>ご提供データの<span class="em">構造分析</span>レポート</h1>';
+  // 「」で囲まれた案件名（例:「収支報告・4本グラフ」）だけを色で立てる。宛名は表題の上に置く
+  const titleHtml = spec.title
+    ? esc(spec.title).replace(/「[^」]+」/, m => `<span class="em">${m}</span>`)
+    : 'ご提供データの<span class="em">構造分析</span>レポート';
+  const heroH1 = `<h1>${input.customerName ? `${esc(customer)}<br>` : ''}${titleHtml}</h1>`;
 
   return `<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>${esc(reportTitle)}｜${esc(input.customerName || 'kpiee')}</title>
+<title>${esc(input.customerName ? customer : '')}${esc(reportTitle)}｜dataX</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Zen+Old+Mincho:wght@600;700;900&family=Noto+Sans+JP:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
@@ -2940,11 +3527,10 @@ ${REPORT_CSS}
       <div class="brand">kpiee 導入支援｜dataX株式会社</div>
       ${heroH1}
       <p class="lede">${sentences(
-        `kpiee導入に先立ち、ご提供いただいた${input.fileCount}ファイルの構造を解析し、私たちの理解をまとめました。`,
-        secOn.questions
-          ? `読み合わせで相違点をご指摘いただき、${noQuestions} ご確認いただきたい点 へのご回答をお願いします。`
-          : '読み合わせで相違点をご指摘いただき、お気づきの点をお聞かせください。',
-        spec.focus ? `今回は特に <b style="color:#fff">${esc(spec.focus)}</b> を確認したいと考えています。` : '',
+        'kpiee で再現するアウトプットと、その作り方について、弊社の理解をまとめました。',
+        '本日の読み合わせでは、<b style="color:#fff">弊社の理解と相違する点</b>をその場でお聞かせいただけますと幸いです。',
+        'ご確認いただいた内容を基に、kpiee への取込設定を進めてまいります。',
+        spec.focus ? `今回は特に <b style="color:#fff">${esc(spec.focus)}</b> を確認したいと考えております。` : '',
       )}</p>
       <div class="hero-meta">
         <span>宛先：<b>${esc(customer)}</b></span>
@@ -2955,70 +3541,130 @@ ${REPORT_CSS}
   </div>
 </header>
 
+${roadmap.length > 1 ? `
+<section class="sum-sec">
+  <div class="wrap">
+    <div class="sumcard">
+      <div class="sum-h">この資料の進め方</div>
+      <p class="sum-sub">再現するアウトプットと、その作り方について、この順で読み合わせをさせていただきます。</p>
+      <ul class="sumlist">
+        ${roadmap.map(r => `<li><span class="sk"><span class="skn">${r.no}</span>${esc(r.title)}</span><span class="sv">${r.text}</span></li>`).join('\n        ')}
+      </ul>
+    </div>
+  </div>
+</section>` : ''}
+
 ${secOn.inventory ? `
 <section class="alt">
   <div class="wrap">
     <div class="sec-head">
       <h2><span class="secno">${noInventory}</span>受領データ一覧</h2>
-      <p class="sec-lede">いただいたファイルと、その中の各シートがどういう役割かの一覧です。</p>
+      <p class="sec-lede">${sentences(
+        'いただいたファイルと、その中の各シートがどういう役割かの一覧です。',
+        finalSheetNames.length > 0
+          ? 'kpiee で再現する最終アウトプットのブックと、その中の最終帳票のシートは<b style="color:var(--red)">赤</b>で示しています。' : '',
+      )}</p>
     </div>
     <div class="tiles">
-      <!-- 単位は「件」ではなく「ファイル」。隣のタイルと単位がそろっていないと、
-           同じ 10 でも何を数えた 10 なのかが読み取りにくい -->
-      <div class="tile"><div class="tl">受領ファイル</div><div class="tv">${input.fileCount}<small>ファイル</small></div>
-        <div class="tsub">${sheetTotal} シート</div></div>
-      <div class="tile"><div class="tl">元データ</div><div class="tv">${srcFileCount}<small>ファイル</small></div>
-        <div class="tsub">${[masterFileCount > 0 ? `マスタ ${masterFileCount}` : '', midFileCount > 0 ? `経由するファイル ${midFileCount}` : ''].filter(Boolean).join(' ／ ') || '経由ファイル・マスタなし'}</div></div>
-      <div class="tile out"><div class="tl">最終アウトプット</div><div class="tv">${outStats.length}<small>ファイル</small></div>
-        <div class="tsub">${outStats.length > 0 ? esc(shortText(outStats.map(s => s.filename).join('、'), 38)) : '未特定'}</div></div>
+      <!-- 数えているものを、読み手の関心の順（何を作るのか → 何をもらったか → どこが
+           Excel から追えないか → 何を確認するか）に並べる。解析の規模（表数・関係数）は出さない -->
+      ${finalSheetNames.length > 0 ? `<div class="tile out"><div class="tl">再現するアウトプット</div><div class="tv">${finalSheetNames.length}<small>シート</small></div>
+        <div class="tsub">${esc(shortText(finalSheetNames.join(' ／ '), 80))}</div></div>` : `<div class="tile out"><div class="tl">最終アウトプット</div><div class="tv">${outStats.length}<small>ファイル</small></div>
+        <div class="tsub">${outStats.length > 0 ? esc(shortText(outStats.map(s => s.filename).join('、'), 38)) : '未特定'}</div></div>`}
+      <div class="tile"><div class="tl">いただいたファイル</div><div class="tv">${input.fileCount}<small>ファイル</small></div>
+        <div class="tsub">${[srcFileCount > 0 ? `元データ ${srcFileCount}` : '', masterFileCount > 0 ? `マスタ ${masterFileCount}` : '',
+          midFileCount > 0 ? `中間ファイル ${midFileCount}` : '', outStats.length > 0 ? `最終アウトプット ${outStats.length}` : '',
+        ].filter(Boolean).join(' ／ ') || `${sheetTotal} シート`}</div></div>
+      ${pasteTabCount > 0 ? `<div class="tile"><div class="tl">貼り付けで受け渡している箇所</div><div class="tv">${pasteTabCount}<small>タブ</small></div>
+        <div class="tsub">Excel に根拠が残らないため、${secOn.outcome ? `${noOutcome} のご説明で補っています` : 'ご説明で補っています'}</div></div>` : `<div class="tile"><div class="tl">受領ファイルのシート</div><div class="tv">${sheetTotal}<small>シート</small></div>
+        <div class="tsub">この中から再現の対象を選んでいます</div></div>`}
       <div class="tile warn"><div class="tl">ご確認いただきたい点</div><div class="tv">${questions.length}<small>件</small></div>
-        <div class="tsub">${noQuestions ? `${noQuestions} をご覧ください` : 'お打ち合わせでご相談'}</div></div>
+        <div class="tsub">${checkRange ? `このほか、各アウトプットについては ${noFlow} の中で直接伺います` : noQuestions ? `${noQuestions} をご覧ください` : 'お打ち合わせでご相談'}</div></div>
     </div>
     ${spec.items.fileTable ? `
     <h3 class="sub-h">ファイルごとの役割と中身</h3>
-    <p class="graph-guide">各行をクリックすると、そのファイルのシートの役割と表・列の構成が開きます。列の色分け：<span class="colchip key">キー列</span> <span class="colchip formula">数式列</span> <span class="colchip manual">手入力の数値</span></p>
+    <p class="graph-guide">各行をクリックすると、そのファイルの<b>タブごとの役割と中身</b>が開きます。「何が並ぶタブか」は、いただいたファイルの見出しから読み取った内容です。</p>
 ${fileList}` : ''}
+  </div>
+</section>` : ''}
 
-    <!-- 前提は、どのファイルが何なのかを見たあとに読む情報。ファイル一覧より前に
-         置くと、まだ登場していないファイル名やコード名を含む文章を先に読ませることになる -->
-    ${premises.length > 0 ? `
+${secOn.outcome ? `
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <h2><span class="secno">${noOutcome}</span>再現するアウトプットの確認</h2>
+      <p class="sec-lede">${sentences(
+        'kpiee で再現する対象と、その作られ方について、弊社の理解をまとめました。',
+        'ここが出発点になりますので、はじめにご確認いただけますでしょうか。',
+      )}</p>
+    </div>
+    ${reproduceItems.length > 0 || spec.howMade.length > 0 ? `
+    ${subHOut('伺っている作り方', '貴社のご説明')}
+    <p class="graph-guide">${sentences(
+      // 出典名に「A と B」が入ることがあるので、ファイルの中身との間は読点で切る
+      // （「要件定義シートと試算手順とファイルの中身から」のように「と」が並ぶのを防ぐ）
+      `${spec.howMadeSource === '' ? 'いただいた資料' : `いただいた${esc(spec.howMadeSource)}`}と、ファイルの中身から、弊社はこのように理解しております。`,
+      secOn.flow ? `${noFlow} 以降もこの理解を前提に整理しておりますので、まずはこちらをご確認いただけますでしょうか。` : 'まずはこちらをご確認いただけますでしょうか。',
+      '補うべき点がございましたら、その場でお聞かせいただけますと幸いです。',
+    )}</p>
+    ${reproduceItems.length > 0 ? `
     <div class="summary">
-      <div class="stitle">今回の前提</div>
+      <div class="stitle">再現するもの</div>
       <ul>
-        ${premises.map(n => `<li>${esc(n)}</li>`).join('\n        ')}
+        ${reproduceItems.map(o => `<li><b>${esc(o.label)}</b>${o.text.startsWith('（') ? '' : '　'}${o.text}</li>`).join('\n        ')}
       </ul>
     </div>` : ''}
-
+    ${spec.howMade.length > 0 ? `
+    <div class="summary">
+      <div class="stitle">作られ方</div>
+      <ul>
+        ${spec.howMade.map(n => `<li>${n}</li>`).join('\n        ')}
+      </ul>
+    </div>` : ''}
+    ${howMadeNext ? `<p class="graph-guide">${howMadeNext}</p>` : ''}` : ''}
+    ${assumeItems.length > 0 ? `
+    ${subHOut('今回の前提', 'kpiee 側の作り')}
+    <p class="graph-guide">kpiee 側の作りとして、今回は次の前提で考えております。ここもあわせてご確認いただけますでしょうか。</p>
+    <div class="summary">
+      <ul>
+        ${assumeItems.map(n => `<li>${n}</li>`).join('\n        ')}
+      </ul>
+    </div>` : ''}
+    ${spec.sheetGuide.length > 0 ? `
+    <!-- 指示メモの写しは、読み合わせで頭から読む内容ではない（01 と 03 に同じ話が出る）。
+         出典として残しておきたいので、既定は閉じた開閉ブロックに入れる -->
+    <details class="fileblk">
+      <summary><b>いただいた${esc(spec.howMadeSource || '指示メモ')}の内容を開く</b><span class="rows">タブごとの摘要とデータ元</span></summary>
+      <div class="rbody">
+    ${spec.sheetGuideNote === '' ? '' : `<p class="graph-guide">${esc(spec.sheetGuideNote)}</p>`}
+    ${spec.sheetGuide.map(g => `
+    <p class="sub-lede">${esc(g.file)}</p>
+    <div style="overflow-x:auto">
+      <table class="ot dl">
+        <tr><th>タブ</th><th>摘要</th><th>データ元</th></tr>
+        ${g.rows.map(r => `<tr><td>${esc(r.tab)}</td><td>${esc(r.note)}</td><td>${esc(r.source)}</td></tr>`).join('\n        ')}
+      </table>
+    </div>
+    ${g.note === '' ? '' : `<p class="tbl-note">${g.note}</p>`}`).join('\n')}
+      </div>
+    </details>` : ''}
   </div>
 </section>` : ''}
 
 ${secOn.flow ? `
-<section>
+<section class="alt">
   <div class="wrap">
     <div class="sec-head">
-      <h2><span class="secno">${noFlow}</span>全体の流れと詳細ロジック</h2>
-      <!-- 1文目＝この節で何をするか、2文目＝どこまで読み取れてどこからが推定か。
-           1つの段落に詰めると、性質の違う2つの話が続けて流れて読みにくくなる -->
-      <p class="sec-lede">${outStats.length > 0
-        ? `最終アウトプット ${outStats.length} 種が、どのファイルのどのシートから、どんな計算で作られているかを 1 件ずつ確認します。`
-        : 'いただいたファイルが、どのシートから、どんな計算でつながっているかを確認します。'}</p>
-      ${formulaCount > 0 || copyCount > 0 ? `<p class="sec-lede">${sentences(
-        formulaCount > 0 ? '表どうしのつながりの大半は SUMIFS・VLOOKUP などの数式で、中身はそのまま読み取れました。' : '',
-        // 値が一致しているだけの組を「転記です」と言い切らない。同じ様式のシートを
-        // 並べているだけのこともあり、どちらかは Excel からは区別できない。
-        // ブックをまたぐ分と、同じブックの中（様式の繰り返し）は分けて数える — 混ぜると
-        // 「数万組が手作業」という誤った規模感になる。
-        copyCount > 0
-          ? `一方、<b>ブックをまたいで ${copyCount} 組</b>は数式が残っておらず、値が一致していることだけが分かりました。`
-          : 'ブックをまたいで値だけが一致している組み合わせは見つかりませんでした。',
-        copyInner > 0
-          ? `同じブックの中でも <b>${copyInner.toLocaleString()} 組</b>ありますが、拠点別・月別に同じ様式の表を並べておられるためと見ています。`
-          : '',
-        copyCount > 0 || copyInner > 0 ? refQuestions : '',
-      )}</p>` : ''}
+      <h2><span class="secno">${noFlow}</span>ロジックの確認</h2>
+      <p class="sec-lede">${sentences(
+        outStats.length > 0
+          ? '再現するアウトプットが、<b>何から、どうやって作られているか</b>を確認します。'
+          : 'いただいたファイルが、どのシートから、どんな計算でつながっているかを確認します。',
+        '図の下の欄に、相違点や補足をご記入いただけます。',
+      )}</p>
     </div>
     ${showFileFlow ? (fileFlow ? `
-    ${subH(stepFlow ? 'ファイルどうしの全体関係図（うかがった作成手順）' : 'ファイルどうしの全体関係図')}
+    ${subH(stepFlow ? 'ファイルどうしの全体関係図（伺った作成手順）' : 'ファイルどうしの全体関係図', 'ファイル単位')}
     ${stepFlow ? `<ul class="graph-guide">
       <li>各ステップの右端にある ${esc(stepFlow.backbone)} が<b>土台</b>です。左の丸が、そのステップで突き合わせる受領ファイルです。</li>
       <li><b>＋</b> は、そのステップで土台の表に足される列です。上から順に足していき、最後に${stepFlow.output === '' ? '' : ` ${esc(stepFlow.output)} `}になります。</li>
@@ -3040,30 +3686,10 @@ ${secOn.flow ? `
       ${fileFlowGroups.map(g => `<span class="li"><span class="sw${GROUP_META[g].dashed ? ' dash' : ''}" style="border-color:${GROUP_META[g].color}"></span>${esc(GROUP_META[g].label)}</span>`).join('\n      ')}
       ${declaredOnlyPairs.length > 0 ? `<span class="li"><span class="sw dot" style="border-color:${DECLARED_ONLY.color}"></span>${esc(DECLARED_ONLY.label)}</span>` : ''}
     </div>` : ''}
-    ${spec.items.declaredAudit && declaredRels.length > 0 ? `<p class="tbl-note">ファイルどうしの受け渡しは、うかがった内容をもとに ${declaredRels.length} 件として整理しています。うち ${matchedRels} 件は、いただいたファイルの中でも同じつながりを確認できました。${matchedRels < declaredRels.length ? `確認できなかった ${declaredRels.length - matchedRels} 件は${noQuestions ? ` ${noQuestions} ` : 'お打ち合わせ'}でお伺いします。` : ''}</p>` : ''}
-    ${declaredRows.length > 0 ? `
-    ${subH('ファイル間の受け渡しと、突合キーの候補')}
-    <p class="graph-guide">うかがった受け渡しの内容と、その突合に使えそうな列です。この理解で合っているかをご覧ください。</p>
-    <!-- 突合キーの候補は、取込設定を詰めるときに開く表。読み合わせで頭から全部読む内容ではないので
-         既定は閉じておく（印刷時は下部スクリプトが開く）。 -->
-    <details class="fileblk">
-      <summary><b>うかがった受け渡しと、突合キーの候補を開く</b><span class="rows">${declaredRows.length} 件</span></summary>
-    <div style="overflow-x:auto">
-      <table class="ot dl">
-        <tr><th>ファイル間の受け渡し</th><th>種別</th><th>突合に使えそうな列</th><th>うかがった内容</th></tr>
-        ${declaredRows.map(({ d, hints }) => `<tr>` +
-        `<td>${d.step ? `<div><span class="stepchip">ステップ${d.step}</span></div>` : ''}`
-        + `<b>${esc(fileNameOf(d.fromFile))}</b><div class="rnote">→ ${esc(fileNameOf(d.toFile))}</div></td>` +
-        `<td>${esc(FILE_REL_LABELS[d.relType])}</td>` +
-        `<td>${hints.length > 0
-          ? hints.map(h => `<div class="kh"><b>${esc(h.name)}</b><span>${esc(h.note)}</span></div>`).join('')
-          : '<span class="dl-none">手がかりになる列名が見つかりませんでした</span>'}</td>` +
-        `<td>${d.note.trim() !== '' ? esc(d.note) : '<span class="dl-none">—</span>'}</td>` +
-        `</tr>`).join('\n        ')}
-      </table>
-    </div>
-    ${declaredOnlyPairs.length > 0 ? `<p class="tbl-note">※ 貼り付けた時点と元データの時点がずれていると、Excel の上では元と先の一致を確認できません。上の受け渡しについては、うかがった内容が手がかりになりますので、読み合わせでご確認をお願いします。</p>` : ''}
-    </details>` : ''}` : `
+    ${spec.items.declaredAudit && declaredRels.length > 0 ? `<p class="tbl-note">ファイルどうしの受け渡しは、伺った内容を基に ${declaredRels.length} 件として整理しております。うち ${matchedRels} 件は、いただいたファイルの中でも同じつながりを確認できました。${matchedRels < declaredRels.length ? `確認できなかった ${declaredRels.length - matchedRels} 件は${noQuestions ? ` ${noQuestions} ` : 'お打ち合わせ'}で伺います。` : ''}</p>` : ''}
+    <!-- 「ファイル間の受け渡しと、突合キーの候補」の表は置かない。受け渡し自体は上の図と
+         その下の1行で伝わり、突合キーは取込設定の作業メモであって読み合わせの議題ではない。
+         キーが決められない表は 04 の設問（キーの確認）で個別に伺う。 -->` : `
     <p class="sec-lede">ファイルをまたぐつながりは見つかりませんでした。各ファイルが独立して管理されている可能性があります。${refQuestions}</p>`) : ''}
 
     ${map ? `
@@ -3102,44 +3728,84 @@ ${secOn.flow ? `
         [...pairs.filter(p => sec.regionIds.has(p.from) && sec.regionIds.has(p.to)), ...pastePairs],
         labels, copyQuestionByPair, roles,
         edges.filter(e => sec.regionIds.has(secRegionOf(e.from)) && sec.regionIds.has(secRegionOf(e.to))), pairKeys);
+      // この帳票の読み方（伺った内容）。指定があれば、その並びどおりに置いていく
+      const plan = planFor(spec.outputPlans, sec.filename);
       return `
-    ${subH(`最終アウトプット${OUT_NO[si] ?? `(${si + 1})`}　${sec.filename}`)}
+    ${subH(`最終アウトプット${OUT_NO[si] ?? `(${si + 1})`}　${sec.filename}`, 'ブックの中')}
     <div class="colchips tsheets"><span class="tsh">この中で再現する対象のシート</span>${sec.finalSheets.map(sh => `<span class="colchip">${esc(sh)}</span>`).join('')}</div>
+    ${plan?.blocks.some(b => b.kind === 'bullets' || b.kind === 'table') ? '' : (() => {
+      // 再現する帳票が「縦に何・横に何が並び、どれが合計か」を先に置く。ここが合っていないと
+      // ダッシュボードの軸がずれるので、関係図より前に読んでいただく。
+      // 帳票の形を言葉でいただいている場合（bullets / table のブロックがある）は、そちらを使う
+      const shapes = sec.finalSheets.slice(0, SHAPE_SHEET_CAP)
+        .map(sh => buildSheetShape(regions, sec.file, sh))
+        .filter((s): s is SheetShape => s !== null);
+      if (shapes.length === 0) return '';
+      return `<p class="sub-lede">この帳票の形</p>\n    `
+        + shapes.map(s => renderSheetShape(s, shapes.length > 1 || s.sheet !== sec.filename)).join('\n    ');
+    })()}
     ${sec.blocks.length === 0 ? `<p class="sec-lede"><b>ほかのファイルからこの帳票への受け渡しは、数式の形では見つけられませんでした。</b>`
-      + `${srcQuestionRef ? `確認事項の <b>${srcQuestionRef}</b> に記載しています。` : 'お打ち合わせでご確認させてください。'}`
-      + 'ブックの中での計算は、下の図と一覧に出ています。</p>' : ''}
-    ${secPastes.length > 0 ? `<p class="graph-guide">ブックの中の ${secPastes.length} シートは、受領ファイルを貼り付けたものと見ています。その入手元を図の<b>点線</b>で結んでいます（列の見出しの一致、またはうかがった内容が根拠です）。読み合わせでこの対応が合っているかをご確認ください。</p>` : ''}
-    ${secOrphans.length > 0 ? `<p class="graph-guide">入手元を特定できなかったシートが ${secOrphans.length} 枚あります：${secOrphans.slice(0, 6).map(r => `<b>${esc(r.sheet)}</b>`).join('・')}${secOrphans.length > 6 ? ` ほか ${secOrphans.length - 6} 枚` : ''}。何から作っておられるかを教えてください。</p>` : ''}
-    ${secMap ? `<div class="map-static map-scroll" data-graph="-o${si}">${secMap.svg}</div>
-    ${spec.items.interactiveGraph ? `<div class="map-interactive relgraph-wrap" id="relgraph-wrap-o${si}" data-relgraph="-o${si}">
-      <figure class="relgraph-stage lightmode" id="relgraph-o${si}" aria-label="表どうしの関係グラフ（操作可能）"></figure>
-      <aside class="relgraph-panel">
-        <div class="relgraph-crumbs" id="relgraph-crumbs-o${si}"><span class="cur">表を選択</span></div>
-        <div class="relgraph-pbody" id="relgraph-pbody-o${si}"><div class="empty">左のグラフで<b>表</b>をクリックすると、上流・下流の表と<b>最終アウトプットまでの経路</b>がここに出て、そのまま掘り下げられます。</div></div>
-      </aside>
-    </div>
-    <script type="application/json" id="relgraph-data-o${si}">${JSON.stringify(secMap.data).replace(/</g, '\\u003c')}</script>` : ''}
-    ${secMap.omittedNodes > 0 ? `<p class="tbl-note">※ つながりの多い表を優先して表示しています。ほか ${secMap.omittedNodes} 表は省略しました。</p>` : ''}
-    ${si === 0 ? `<!-- 表単位の関係図の凡例。全アウトプットで共通なので、最初に出るここへ一度だけ置く -->
-    <div class="legend">
-      <span class="lg-h">丸＝表</span>
-      <span class="li"><span class="nrole src"></span>元データ</span>
-      <span class="li"><span class="nrole mst"></span>マスタ</span>
-      <span class="li"><span class="nrole mid"></span>中間集計</span>
-      <span class="li"><span class="nrole out"></span>最終アウトプット</span>
-      <span class="li"><span class="nrole iso"></span>独立</span>
-    </div>
-    <div class="legend">
-      <span class="lg-h">線</span>
-      ${GROUP_ORDER.map(g => `<span class="li"><span class="sw${GROUP_META[g].dashed ? ' dash' : ''}" style="border-color:${GROUP_META[g].color}"></span>${esc(GROUP_META[g].label)}</span>`).join('\n      ')}
-      ${secPastes.length > 0 ? `<span class="li"><span class="sw dot" style="border-color:${DECLARED_ONLY.color}"></span>点線＝貼り付け元と見ている受領ファイル</span>` : ''}
-    </div>
-    ${spec.items.interactiveGraph ? '<p class="tbl-note only-print">※ 本紙は静止画です。表をクリックすると計算ロジックが開く操作版は、ブラウザでご覧ください。</p>' : ''}` : ''}` : ''}
-    ${sec.blocks.map((b, i) => renderLogicBlock(b, i + 1, regions, graph.keyLinks ?? [], labels, fileNameOf, showEr)).join('\n')}`;
+      + `${srcQuestionRef ? `確認事項の <b>${srcQuestionRef}</b> に記載しております。` : 'お打ち合わせでご確認をお願いいたします。'}`
+      + 'ブックの中での計算は、下の図でご覧いただけます。</p>' : ''}
+    ${secPastes.length > 0 ? `<p class="graph-guide">ブックの中の ${secPastes.length} シートは、受領ファイルを貼り付けたものと見ております。その入手元を図の<b>点線</b>で結んでいます（列の見出しの一致、または伺った内容が根拠です）。読み合わせでこの対応が合っているかをご確認ください。</p>` : ''}
+    ${(() => {
+      // 数式に残らない受け渡しは、伺った内容が唯一の根拠になる。それを教えていただいて
+      // いるファイルでは、「分かりません」ではなく「こう理解しております」の形で出す
+      const og = spec.sheetOrigins.find(o => o.file === sec.filename);
+      if (og) {
+        return `<p class="graph-guide">数式・列見出しからは入手元を特定できなかったシートが ${secOrphans.length} 枚ありましたが、`
+          + `いただいた内容${noOutcome ? `（${noOutcome}）` : ''}で判明しております。この理解で合っているかをご確認ください。</p>\n`
+          + `<ul class="graph-guide">${og.items.map(it => `\n      <li><b>${esc(it.sheets)}</b> ＝ ${esc(it.from)}</li>`).join('')}\n    </ul>`;
+      }
+      if (secOrphans.length === 0) return '';
+      return `<p class="graph-guide">入手元を特定できなかったシートが ${secOrphans.length} 枚あります：`
+        + `${secOrphans.slice(0, 6).map(r => `<b>${esc(r.sheet)}</b>`).join('・')}`
+        + `${secOrphans.length > 6 ? ` ほか ${secOrphans.length - 6} 枚` : ''}。何から作っていらっしゃるかをご教示ください。</p>`;
+    })()}
+    ${(() => {
+      // 表単位の関係図は、経路を追うときに開く付録。読み合わせでは帳票の読み方を先に見て、
+      // 細かい線は必要になったときだけ開く（開いたままだと図が本文より大きくなる）
+      const graphBody = secMap === null ? '' : `<div class="map-static map-scroll" data-graph="-o${si}">${secMap.svg}</div>
+      ${spec.items.interactiveGraph ? `<div class="map-interactive relgraph-wrap" id="relgraph-wrap-o${si}" data-relgraph="-o${si}">
+        <figure class="relgraph-stage lightmode" id="relgraph-o${si}" aria-label="表どうしの関係グラフ（操作可能）"></figure>
+        <aside class="relgraph-panel">
+          <div class="relgraph-crumbs" id="relgraph-crumbs-o${si}"><span class="cur">表を選択</span></div>
+          <div class="relgraph-pbody" id="relgraph-pbody-o${si}"><div class="empty">左のグラフで<b>表</b>をクリックすると、上流・下流の表と<b>最終アウトプットまでの経路</b>がここに表示され、そのまま詳しくご覧いただけます。</div></div>
+        </aside>
+      </div>
+      <script type="application/json" id="relgraph-data-o${si}">${JSON.stringify(secMap.data).replace(/</g, '\\u003c')}</script>` : ''}
+      ${secMap.omittedNodes > 0 ? `<p class="tbl-note">※ つながりの多い表を優先して表示しております。ほか ${secMap.omittedNodes} 表は省略しております。</p>` : ''}
+      <div class="legend">
+        <span class="lg-h">丸＝表</span>
+        <span class="li"><span class="nrole src"></span>元データ</span>
+        <span class="li"><span class="nrole mst"></span>マスタ</span>
+        <span class="li"><span class="nrole mid"></span>中間集計</span>
+        <span class="li"><span class="nrole out"></span>最終アウトプット</span>
+        <span class="li"><span class="nrole iso"></span>独立</span>
+      </div>
+      <div class="legend">
+        <span class="lg-h">線</span>
+        ${GROUP_ORDER.map(g => `<span class="li"><span class="sw${GROUP_META[g].dashed ? ' dash' : ''}" style="border-color:${GROUP_META[g].color}"></span>${esc(GROUP_META[g].label)}</span>`).join('\n        ')}
+        ${secPastes.length > 0 ? `<span class="li"><span class="sw dot" style="border-color:${DECLARED_ONLY.color}"></span>点線＝貼り付け元と見ている受領ファイル</span>` : ''}
+      </div>
+      ${spec.items.interactiveGraph ? '<p class="tbl-note only-print">※ 印刷では静止画になります。表をクリックすると計算ロジックが開きますので、詳しくはブラウザでご覧ください。</p>' : ''}`;
+      const auto: AutoBlocks = {
+        recipes: sec.blocks.map((b, i) =>
+          renderLogicBlock(b, i + 1, regions, graph.keyLinks ?? [], labels, fileNameOf, showEr)).join('\n'),
+        graph: graphBody === '' ? '' : `<details class="fileblk">
+      <summary><b>表どうしの関係図（クリックで開く・付録）</b><span class="rows">細かい経路を追うとき用</span></summary>
+      ${graphBody}
+    </details>`,
+      };
+      if (!plan) return `${auto.graph}\n    ${auto.recipes}`;
+      return plan.blocks
+        .map((b, i) => renderOutputBlock(b, checkMark.get(b) ?? '', `o${si}-${i}`, auto))
+        .join('\n    ');
+    })()}`;
     }).join('\n')}
 
     ${isolatedFiles.length > 0 ? `
-    ${subH('つながりが検出できなかったファイル')}
+    ${subH('つながりが検出できなかったファイル', 'つながり未検出')}
     <div class="lb iso">
       <div class="lb-head"><span class="lb-no">—</span>
         <div><b>${isolatedFiles.map(s => esc(s.filename)).join('、')}</b></div>
@@ -3149,56 +3815,23 @@ ${secOn.flow ? `
       </div>
     </div>` : ''}
 
-    ${spec.items.detailLogic ? `
-    ${subH('何と何を、何で突き合わせて、何ができるか')}
-    <p class="graph-guide">真ん中の札が、元と先をどう対応づけているかです。<b>列名が出ているもの</b>はその列で突き合わせています。<b>「セルの位置で対応」</b>は、キーで突き合わせず同じ位置のセルを参照しているもので、元の表と行の並び・行数が揃っていることが前提になります（並びが変わると数字がずれます）。kpiee では位置ではなくキーで結ぶため、この箇所は<b>何を突合キーにするか</b>を決めさせてください。</p>
-    ${recipes.map(r => `
-    <div class="rcp">
-      ${r.file ? `<div class="rcp-f">${esc(r.file)} の中で</div>` : ''}
-      <p class="rcp-t">${r.srcs.map(s => `<b>${esc(s.label)}</b>${s.kind}`).join('と')}${r.match === 'key'
-        ? `を <b>${esc(shortText(r.keys.join('・'), 40))}</b> の列で突き合わせて`
-        : r.match === 'position'
-          // キーで突き合わせていないもの。同じ並び・同じ行数であることが前提になっている
-          ? `${r.srcs.length > 1 ? 'を' : 'から'}<b>同じ位置のセル</b>で対応させて`
-          : `${r.srcs.length > 1 ? 'を合わせて' : 'から'}（照合の列は読み取れませんでした）`}、${r.dstIsOutput ? '最終アウトプットの' : ''}<b>${esc(r.dst)}</b>${r.dstKind}${r.dstCols.length > 0
-        ? `の <b>${esc(r.dstCols.join('・'))}</b>${/列$/.test(r.dstCols[r.dstCols.length - 1]) ? '' : ' 列'}`
-        : 'の数値'}ができます。</p>
-      <div class="map-scroll">${renderRecipeSvg(r)}</div>
-      ${r.noHeaderCols.length > 0 ? `<p class="tbl-note">※ ${esc(r.noHeaderCols.join('・'))} は見出しが空のため、列の位置でお呼びしています。何の列かを教えていただけますか。</p>` : ''}
-    </div>`).join('\n')}
-    ${recipeTruncated > 0 || recipeValueOnly > 0 ? `<p class="tbl-note">※ ${
-      recipeTruncated > 0
-        ? `数式で作られている ${recipeTotal} か所のうち、関係の多い ${recipes.length} か所を載せています。残り ${recipeTruncated} か所`
-        : `数式で作られている ${recipes.length} か所を載せています。`
-    }${recipeValueOnly > 0
-      ? `${recipeTruncated > 0 ? 'と、' : ''}値が一致することから転記と考えている ${recipeValueOnly} か所は、下の一覧をご覧ください。`
-      : 'は下の一覧をご覧ください。'}</p>` : ''}
-
-    <!-- 一覧は行数が多く、読み合わせでは普段たたんでおきたい。既定は閉じる -->
-    <details class="fileblk">
-      <summary><b>関係の一覧を開く</b><span class="rows">${detailRows.length} 件</span></summary>
-    <div style="overflow-x:auto">
-      <table class="ot dl">
-        <tr><th>元の表・列</th><th>キー</th><th>処理</th><th>先の表・列</th><th>根拠</th><th>確度</th></tr>
-        ${detailRows.join('\n        ')}
-      </table>
-      ${detailOmitted > 0 ? `<p class="tbl-note">※ 関係が多いため流れの順に上位 ${DETAIL_ROWS_CAP} 件を掲載しています。全部で ${pairs.length} 件あります。残りはお打ち合わせで画面をご覧いただけます。</p>` : ''}
-    </div>
-    </details>` : ''}
+    <!-- 「何と何を、何で突き合わせて、何ができるか」の節は置かない。同じ内容を帳票ごとの
+         節（レシピ図と関係図）で見ているため、ここで全案件ぶんを並べると三度目の説明になる。 -->
 ` : `
     <p class="sec-lede">表どうしをつなぐ数式も、値の一致も見つかりませんでした。各表が独立して管理されている可能性があります。${refQuestions}</p>`}
   </div>
 </section>` : ''}
 
 ${secOn.questions ? `
-<section class="alt">
+<!-- 節番号は案件で変わるため、「はじめに」からのリンク先は番号ではなく固定の id で指す -->
+<section class="alt" id="sec-questions">
   <div class="wrap">
     <div class="sec-head">
       <h2><span class="secno">${noQuestions}</span>ご確認いただきたい点　<span id="qcount">${questions.length}</span>件</h2>
       <p class="sec-lede" id="qlede">${sentences(
-        `数式が残っている箇所は中身をそのまま読み取れましたが、以下の <span id="qcount2">${questions.length}</span> 点は、いただいたファイルからは判断がつきませんでした。`,
-        'お打ち合わせの場で結構ですので、わかる範囲でお聞かせください。',
-        'メモ欄はこの画面に直接ご入力いただけます。入力内容はこのブラウザに保存され、印刷にもそのまま出ます。',
+        `${secOn.flow ? `${noFlow} で伺う内容のほかに、` : ''}以下の <span id="qcount2">${questions.length}</span> 点は、いただいたファイルからは判断がつきませんでした。`,
+        'お打ち合わせの場で結構ですので、分かる範囲でお聞かせください。',
+        'メモ欄はこの画面に直接ご入力いただけます。入力内容はこのブラウザに保存され、印刷してもそのまま残ります。',
       )}</p>
       <!-- 読み合わせの前に、こちらで文面を直したり、要らない設問を消したりするための道具。
            編集内容はブラウザに保存され、「HTMLとして保存」で配布用のファイルにも焼き込める。 -->
@@ -3225,23 +3858,23 @@ ${secOn.nextSteps ? `
     <div class="steps">
       <div class="step"><div class="no">1</div>
         <h3>本資料の読み合わせ<span class="who">貴社 × 弊社</span></h3>
-        <p>30〜60分のお打ち合わせで、${noQuestions ? `${noQuestions}の確認事項に` : '確認事項に'}ご回答をいただきます。わかる範囲で結構です。</p>
+        <p>30〜60分のお打ち合わせで、${[checkRange ? `${noFlow} の図のそばにある確認欄（<b>${checkRange}</b>）` : '', noQuestions && questions.length > 0 ? `${noQuestions} の確認事項（<b>Q-01〜${questions[questions.length - 1].id}</b>）` : ''].filter(Boolean).join('と、') || '確認事項'}についてご回答をお願いできますと幸いです。分かる範囲で結構です。</p>
       </div>
       <div class="step"><div class="no">2</div>
         <h3>定義の確定・追加データのご提供<span class="who">貴社 × 弊社</span></h3>
-        <p>ご回答をもとにデータ定義を確定します。不足データがあればご提供をお願いします。</p>
+        <p>ご回答を基にデータ定義を確定いたします。不足データがあればご提供をお願いいたします。</p>
       </div>
       <div class="step"><div class="no">3</div>
-        <h3>kpieeへの取込設定・KPIツリー構築<span class="who">弊社主導</span></h3>
-        <p>確定した構造にもとづき、kpieeのデータ取込とKPIの紐付けを設定します。手転記いただいていた箇所は自動化されます。</p>
+        <h3>kpiee への取込設定・KPI ツリー構築<span class="who">弊社主導</span></h3>
+        <p>確定した構造に基づき、kpiee のデータ取込と KPI の紐付けを設定いたします。手転記いただいていた箇所は自動化されます。</p>
       </div>
       <div class="step"><div class="no">4</div>
         <h3>数値検証・運用開始<span class="who">貴社 × 弊社</span></h3>
-        <p>既存のExcel報告と kpiee の数値を突き合わせ、一致を確認してから運用に切り替えます。</p>
+        <p>既存の Excel 報告と kpiee の数値を突き合わせ、一致を確認してから運用に切り替えます。</p>
       </div>
     </div>
     <div class="callout warn">
-      <span>本資料には、いただいたデータの数値そのものは含めておりません。列名・数式・行数などの構成のみを記載しています。役割やキーの表記には私たちの理解が含まれますので、読み合わせでのご指摘を反映して更新版をお渡しします。</span>
+      <span>本資料には、いただいたデータの数値そのものは含めておりません。列名・数式・行数などの構成のみを記載しております。役割やキーの表記には弊社の理解が含まれますので、読み合わせでのご指摘を反映して更新版をお渡しいたします。</span>
     </div>
   </div>
 </section>` : ''}
@@ -3314,6 +3947,28 @@ h2{font-family:var(--disp);font-weight:700;font-size:26px;color:var(--ink);line-
 /* 最終アウトプット＝kpiee で再現する対象。読み合わせの目的地なので色で際立たせる */
 .tile.out{border-top:4px solid var(--red)}
 .tile.out .tv{color:var(--red)}
+/* ---- 表紙直後の「はじめに」----
+   結論を 02 の導入に置くと、読む側は 01 のファイル一覧を通り過ぎるまで全体像に出会えない。
+   先に「何が何から作られているか」の答えを置き、01 以降をその根拠として読ませる */
+.sum-sec{padding:44px 0}
+.sumcard{background:#fff;border:1px solid var(--line);border-top:4px solid var(--blue);border-radius:16px;padding:26px 30px}
+.sum-h{font-family:var(--disp);font-weight:700;font-size:19px;color:var(--ink)}
+.sum-sub{font-size:12px;color:var(--sub);margin-top:2px}
+.sumlist{list-style:none;display:flex;flex-direction:column;gap:13px;margin-top:18px}
+/* 左の見出しは番号＋節名で必ず2行になる。本文が1行の行を上端でそろえると番号の横だけに
+   文字が来て上に寄って見えるので、中央でそろえて番号と節名の間に置く */
+.sumlist li{display:flex;gap:16px;align-items:center}
+/* 左の見出し語は、読み合わせで「ここの話です」と指すための目印 */
+/* 節番号と節名を自動折り返しに任せると、節名の中に句切り（「の」など）がある行だけ
+   「02 ロジックの」／「確認」のように途中で折れて、行ごとに見え方が変わってしまう。
+   番号を必ず1行目、節名を必ず2行目に固定し、幅は最も長い節名が1行に収まるまで広げる。
+   行送りは倍率ではなく実寸をそろえる（12px×2.1＝25.2px＝右の 14px×1.8） */
+.sumlist .sk{flex:0 0 136px;font-size:12px;font-weight:700;color:var(--blue);letter-spacing:.04em;line-height:2.1}
+.sumlist .sk .skn{display:block}
+.sumlist .sv{flex:1;min-width:0;font-size:14px;line-height:1.8}
+.sum-next{margin-top:18px;padding-top:15px;border-top:1px solid var(--line);font-size:13px}
+.sum-next a{color:var(--blue);text-decoration:none;border-bottom:1px solid #A9C8E8;font-weight:700}
+.sum-next a:hover{border-bottom-color:var(--blue)}
 /* ---- ロジック別ブロック ---- */
 .lb{border:1px solid var(--line);border-radius:14px;padding:0 0 6px;margin:20px 0;background:#fff;overflow:hidden}
 .lb.iso{border-style:dashed}
@@ -3364,7 +4019,7 @@ h2{font-family:var(--disp);font-weight:700;font-size:26px;color:var(--ink);line-
 .legend .li{display:inline-flex;align-items:center;gap:7px;color:var(--text)}
 .legend .sw{width:22px;height:0;border-top:3px solid;border-radius:2px}
 .legend .sw.dash{border-top-style:dashed}
-/* うかがった内容だけが根拠の線。値一致の破線ともう一段違う点線にする */
+/* 伺った内容だけが根拠の線。値一致の破線ともう一段違う点線にする */
 .legend .sw.dot{border-top-style:dotted}
 /* 折りたたみブロック（01 のブック別）。三角は自前で描く */
 details.fileblk>summary{list-style:none}
@@ -3447,6 +4102,9 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
   .tiles{grid-template-columns:1fr 1fr}
   .qgrid{grid-template-columns:1fr}
   .qgrid dt{padding-top:6px}
+  /* 幅が狭いと見出し語と本文が同じ行に並びきらず、本文が数文字ずつに折り返される */
+  .sumlist li{flex-direction:column;gap:2px}
+  .sumlist .sk{flex:none;line-height:1.6}
 }
 .via{font-family:var(--mono);font-size:10.5px;color:var(--sub);margin-left:8px;white-space:nowrap}
 
@@ -3462,6 +4120,20 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
 /* ファイル名と補足を1列にまとめ、規模は右端に寄せる */
 .fname{display:flex;flex-direction:column;gap:3px;flex:1 1 auto;min-width:240px}
 .fileblk>summary .rnote{font-size:11.5px;line-height:1.5}
+/* details の余白は .rbody が持っているが、包んでいない箇所（入れ子の開閉ブロックなど）では
+   文字や表が枠線に貼りついて見える。直下の要素にも同じ左右の余白を入れてそろえる。
+   関係図（map-*）は枠いっぱいに見せたいので左右の余白からは外す */
+.fileblk>*:not(summary):not(.rbody):not([class*="map-"]){padding-left:20px;padding-right:20px}
+.fileblk>summary+*:not(.rbody){margin-top:14px}
+.fileblk>*:not(summary):not(.rbody):last-child{padding-bottom:16px}
+/* 最終アウトプット＝kpiee で再現する目的地。01 はファイルとタブの一覧なので、
+   どのブックのどのタブが目的地なのかを、開かなくても色で分かるようにする。
+   色は表紙のタイル（.tile.out）と関係図の凡例で使っている赤にそろえる */
+.fileblk.out{border-left:4px solid var(--red)}
+.fileblk.out>summary .rnote{color:var(--red)}
+.ot tr.out td{background:var(--red-bg)}
+.ot tr.out td:first-child b{color:var(--red)}
+.ot tr.out td:nth-child(2){color:var(--red);font-weight:700}
 /* 役割ごとの区切り見出し。ファイル一覧を役割別にまとめるため */
 .grp-h{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;margin:24px 0 8px}
 .grp-h:first-of-type{margin-top:14px}
@@ -3486,11 +4158,11 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
 .av.warn{background:var(--amber-bg);color:var(--amber)}
 .av.ng{background:var(--red-bg);color:var(--red)}
 
-/* ---- 02 うかがった受け渡しの一覧（全体関係図の直下）---- */
+/* ---- 02 伺った受け渡しの一覧（全体関係図の直下）---- */
 .seg-list{font-size:12.5px;line-height:1.8}
 .seg-list p{margin:0}
 .seg-list p+p{margin-top:7px;padding-top:7px;border-top:1px dashed var(--line)}
-/* うかがった手順のステップ番号。図の帯と一覧を同じ番号で行き来できるようにする */
+/* 伺った手順のステップ番号。図の帯と一覧を同じ番号で行き来できるようにする */
 .stepchip{display:inline-block;font-size:10.5px;font-weight:700;color:var(--blue);background:var(--blue-bg);
   border:1px solid #C9DEF4;border-radius:6px;padding:1px 7px;margin-bottom:3px}
 /* 突合キーの候補。列名とその根拠（何をもってキーと見たか）を1行で並べる */
@@ -3515,6 +4187,11 @@ table.dl td{vertical-align:top}
 .sub-h{font-family:var(--disp);font-weight:700;font-size:18px;color:var(--ink);margin:30px 0 6px}
 /* 小見出しの番号（2-1 など）も口頭で指す。本文と同じ濃さでは埋もれる */
 .sub-h .n{color:var(--blue);margin-right:2px}
+/* 各節は同じ関係を別の切り口で見ている。切り口を書かないと、
+   読む側は節ごとに「前と同じ話か」を判断しながら読むことになる */
+.sub-h .lens{font-family:var(--body);font-size:11.5px;font-weight:700;letter-spacing:.04em;
+  color:var(--blue);background:var(--blue-bg);border-radius:999px;padding:3px 11px;
+  margin-left:10px;vertical-align:2px;white-space:nowrap}
 .graph-guide{font-size:12.5px;color:var(--text);line-height:1.7;margin-bottom:12px}
 /* 図の凡例テキスト: 1行1項目で読ませる */
 ul.graph-guide{list-style:none;padding:0;display:flex;flex-direction:column;gap:4px}
@@ -3639,6 +4316,16 @@ body.relgraph-noscroll{overflow:hidden}
   .ansbox{border-color:#B9C6D6;background:#fff;color:#000;overflow:hidden}
   .ansbox::placeholder{color:transparent}
 }
+
+/* ---- 03 の確認欄（図のそばで、その場で答えていただく箱）----
+   04 の設問カードと違い、こちらは図の直後に置いて「この図のここ」を尋ねる。
+   青枠にして、本文（白）とも設問カード（橙の左線）とも見分けが付くようにする */
+.chk{margin:16px 0 6px;border:2px solid #1F5FAE;border-radius:12px;background:#F2F7FD;padding:12px 14px}
+.chk-h{display:inline-block;background:#1F5FAE;color:#fff;font-size:11px;font-weight:700;border-radius:999px;padding:3px 11px;letter-spacing:.05em}
+.chk-q{margin:9px 0 0;font-size:14.5px;font-weight:700;color:#0E2A47;line-height:1.6}
+.chk-a{margin:6px 0 0;font-size:12.5px;color:#4b5563;line-height:1.7}
+.chk .ansbox{margin-top:9px;background:#fff;border-color:#9FC0E4}
+@media print{.chk{break-inside:avoid}}
 `;
 
 // 01 の折りたたみ（ブックの中身）を印刷時だけ開く。閉じた details は中身が紙に出ないため。
@@ -3730,9 +4417,9 @@ const REPORT_QEDIT_JS = `
       + '<span class="qcard-tools"' + (editing ? '' : ' hidden') + '><button type="button" class="qdel" title="この設問を消す">削除</button></span></div>'
       + '<div class="qtitle" data-role="title">' + esc(q.title) + '</div>'
       + '<dl class="qgrid">'
-      + '<dt data-for="analysis"' + hiA + '>わかったこと</dt><dd data-role="analysis"' + hiA + '>' + esc(q.analysis) + '</dd>'
+      + '<dt data-for="analysis"' + hiA + '>分かったこと</dt><dd data-role="analysis"' + hiA + '>' + esc(q.analysis) + '</dd>'
       + '<dt data-for="where"' + hiW + '>どこか</dt><dd data-role="where"' + hiW + '>' + liList('qwhere', q.where) + '</dd>'
-      + '<dt>教えてください</dt><dd data-role="ask">' + liList('qlist', q.ask) + '</dd>'
+      + '<dt>ご教示ください</dt><dd data-role="ask">' + liList('qlist', q.ask) + '</dd>'
       + '</dl>'
       + '<label class="ans-h" for="ans-' + anchor + '">ご回答メモ</label>'
       + '<textarea class="ansbox" id="ans-' + anchor + '" placeholder="この場でご入力いただけます"></textarea>'
@@ -3774,7 +4461,7 @@ const REPORT_QEDIT_JS = `
     }
     var t = wrap.querySelectorAll('.qcard-tools');
     for (var j = 0; j < t.length; j++) t[j].hidden = !on;
-    // 空の「わかったこと」「どこか」も編集中だけ出す（普段は見出しだけ残っても意味が無い）
+    // 空の「分かったこと」「どこか」も編集中だけ出す（普段は見出しだけ残っても意味が無い）
     var hid = wrap.querySelectorAll('dt[data-for],dd[data-role=analysis],dd[data-role=where]');
     for (var k = 0; k < hid.length; k++) {
       if (on) { hid[k].dataset.washidden = hid[k].hidden ? '1' : ''; hid[k].hidden = false; }

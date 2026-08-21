@@ -112,6 +112,55 @@ const SPEC_TOOL = {
         type: 'array', items: { type: 'string' },
         description: 'まとめへ足す案件固有の補足（最大8件）',
       },
+      overview: {
+        type: 'array',
+        description: '02「再現するもの」の代わりに使う全体像（最大6件）。reproduce を書くならこちらは不要',
+        items: {
+          type: 'object',
+          properties: {
+            label: { type: 'string', description: '左に出る見出し語（例: 4本グラフ、予算の2段階）' },
+            text: { type: 'string', description: 'その項目の説明。<b> で強調できる' },
+          },
+          required: ['label', 'text'],
+        },
+      },
+      reproduce: {
+        type: 'array',
+        description: '02-1「再現するもの」（最大6件）。kpiee で再現する帳票を1つずつ、'
+          + 'どのファイルのどのタブのことかを添えて並べる',
+        items: {
+          type: 'object',
+          properties: {
+            label: { type: 'string', description: '帳票の呼び名（例: 収支サマリー、利益グラフ）' },
+            text: { type: 'string', description: 'その帳票が何を並べた表なのか。<b> で強調できる' },
+          },
+          required: ['label', 'text'],
+        },
+      },
+      howMade: {
+        type: 'array', items: { type: 'string' },
+        description: '02-1「作られ方」（最大8件）。どのタブに何を入れて、どこがそれを拾うのかを1行ずつ。<b> で強調できる',
+      },
+      howMadeSource: {
+        type: 'string',
+        description: '作られ方の出典の呼び名（例: 指示メモ（0. 20260807 受け渡しデータ））',
+      },
+      assumptions: {
+        type: 'array', items: { type: 'string' },
+        description: '02-2「今回の前提」（最大8件）。kpiee 側の作りとして置いている前提を1行ずつ',
+      },
+      fileNotes: {
+        type: 'array',
+        description: '01 でファイルを開いたときの先頭に出す補足。そのブックの中で何が行われているか',
+        items: {
+          type: 'object',
+          properties: {
+            file: { type: 'string', description: '対象ファイル名（受領時のファイル名）' },
+            note: { type: 'string', description: 'そのブックについての一言。<b> で強調できる' },
+          },
+          required: ['file', 'note'],
+        },
+      },
     },
   },
 } as const;
