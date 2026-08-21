@@ -1999,7 +1999,9 @@ function renderFlowSvg(b: Extract<ReportOutputBlock, { kind: 'flow' }>, name: st
       + (st.note === '' ? ''
         : `<text x="650" y="${y + 40}" font-size="10.5" fill="#7A8794">${esc(fitText(fill(st.note), 312, 10.5))}</text>`);
   }).join('');
-  return `<svg viewBox="0 0 980 ${H}" role="img" aria-label="${esc(fill(b.title) || 'でき方')}の図">`
+  // 読み上げ用の名前。指標ごとの図なら「売上のでき方」、名前が無い図は最後の段の名前で呼ぶ
+  const alt = fill(b.title) || fill(b.stages[b.stages.length - 1]?.title ?? '');
+  return `<svg viewBox="0 0 980 ${H}" role="img" aria-label="${esc(alt)}のでき方">`
     + `${defs}${sources}${key}${stages}</svg>`;
 }
 
@@ -3733,10 +3735,10 @@ ${secOn.flow ? `
       return `
     ${subH(`最終アウトプット${OUT_NO[si] ?? `(${si + 1})`}　${sec.filename}`, 'ブックの中')}
     <div class="colchips tsheets"><span class="tsh">この中で再現する対象のシート</span>${sec.finalSheets.map(sh => `<span class="colchip">${esc(sh)}</span>`).join('')}</div>
-    ${plan?.blocks.some(b => b.kind === 'bullets' || b.kind === 'table') ? '' : (() => {
+    ${plan?.blocks.some(b => 'title' in b && b.title.includes('帳票の形')) ? '' : (() => {
       // 再現する帳票が「縦に何・横に何が並び、どれが合計か」を先に置く。ここが合っていないと
       // ダッシュボードの軸がずれるので、関係図より前に読んでいただく。
-      // 帳票の形を言葉でいただいている場合（bullets / table のブロックがある）は、そちらを使う
+      // 帳票の形を言葉でいただいている場合（同名のブロックがある）は、そちらを使う
       const shapes = sec.finalSheets.slice(0, SHAPE_SHEET_CAP)
         .map(sh => buildSheetShape(regions, sec.file, sh))
         .filter((s): s is SheetShape => s !== null);
