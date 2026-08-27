@@ -3370,20 +3370,6 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
     sheetRoleOf.set(fileLabelOf(a.filename), a.sheetRoles);
     kindOfFile.set(fileLabelOf(a.filename), a.kind);
   }
-  // 貼り付けで受け渡しているタブ＝最終アウトプットのブックの中で、そのブックのどの表からも
-  // 作られていないタブ（＝外から値が入ってきているタブ）。Excel に根拠が残らないのはここなので、
-  // 本数を表紙のタイルに出して「ここはご説明が根拠です」と先に伝える。
-  const pastedInto = new Set<string>();
-  for (const sec of outputSections) {
-    for (const r of regions.filter(x => x.file === sec.file)) {
-      if (declaredOut.hasSheet(r.file, r.sheet)) continue;  // 帳票そのものは除く
-      // インプットとして指定されたタブだけを数える。中間シート（作業用・メモ）は受け渡しではない
-      if ((sheetRoleOf.get(r.file) ?? {})[r.sheet] !== 'input_data') continue;
-      if (pairs.some(pr => pr.to === r.id)) continue;       // ブックの中で計算されている
-      pastedInto.add(`${r.file} ${r.sheet}`);
-    }
-  }
-  const pasteTabCount = pastedInto.size;
   // 01 のタイルに出す「再現するアウトプット」のシート名（最終帳票として指定されたもの）
   const finalSheetNames = [...new Set(outputSections.flatMap(s => s.finalSheets))];
 
@@ -3394,19 +3380,7 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   // それは 02 の導入文（これから何を説明するのか）と全体関係図の下へ文脈付きで移す。
   // ご登録の受け渡しで説明がつく（matched）ファイル対は、値一致の件数からも外す。
   // 03 の設問と同じ数え方にしないと、導入文と設問の件数が食い違って読み手が混乱する。
-  const matchedFilePairs = new Set(
-    audit.filter(a => a.verdict === 'matched').map(a => filePairKey(a.fromFile, a.toFile)),
-  );
   const fileOfR = new Map(regions.map(r => [r.id, r.file]));
-  const copyAll = pairs.filter(p => {
-    if ((p.counts.copy ?? 0) === 0) return false;
-    const f = fileOfR.get(p.from); const t = fileOfR.get(p.to);
-    if (!f || !t || f === t) return true;
-    // 向きは値の一致からは決められないので、逆向きの登録でも説明がついたものとして外す
-    return !(matchedFilePairs.has(filePairKey(f, t)) || matchedFilePairs.has(filePairKey(t, f)));
-  });
-  const copyCount = copyAll.filter(p => copyInfo.kindOf(p) === 'cross').length;   // ブックをまたぐ＝本当の論点
-  const formulaCount = pairs.length - copyAll.length;
   const matchedRels = audit.filter(a => a.verdict === 'matched').length;
   // 案件固有の前提（アウトプット相談で足したメモ）だけは自動生成の要約ではないので 01 に残す
   const premises = spec.notes;
@@ -3563,9 +3537,12 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
           innerParts?.intro ?? '',
           detail,
         ].filter(x => x !== '').join('\n      ');
-        if (inner !== '') fileAppendix.push(`<p class="sub-lede">${esc(s.filename)}</p>\n      ${inner}`);
-        return `    <div class="fileblk"><div class="fbrow">${head}</div>`
-          + `${fileNote === '' ? '' : `<p class="graph-guide fnote">${fileNote}</p>`}</div>`;
+        // そのブックの中で何をしているか（伺った一言）も、01 では読まない。
+        // 01 に要るのは「どのファイルが何か」までで、中身の説明は付録側に付ける
+        const withNote = fileNote === '' || innerParts !== null ? inner
+          : [`<p class="graph-guide">${fileNote}</p>`, inner].filter(x => x !== '').join('\n      ');
+        if (withNote !== '') fileAppendix.push(`<p class="sub-lede">${esc(s.filename)}</p>\n      ${withNote}`);
+        return `    <div class="fileblk"><div class="fbrow">${head}</div></div>`;
       }
       if (detail !== '') {
         fileAppendix.push(`<p class="sub-lede">${esc(s.filename)}</p>\n      ${detail}`);
@@ -3621,16 +3598,9 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
     </div>`;
   }).join('\n');
 
-  // 02-1 の締め。どこまで数式で追えて、どこから追えないのかを先に伝えておくと、
-  // 03 の「見つけられませんでした」が解析漏れではなく、資料の作り方の話として読める。
-  const howMadeNext = [
-    formulaCount > 0 ? 'ブックの中の計算は数式が残っており、そのまま読み取れました。' : '',
-    // 貼り付けの箇所数は 01 のタイルではなくここで出す（受領データの話ではなく作られ方の話）
-    copyCount > 0 || declaredOnlyPairs.length > 0
-      ? `一方<b>ブックをまたぐ受け渡しは値を貼る形</b>のため数式が残らず、ファイルだけでは追いきれませんでした`
-        + `${pasteTabCount > 0 ? `（${pasteTabCount}タブ）` : ''}。` : '',
-    secOn.flow ? `そこは上のご説明を基に、${noFlow} で1つずつ確認させていただけますでしょうか。` : '',
-  ].filter(Boolean).join('');
+  // 「どこまで数式で追えて、どこから追えないか」は、こちらの作業の報告であって
+  // 顧客が読んで何かできる話ではない。追えない箇所は 03 の図と確認欄そのもので分かるので、
+  // 02 の締めには置かない（同じ理由で、01 のタイルにも貼り付けの箇所数は出さない）。
 
   // 表紙のすぐ下に置く道案内。節の並びと、それぞれで何をするかを1行ずつ。
   // 「はじめに（全体像）」はここではなく 02-1「再現するもの」で読ませる（結論と根拠を同じ節に置く）。
@@ -3782,13 +3752,10 @@ ${secOn.outcome ? `
     </div>` : ''}
     ${spec.howMadeTable ? renderSimpleTable(spec.howMadeTable) : ''}
     ${spec.howMadeFigure ? renderHowMadeFigure(spec.howMadeFigure) : ''}
-    ${howMadeNext ? `<p class="graph-guide">${howMadeNext}</p>` : ''}` : ''}
+` : ''}
     ${assumeItems.length > 0 ? `
+    <!-- 小見出し（再現するうえでの前提）が中身を言っているので、導入の1文は置かない -->
     ${subHOut('再現するうえでの前提')}
-    <p class="graph-guide">${sentences(
-      'いただいた資料をこう読み、kpiee 側ではこう作る、という前提を置いております。',
-      'ここもあわせてご確認いただけますでしょうか。',
-    )}</p>
     <div class="summary">
       <ul>
         ${assumeItems.map(n => `<li>${n}</li>`).join('\n        ')}
@@ -3902,14 +3869,12 @@ ${secOn.flow ? `
       // いるファイルでは、「分かりません」ではなく「こう理解しております」の形で出す
       const og = spec.sheetOrigins.find(o => o.file === sec.filename);
       if (og) {
-        // 同じ対応を 02 の表で出している案件では、ここに並べ直さない。
-        // 「どのタブがどこから来るか」を2か所に置くと、読み手はどちらが正か確かめながら読むことになる
-        if (spec.howMadeTable) {
-          return `<p class="graph-guide">${sentences(
-            `数式・列見出しからは入手元をたどれないシートが ${secOrphans.length} 枚ございましたが、`
-              + `入手元は伺った内容${noOutcome ? `（${noOutcome}）` : ''}で分かっております。`,
-          )}</p>`;
-        }
+        // 同じ対応をほかの節（01 のタブごとの一覧・02 の表）で出している案件では、ここに並べ直さない。
+        // 「どのタブがどこから来るか」を何か所にも置くと、読み手はどれが正か確かめながら読むことになる
+        // すでにほかの節（01 のタブごとの一覧・02 の表）で対応を出している案件では、何も足さない。
+        // 「たどれませんでしたが、伺って分かっています」はこちらの作業の報告で、
+        // 読み手が何かできる話ではない（対応そのものは、その表を見れば分かる）
+        if (spec.howMadeTable !== null || spec.sheetGuide.some(g => g.rows.some(r => r.source !== ''))) return '';
         // 「タブ ＝ 入手元」は対応そのものなので、箇条書きに並べず表にする。
         // 箇条書きにすると ＝ の位置が行ごとにずれて、左右のどちらを読んでいるのか分からなくなる
         return `<p class="graph-guide">${sentences(
@@ -4321,8 +4286,6 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
 /* 中身を出さない指定のときの行。開閉しないので summary と同じ見た目だけを持たせる */
 .fileblk>.fbrow{padding:13px 18px;display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;font-size:14px}
 .fileblk>.fbrow b{overflow-wrap:anywhere}
-/* 一覧の行に添える、そのブックについての一言。開閉を持たない行なので行の続きとして置く */
-.fileblk>.fnote{padding:0 18px 13px;margin-top:-4px}
 /* ファイル名と補足を1列にまとめ、規模は右端に寄せる */
 .fname{display:flex;flex-direction:column;gap:3px;flex:1 1 auto;min-width:240px}
 .fileblk>summary .rnote{font-size:11.5px;line-height:1.5}

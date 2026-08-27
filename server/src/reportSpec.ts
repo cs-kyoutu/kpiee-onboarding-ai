@@ -249,7 +249,9 @@ export const DEFAULT_REPORT_SPEC: ReportSpec = {
   focus: '',
   sections: { inventory: true, flow: true, questions: true, nextSteps: true },
   items: {
-    fileTable: true, sheetDetails: true, declaredAudit: true,
+    // declaredAudit（「受け渡しは N 件として整理し、うち M 件は確認できました」）は既定で出さない。
+    // 解析の途中経過であって、顧客が読んで何かできる話ではないため。必要な案件だけ true にする
+    fileTable: true, sheetDetails: true, declaredAudit: false,
     fileFlow: true, erDiagram: true, detailLogic: true, interactiveGraph: true,
   },
   notes: [],
