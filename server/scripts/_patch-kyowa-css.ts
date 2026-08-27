@@ -9,6 +9,11 @@
 // 何度当てても同じ結果になる（すでに直っている箇所は触らない）。
 import { readFileSync, writeFileSync } from 'node:fs';
 
+const OLD_SUBH = '.sub-h{font-family:var(--disp);font-weight:700;font-size:18px;color:var(--ink);margin:30px 0 6px}';
+const NEW_SUBH = '/* 小見出しの前は広めに空ける。前の話（凡例や表）と次の小見出しが近いと、\n'
+  + '   どこで話が変わったのかが見た目で分からない */\n'
+  + '.sub-h{font-family:var(--disp);font-weight:700;font-size:18px;color:var(--ink);margin:44px 0 6px}';
+
 const OLD_TABLE = '.ot tr:last-child td{border-bottom:none}';
 const NEW_TABLE = OLD_TABLE + '\n'
   + '/* 列の区切り。長い文が入る表では、横線だけだと隣の列と地続きに見えて、\n'
@@ -47,6 +52,10 @@ if (cssHit) html = html.split(OLD_CSS).join(NEW_CSS);
 const tableHit = !html.includes('.ot tr>td:last-child') && html.includes(OLD_TABLE);
 if (tableHit) html = html.replace(OLD_TABLE, NEW_TABLE);
 
+// 小見出しの前の余白
+const subhHit = html.includes(OLD_SUBH);
+if (subhHit) html = html.replace(OLD_SUBH, NEW_SUBH);
+
 // 塊ごとに、その中の札でいちばん長いものへ幅を合わせる
 let groups = 0;
 html = html.replace(/<div class="mini-steps"(?: style="[^"]*")?>([\s\S]*?)<\/div>\s*(?:<\/figcaption>|<p class="tbl-note"|<\/div>)/g,
@@ -61,5 +70,6 @@ html = html.replace(/<div class="mini-steps"(?: style="[^"]*")?>([\s\S]*?)<\/div
 writeFileSync(file, html, 'utf8');
 console.log(`札のCSS: ${cssHit ? '差し替えました' : '（すでに新しい指定でした）'}`
   + ` ／ 表のCSS: ${tableHit ? '入れました' : '（すでに入っていました）'}`
+  + ` ／ 小見出しの余白: ${subhHit ? '広げました' : '（すでに広げてありました）'}`
   + ` ／ 幅を入れた塊: ${groups} 件`);
 for (const m of html.matchAll(/<div class="mini-steps" style="--tagw:(\d+)px">/g)) console.log(`  --tagw: ${m[1]}px`);

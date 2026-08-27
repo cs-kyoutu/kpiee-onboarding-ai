@@ -4379,7 +4379,9 @@ table.dl td{vertical-align:top}
 .dl-q{font-family:var(--mono);font-size:10.5px;color:var(--red);font-weight:700}
 .dl-none{color:var(--sub)}
 /* ---- 図の凡例・見出し ---- */
-.sub-h{font-family:var(--disp);font-weight:700;font-size:18px;color:var(--ink);margin:30px 0 6px}
+/* 小見出しの前は広めに空ける。前の話（凡例や表）と次の小見出しが近いと、
+   どこで話が変わったのかが見た目で分からない */
+.sub-h{font-family:var(--disp);font-weight:700;font-size:18px;color:var(--ink);margin:44px 0 6px}
 /* 小見出しの番号（2-1 など）も口頭で指す。本文と同じ濃さでは埋もれる */
 .sub-h .n{color:var(--blue);margin-right:2px}
 .graph-guide{font-size:12.5px;color:var(--text);line-height:1.7;margin-bottom:12px}
