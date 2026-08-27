@@ -129,6 +129,13 @@ const checks: [string, boolean][] = [
   ['確認欄のCSSが入る', html.includes('.chk{')],
   ['道案内から確認欄を指している', html.includes('<b>03-A</b>')],
   ['ファイルの補足が出る', html.includes('この案件の<b>アウトプット</b>です。')],
+  // 01 で開くのは最終アウトプットだけ。元データなどは一覧の1行にとどめる
+  ['最終アウトプット以外は開閉にしない', (() => {
+    const sec = html.slice(html.indexOf('<span class="secno">01'));
+    const body = sec.slice(0, sec.indexOf('</section>'));
+    return (body.match(/<details class="fileblk/g) ?? []).length
+      === (body.match(/<details class="fileblk out"/g) ?? []).length;
+  })()],
   // 01 は「どのファイルが何か」まで。列構成と数式の根拠は付録の中だけに出す
   ['列構成は 01 ではなく付録に入る',
     !html.includes('表と列の構成を開く')

@@ -3553,16 +3553,29 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
         </div>
       </details>` : '',
       ].filter(x => x !== '').join('\n      ');
+      // 最終アウトプット以外は、01 では一覧の1行にとどめる。開いた先にあるのはシートの
+      // 役割の札と件数だけで、役割はグループの見出し（元データ・マスタ…）で既に分かる。
+      // 開閉が全ファイルに並ぶと、01 が「開いて確かめる資料」に見えてしまう
+      if (!isOut) {
+        const inner = [
+          roleChips === '' ? '' : `<p class="sub-lede">取込時にご指定・ご確認いただいたシートの役割</p>
+      <div class="srchips">${roleChips}</div>`,
+          innerParts?.intro ?? '',
+          detail,
+        ].filter(x => x !== '').join('\n      ');
+        if (inner !== '') fileAppendix.push(`<p class="sub-lede">${esc(s.filename)}</p>\n      ${inner}`);
+        return `    <div class="fileblk"><div class="fbrow">${head}</div>`
+          + `${fileNote === '' ? '' : `<p class="graph-guide fnote">${fileNote}</p>`}</div>`;
+      }
       if (detail !== '') {
         fileAppendix.push(`<p class="sub-lede">${esc(s.filename)}</p>\n      ${detail}`);
       }
-      return `    <details class="fileblk${isOut ? ' out' : ''}">
+      return `    <details class="fileblk out">
       <summary>${head}</summary>
       <div class="rbody">
         <!-- そのブックについて伺っている一言は、中身より先に置く（何のブックかが分かってから中身を読む） -->
         ${fileNote !== '' && innerParts === null ? `<p class="graph-guide">${fileNote}</p>` : ''}
-        ${isOut ? tabTable : `<p class="sub-lede">取込時にご指定・ご確認いただいたシートの役割</p>
-        <div class="srchips">${roleChips || '<span class="dl-none">シート情報なし</span>'}</div>`}
+        ${tabTable}
         ${innerParts?.intro ?? ''}
       </div>
     </details>`;
@@ -3889,6 +3902,14 @@ ${secOn.flow ? `
       // いるファイルでは、「分かりません」ではなく「こう理解しております」の形で出す
       const og = spec.sheetOrigins.find(o => o.file === sec.filename);
       if (og) {
+        // 同じ対応を 02 の表で出している案件では、ここに並べ直さない。
+        // 「どのタブがどこから来るか」を2か所に置くと、読み手はどちらが正か確かめながら読むことになる
+        if (spec.howMadeTable) {
+          return `<p class="graph-guide">${sentences(
+            `数式・列見出しからは入手元をたどれないシートが ${secOrphans.length} 枚ございましたが、`
+              + `入手元は伺った内容${noOutcome ? `（${noOutcome}）` : ''}で分かっております。`,
+          )}</p>`;
+        }
         // 「タブ ＝ 入手元」は対応そのものなので、箇条書きに並べず表にする。
         // 箇条書きにすると ＝ の位置が行ごとにずれて、左右のどちらを読んでいるのか分からなくなる
         return `<p class="graph-guide">${sentences(
@@ -4300,6 +4321,8 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
 /* 中身を出さない指定のときの行。開閉しないので summary と同じ見た目だけを持たせる */
 .fileblk>.fbrow{padding:13px 18px;display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;font-size:14px}
 .fileblk>.fbrow b{overflow-wrap:anywhere}
+/* 一覧の行に添える、そのブックについての一言。開閉を持たない行なので行の続きとして置く */
+.fileblk>.fnote{padding:0 18px 13px;margin-top:-4px}
 /* ファイル名と補足を1列にまとめ、規模は右端に寄せる */
 .fname{display:flex;flex-direction:column;gap:3px;flex:1 1 auto;min-width:240px}
 .fileblk>summary .rnote{font-size:11.5px;line-height:1.5}
