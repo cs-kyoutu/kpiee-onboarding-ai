@@ -111,6 +111,10 @@ const checks: [string, boolean][] = [
     && html.indexOf('<th>入るタブ</th>') < html.indexOf('<figure class="fig">')],
   ['図の値と札が出る', html.includes('>甲社<') && html.includes('class="tag base"')],
   ['手入力の色が出る', html.includes('class="tag manual"') && html.includes('.mini-step .tag.manual{')],
+  // 札の幅が行ごとに変わると、右の説明の始まる位置がそろわない
+  ['札の幅が塊ごとにそろう',
+    /class="mini-steps" style="--tagw:\d+px"/.test(html)
+    && html.includes('.mini-step .tag{flex:0 0 var(--tagw,auto)')],
   ['図と札のCSSが入る', html.includes('figure.fig{') && html.includes('.mini-step .tag.ratio{')],
   // ステップ別の内訳カード
   ['ステップの内訳カードが出る',

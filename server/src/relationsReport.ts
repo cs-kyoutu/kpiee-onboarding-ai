@@ -1954,9 +1954,16 @@ const STEP_TONE: Record<ReportStepTone, { ink: string; bg: string; cell: string;
 const STEP_TONE_CSS = Object.entries(STEP_TONE)
   .map(([k, t]) => `.mini-step .tag.${k}{color:${t.ink};background:${t.bg}}`).join('\n');
 
-/** 手順の行（左に札、右に説明）。本文は担当者が書く文なので <b> をそのまま通す */
+/**
+ * 手順の行（左に札、右に説明）。本文は担当者が書く文なので <b> をそのまま通す。
+ *
+ * 札の幅は、その塊でいちばん長い札に合わせて全行そろえる（--tagw）。
+ * 文字数ぶんだけ広がる作りにすると「①土台」と「ステップ1」で札の幅が変わり、
+ * 右の説明の始まる位置が行ごとにずれて、縦に読めなくなる。
+ */
 function renderMiniSteps(steps: ReportStepLine[]): string {
-  return `<div class="mini-steps">
+  const tagW = Math.ceil(Math.max(...steps.map(s => textW(s.tag, 11.5)))) + 22;
+  return `<div class="mini-steps" style="--tagw:${tagW}px">
         ${steps.map(s => `<div class="mini-step"><span class="tag ${s.tone}">${esc(s.tag)}</span>`
           + `<span class="md">${s.text}</span></div>`).join('\n        ')}
       </div>`;
@@ -4311,7 +4318,9 @@ figure.fig figcaption b{color:var(--ink)}
 /* 札と本文は1行目でそろえる（本文が2行になっても札が下がらない） */
 .mini-step{display:flex;align-items:baseline;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)}
 .mini-step:last-child{border-bottom:none}
-.mini-step .tag{flex:none;font-size:11.5px;font-weight:700;border-radius:6px;padding:3px 10px;white-space:nowrap}
+/* 札は塊ごとに幅をそろえる（--tagw）。右の説明が同じ位置から始まらないと縦に読めない */
+.mini-step .tag{flex:0 0 var(--tagw,auto);text-align:center;font-size:11.5px;font-weight:700;
+  border-radius:6px;padding:3px 10px;white-space:nowrap}
 .mini-step .md{font-size:12px;color:var(--text);line-height:1.7}
 ${STEP_TONE_CSS}
 .rcp-f{font-size:11.5px;font-weight:700;color:var(--sub);letter-spacing:.04em;margin-bottom:4px}
