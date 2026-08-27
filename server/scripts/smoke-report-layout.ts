@@ -43,6 +43,10 @@ const html = buildRelationsReportHtml({
     ],
     howMade: ['元データ → 中間ファイル → 最終アウトプットです。'],
     // 図の指定が入っていれば、箇条書きの箱ではなく図のほうを出す
+    howMadeTable: {
+      title: '数字の入り口', head: ['ファイル', '入るタブ'],
+      rows: [['<b>元データ.xlsx</b>', '①実績']], note: '伺った内容から整理したものです。',
+    },
     howMadeFigure: {
       title: '',
       note: '数値は説明のための例です。',
@@ -102,6 +106,9 @@ const checks: [string, boolean][] = [
   ['箇条書きの箱と図が並ぶ',
     html.includes('<div class="stitle">作られ方</div>')
     && html.indexOf('<div class="stitle">作られ方</div>') < html.indexOf('<figure class="fig">')],
+  ['作られ方の表が出る',
+    html.includes('数字の入り口') && html.includes('<th>入るタブ</th>')
+    && html.indexOf('<th>入るタブ</th>') < html.indexOf('<figure class="fig">')],
   ['図の値と札が出る', html.includes('>甲社<') && html.includes('class="tag base"')],
   ['手入力の色が出る', html.includes('class="tag manual"') && html.includes('.mini-step .tag.manual{')],
   ['図と札のCSSが入る', html.includes('figure.fig{') && html.includes('.mini-step .tag.ratio{')],

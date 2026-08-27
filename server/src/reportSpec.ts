@@ -127,6 +127,19 @@ export interface ReportHowMadeFigure {
 }
 
 /**
+ * 02-1 に置く小さな表。「どのファイルがどのタブの入り口か」のような対応は、
+ * 文章に並べると1行が長くなり、どれとどれが対なのかを目で追えない。
+ */
+export interface ReportSimpleTable {
+  /** 表の上の見出し。空なら見出しを出さない */
+  title: string;
+  head: string[];
+  rows: string[][];
+  /** 表の下の注記。<b> は使える */
+  note: string;
+}
+
+/**
  * 03「ロジックの確認」で、最終アウトプットの節に置く1ブロック。
  *
  * 数式から読み取れるのは「どのセルがどこから来たか」までで、帳票の読み方（何が縦で何が横か、
@@ -207,6 +220,11 @@ export interface ReportSpec {
   /** 02-1「作られ方」。どのタブに何を入れて、どこがそれを拾うのかの説明。<b> は使える */
   howMade: string[];
   /**
+   * 02-1 の「作られ方」に添える表（数字の入り口の一覧など）。箇条書きの下・図の上に置く。
+   * null なら出さない。
+   */
+  howMadeTable: ReportSimpleTable | null;
+  /**
    * 02-1 の「作られ方」を絵で見せる指定。箇条書き（howMade）の下に置く。
    * 図と同じ内容を箇条書きにも書くと二度読ませることになるので、
    * 図に寄せた項目は howMade から外し、手順の文は図の下の steps に書く。
@@ -241,6 +259,7 @@ export const DEFAULT_REPORT_SPEC: ReportSpec = {
   sheetOrigins: [],
   reproduce: [],
   howMade: [],
+  howMadeTable: null,
   howMadeFigure: null,
   howMadeSource: '',
   assumptions: [],
@@ -325,6 +344,20 @@ const asStepLines = (v: unknown): ReportStepLine[] =>
         return { tag: asText(r.tag, MAX_STEP_TAG), tone: asTone(r.tone), text: asText(r.text, MAX_LINE) };
       }).filter(s => s.tag !== '' && s.text !== '').slice(0, MAX_STEP_LINES)
     : [];
+
+/** 02-1 に添える表。行が1つも無ければ null（見出しだけの空の表を出さない） */
+function normalizeSimpleTable(raw: unknown): ReportSimpleTable | null {
+  if (raw === null || raw === undefined) return null;
+  const o = asRecord(raw);
+  const rows = Array.isArray(o.rows)
+    ? o.rows.map(r => asLines(r, MAX_TABLE_COLS)).filter(r => r.length > 0).slice(0, MAX_TABLE_ROWS)
+    : [];
+  if (rows.length === 0) return null;
+  return {
+    title: asText(o.title, MAX_GUIDE_CELL), head: asLines(o.head, MAX_TABLE_COLS),
+    rows, note: asText(o.note, MAX_LINE),
+  };
+}
 
 /** 02-1 の「作られ方（イメージ）」。列が1つも無い図は絵にならないので null にする */
 function normalizeHowMadeFigure(raw: unknown): ReportHowMadeFigure | null {
@@ -529,6 +562,8 @@ export function normalizeReportSpec(raw: unknown, base: ReportSpec = DEFAULT_REP
     sheetOrigins,
     reproduce,
     howMade: o.howMade === undefined ? base.howMade : asLines(o.howMade, MAX_HOWMADE),
+    howMadeTable: o.howMadeTable === undefined
+      ? base.howMadeTable : normalizeSimpleTable(o.howMadeTable),
     howMadeFigure: o.howMadeFigure === undefined
       ? base.howMadeFigure : normalizeHowMadeFigure(o.howMadeFigure),
     howMadeSource: o.howMadeSource === undefined

@@ -29,7 +29,7 @@ import {
 import { FILE_REL_LABELS, type DeclaredFileRel, type FileRelAudit } from './relations/declared.js';
 import {
   DEFAULT_REPORT_SPEC, type ReportSpec, type ReportOutputBlock, type ReportOutputPlan,
-  type ReportStepTone, type ReportStepLine, type ReportHowMadeFigure,
+  type ReportStepTone, type ReportStepLine, type ReportHowMadeFigure, type ReportSimpleTable,
 } from './reportSpec.js';
 
 /**
@@ -2023,6 +2023,22 @@ function renderHowMadeFigureSvg(f: ReportHowMadeFigure): string {
   return `<svg viewBox="0 0 ${w} 180" role="img" aria-label="${esc(alt)}">${parts.join('')}${marks.join('')}</svg>`;
 }
 
+/**
+ * 02-1 に添える小さな表。セルは担当者が書く文なので <b> をそのまま通す。
+ * 「どのファイルがどのタブの入り口か」のような対応は、文章に並べると1行が長くなり、
+ * どれとどれが対なのかを目で追えない。
+ */
+function renderSimpleTable(t: ReportSimpleTable): string {
+  return (t.title === '' ? '' : `<p class="sub-lede">${esc(t.title)}</p>\n    `)
+    + `<div style="overflow-x:auto">
+      <table class="ot">
+        ${t.head.length === 0 ? '' : `<tr>${t.head.map(h => `<th>${esc(h)}</th>`).join('')}</tr>\n        `}${
+    t.rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('\n        ')}
+      </table>
+    </div>`
+    + (t.note === '' ? '' : `\n    <p class="tbl-note">${t.note}</p>`);
+}
+
 /** 02-1 に置く「作られ方（イメージ）」の図（見出し・図・読み方） */
 function renderHowMadeFigure(f: ReportHowMadeFigure): string {
   return `<figure class="fig">
@@ -3728,6 +3744,7 @@ ${secOn.outcome ? `
         ${spec.howMade.map(n => `<li>${n}</li>`).join('\n        ')}
       </ul>
     </div>` : ''}
+    ${spec.howMadeTable ? renderSimpleTable(spec.howMadeTable) : ''}
     ${spec.howMadeFigure ? renderHowMadeFigure(spec.howMadeFigure) : ''}
     ${howMadeNext ? `<p class="graph-guide">${howMadeNext}</p>` : ''}` : ''}
     ${assumeItems.length > 0 ? `
