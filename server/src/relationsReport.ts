@@ -2123,6 +2123,10 @@ function renderFlowSvg(b: Extract<ReportOutputBlock, { kind: 'flow' }>, name: st
  */
 function renderOutputBlock(b: ReportOutputBlock, mark: string, uid: string, auto: AutoBlocks): string {
   switch (b.kind) {
+    case 'heading':
+      // 話の切れ目。上に線を引いて、ここから別の帳票の話だと分かるようにする
+      return `<h4 class="blk-h">${esc(b.title)}</h4>`
+        + (b.lede === '' ? '' : `\n    <p class="graph-guide">${b.lede}</p>`);
     case 'bullets':
       return (b.title === '' ? '' : `<p class="sub-lede">${esc(b.title)}</p>\n    `)
         + `<ul class="graph-guide">\n      ${b.items.map(i => `<li>${i}</li>`).join('\n      ')}\n    </ul>`
@@ -3801,7 +3805,9 @@ ${secOn.flow ? `
       <li><b>＋</b> は、そのステップで土台の表に足される列です。上から順に足していき、最後に${stepFlow.output === '' ? '' : ` ${esc(stepFlow.output)} `}になります。</li>
       <li>この順番と、足される列がこれで合っているかをご覧ください。</li>
     </ul>` : ''}
-    <div class="map-scroll">${fileFlow}</div>
+    <!-- 凡例は図の枠の中に入れる。外に出すと、図と凡例が別々のかたまりに見えて、
+         次の小見出しとの間で「どこまでが図の話か」が分からなくなる -->
+    <div class="map-scroll">${fileFlow}
     <div class="legend">
       <span class="lg-h">丸＝ファイル</span>
       <span class="li"><span class="nrole src"></span>元データ</span>
@@ -3817,6 +3823,7 @@ ${secOn.flow ? `
       ${fileFlowGroups.map(g => `<span class="li"><span class="sw${GROUP_META[g].dashed ? ' dash' : ''}" style="border-color:${GROUP_META[g].color}"></span>${esc(GROUP_META[g].label)}</span>`).join('\n      ')}
       ${declaredOnlyPairs.length > 0 ? `<span class="li"><span class="sw dot" style="border-color:${DECLARED_ONLY.color}"></span>${esc(DECLARED_ONLY.label)}</span>` : ''}
     </div>` : ''}
+    </div>
     ${spec.items.declaredAudit && declaredRels.length > 0 ? `<p class="tbl-note">ファイルどうしの受け渡しは、伺った内容を基に ${declaredRels.length} 件として整理しております。うち ${matchedRels} 件は、いただいたファイルの中でも同じつながりを確認できました。${matchedRels < declaredRels.length ? `確認できなかった ${declaredRels.length - matchedRels} 件は${noQuestions ? ` ${noQuestions} ` : 'お打ち合わせ'}で伺います。` : ''}</p>` : ''}
     <!-- 「ファイル間の受け渡しと、突合キーの候補」の表は置かない。受け渡し自体は上の図と
          その下の1行で伝わり、突合キーは取込設定の作業メモであって読み合わせの議題ではない。
@@ -4382,6 +4389,10 @@ table.dl td{vertical-align:top}
 /* 小見出しの前は広めに空ける。前の話（凡例や表）と次の小見出しが近いと、
    どこで話が変わったのかが見た目で分からない */
 .sub-h{font-family:var(--disp);font-weight:700;font-size:18px;color:var(--ink);margin:44px 0 6px}
+/* 節の中の話の切れ目。1ブックに複数のアウトプットがある案件では、図・表・確認欄が
+   続けて並ぶため、線と余白で「ここから別の帳票の話」と分かるようにする */
+.blk-h{font-family:var(--disp);font-weight:700;font-size:16px;color:var(--ink);
+  margin:40px 0 10px;padding-top:16px;border-top:1px solid var(--line)}
 /* 小見出しの番号（2-1 など）も口頭で指す。本文と同じ濃さでは埋もれる */
 .sub-h .n{color:var(--blue);margin-right:2px}
 .graph-guide{font-size:12.5px;color:var(--text);line-height:1.7;margin-bottom:12px}

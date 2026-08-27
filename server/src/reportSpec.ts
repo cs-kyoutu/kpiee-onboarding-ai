@@ -149,6 +149,11 @@ export interface ReportSimpleTable {
  * 並べる順番は配列の順。自動生成分（レシピ図・関係図）も flow / graph として同じ列に並べる。
  */
 export type ReportOutputBlock =
+  /**
+   * 節の中の話の切れ目。1つのブックに複数のアウトプットが入っている案件では、
+   * 図・表・確認欄が続けて並ぶと、どこから別の帳票の話になったのかが読み取れない。
+   */
+  | { kind: 'heading'; title: string; lede: string }
   /** 箇条書き（この帳票の形・組織の足し上げ など） */
   | { kind: 'bullets'; title: string; items: string[]; notes: string[] }
   /**
@@ -388,6 +393,11 @@ function normalizeHowMadeFigure(raw: unknown): ReportHowMadeFigure | null {
 function normalizeOutputBlock(raw: unknown): ReportOutputBlock | null {
   const o = asRecord(raw);
   switch (o.kind) {
+    case 'heading': {
+      const title = asText(o.title, MAX_GUIDE_CELL);
+      if (title === '') return null;
+      return { kind: 'heading', title, lede: asText(o.lede, MAX_LINE) };
+    }
     case 'bullets': {
       const items = asLines(o.items, MAX_BLOCK_ITEMS);
       if (items.length === 0) return null;

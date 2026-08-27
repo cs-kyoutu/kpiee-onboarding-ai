@@ -73,6 +73,7 @@ const html = buildRelationsReportHtml({
         { kind: 'flow', lede: '', repeat: ['売上'], title: '{名}', text: '元データの <b>{名}</b> を月で突き合わせます。',
           key: '月', sourceNote: 'このブックのタブ', sources: ['src'],
           stages: [{ title: '拠点ごとの{名}', note: '' }, { title: '全社の{名}', note: '＝ 合計' }], note: '' },
+        { kind: 'heading', title: '別の帳票の話', lede: 'ここから話が変わります。' },
         { kind: 'steps', title: 'ステップ別の内訳', cards: [
           { title: 'ステップ1', text: '<b>集計得意先CD</b>でそのまま付けます。', steps: [], note: '' },
           { title: 'ステップ2', text: '', note: '※ 残りの出し方で結果が変わります。', steps: [
@@ -117,6 +118,12 @@ const checks: [string, boolean][] = [
     && html.includes('.mini-step .tag{flex:0 0 var(--tagw,auto)')],
   ['図と札のCSSが入る', html.includes('figure.fig{') && html.includes('.mini-step .tag.ratio{')],
   // ステップ別の内訳カード
+  // 1ブックに複数のアウトプットがある案件で、話の切れ目が線と見出しで分かること
+  ['話の切れ目の見出しが出る',
+    html.includes('<h4 class="blk-h">別の帳票の話</h4>') && html.includes('.blk-h{')],
+  // 全体関係図の凡例は図の枠の中に入れる（枠を閉じた直後に凡例が来ていたら外へ出ている）。
+  // 付録の関係図は静止画と操作版を切り替えるので、凡例は両方の外側に置いたままでよい
+  ['全体関係図の凡例が枠の外に出ていない', !/<\/div>\s*<div class="legend">\s*<span class="lg-h">丸＝ファイル/.test(html)],
   ['ステップの内訳カードが出る',
     html.includes('class="stepcard"') && html.includes('ステップ別の内訳')
     && html.includes('<b>集計得意先CD</b>でそのまま付けます。')],
