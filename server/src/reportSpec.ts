@@ -84,6 +84,46 @@ export interface ReportSheetOrigin {
 }
 
 /**
+ * 手順の1行につける札の色。何をしている段なのかを、色で見分けられるようにする。
+ *   base   … 土台（もとからある数字）
+ *   direct … そのまま付ける（比率を使わない付与）
+ *   ratio  … 比率で配る（配賦・按分）
+ *   result … でき上がり（最終の指標）
+ */
+export type ReportStepTone = 'base' | 'direct' | 'ratio' | 'result';
+
+/** 手順の1行（左に札、右に説明）。図の下の読み方と、ステップの内訳カードで同じ形を使う */
+export interface ReportStepLine {
+  /** 左に出る札（例: ステップ2、②演算） */
+  tag: string;
+  tone: ReportStepTone;
+  /** その段で何をしているか。<b> は使える */
+  text: string;
+}
+
+/**
+ * 02-1 に置く「作られ方（イメージ）」の図。
+ *
+ * 貼り付けで受け渡している案件では数式が残らないため、自動生成のレシピ図が出せない。
+ * その場合でも「1行（得意先1行など）に、段ごとにどんな列が足されて最後の指標になるのか」は
+ * 伺った手順から描ける。例の値を入れた1行を絵にして、読み合わせの入口に置く。
+ */
+export interface ReportHowMadeFigure {
+  /** 見出しに添える注記（例: 数値は説明のための例（単位：万円）です。実際の値ではございません。） */
+  note: string;
+  /** 左から並べる列のかたまり。かたまりの間は「＋」、最後の result の前は「＝」でつなぐ */
+  groups: {
+    /** かたまりの上に出る札（例: ①68期実績（土台）、ステップ2・訪問比率） */
+    label: string;
+    tone: ReportStepTone;
+    /** そのかたまりに並ぶ列。sample は説明のための例の値（実データではない） */
+    columns: { name: string; sample: string }[];
+  }[];
+  /** 図の下に置く読み方 */
+  steps: ReportStepLine[];
+}
+
+/**
  * 03「ロジックの確認」で、最終アウトプットの節に置く1ブロック。
  *
  * 数式から読み取れるのは「どのセルがどこから来たか」までで、帳票の読み方（何が縦で何が横か、
@@ -113,6 +153,12 @@ export type ReportOutputBlock =
   | { kind: 'flow'; lede: string; repeat: string[]; title: string; text: string;
       key: string; sourceNote: string; sources: string[];
       stages: { title: string; note: string }[]; note: string }
+  /**
+   * ステップごとの内訳カード。1つの流れ図では潰れてしまう手順（集計 → 演算 → 配賦のように
+   * 段の中がさらに分かれているもの）を、ステップ単位のカードに分けて書く。
+   */
+  | { kind: 'steps'; title: string;
+      cards: { title: string; text: string; steps: ReportStepLine[]; note: string }[] }
   /** 自動生成のレシピ図（数式から起こした「でき方」）を差し込む位置 */
   | { kind: 'recipes' }
   /** 自動生成の関係図（付録・開閉ブロック）を差し込む位置 */
@@ -157,10 +203,17 @@ export interface ReportSpec {
   reproduce: ReportOverviewItem[];
   /** 02-1「作られ方」。どのタブに何を入れて、どこがそれを拾うのかの説明。<b> は使える */
   howMade: string[];
+  /**
+   * 02-1 の「作られ方」を、箇条書きの代わりに図で見せる指定。
+   * 入っていれば箇条書きの箱ではなくこの図を出す（同じ内容を二度読ませないため、
+   * 手順の文は図の下の steps に書く）。null なら従来どおり howMade の箱だけ。
+   */
+  howMadeFigure: ReportHowMadeFigure | null;
   /** 02-1 の導入で名前を出す出典（例: 指示メモ（0. 20260807 受け渡しデータ））。空なら既定文だけ */
   howMadeSource: string;
   /**
-   * 02-2「今回の前提」。kpiee 側の作りとして置いている前提。
+   * 02-2「再現するうえでの前提」。いただいた資料の読み方と、kpiee 側の作りとして置いている前提。
+   * 「今回の前提」だと何の前提か分からないので、再現作業の前提であることを名前に出す。
    * 空なら notes（案件の前提）をそのまま使う。
    */
   assumptions: string[];
@@ -185,6 +238,7 @@ export const DEFAULT_REPORT_SPEC: ReportSpec = {
   sheetOrigins: [],
   reproduce: [],
   howMade: [],
+  howMadeFigure: null,
   howMadeSource: '',
   assumptions: [],
   outputPlans: [],
@@ -241,6 +295,13 @@ const MAX_TABLE_COLS = 6;
 const MAX_FLOW_SOURCES = 8;
 const MAX_FLOW_STAGES = 5;
 const MAX_REPEAT = 5;
+// 「作られ方（イメージ）」の図。1行を横に伸ばして描くので、かたまりも列も増やせない
+const MAX_FIG_GROUPS = 6;
+const MAX_FIG_COLUMNS = 4;
+const MAX_FIG_LABEL = 24;
+const MAX_STEP_TAG = 12;
+const MAX_STEP_LINES = 8;
+const MAX_STEP_CARDS = 8;
 
 const asBool = (v: unknown, dflt: boolean): boolean => (typeof v === 'boolean' ? v : dflt);
 const asText = (v: unknown, max: number): string =>
@@ -249,6 +310,38 @@ const asText = (v: unknown, max: number): string =>
 const asLines = (v: unknown, cap: number, max = MAX_LINE): string[] =>
   Array.isArray(v) ? v.map(x => asText(x, max)).filter(x => x !== '').slice(0, cap) : [];
 const asRecord = (v: unknown): Record<string, unknown> => (v ?? {}) as Record<string, unknown>;
+const STEP_TONES: ReportStepTone[] = ['base', 'direct', 'ratio', 'result'];
+/** 知らない色名は「土台」に寄せる（色が付かないより、既定の色で並んでいた方が読める） */
+const asTone = (v: unknown): ReportStepTone =>
+  STEP_TONES.find(t => t === v) ?? 'base';
+/** 手順の行。札か本文のどちらかが空の行は、札としても文としても読めないので落とす */
+const asStepLines = (v: unknown): ReportStepLine[] =>
+  Array.isArray(v)
+    ? v.map(x => {
+        const r = asRecord(x);
+        return { tag: asText(r.tag, MAX_STEP_TAG), tone: asTone(r.tone), text: asText(r.text, MAX_LINE) };
+      }).filter(s => s.tag !== '' && s.text !== '').slice(0, MAX_STEP_LINES)
+    : [];
+
+/** 02-1 の「作られ方（イメージ）」。列が1つも無い図は絵にならないので null にする */
+function normalizeHowMadeFigure(raw: unknown): ReportHowMadeFigure | null {
+  if (raw === null || raw === undefined) return null;
+  const o = asRecord(raw);
+  const groups = Array.isArray(o.groups)
+    ? o.groups.map(g => {
+        const r = asRecord(g);
+        const columns = Array.isArray(r.columns)
+          ? r.columns.map(c => {
+              const x = asRecord(c);
+              return { name: asText(x.name, MAX_FIG_LABEL), sample: asText(x.sample, MAX_FIG_LABEL) };
+            }).filter(c => c.name !== '').slice(0, MAX_FIG_COLUMNS)
+          : [];
+        return { label: asText(r.label, MAX_FIG_LABEL), tone: asTone(r.tone), columns };
+      }).filter(g => g.columns.length > 0).slice(0, MAX_FIG_GROUPS)
+    : [];
+  if (groups.length === 0) return null;
+  return { note: asText(o.note, MAX_NOTE_LEN), groups, steps: asStepLines(o.steps) };
+}
 
 /** 03 のブロック1つ。kind が知らない値・中身が空のものは呼び出し側で落とす */
 function normalizeOutputBlock(raw: unknown): ReportOutputBlock | null {
@@ -304,6 +397,19 @@ function normalizeOutputBlock(raw: unknown): ReportOutputBlock | null {
         key: asText(o.key, MAX_OVERVIEW_LABEL), sourceNote: asText(o.sourceNote, MAX_OVERVIEW_LABEL),
         sources, stages, note: asText(o.note, MAX_LINE * 2),
       };
+    }
+    case 'steps': {
+      const cards = Array.isArray(o.cards)
+        ? o.cards.map(c => {
+            const r = asRecord(c);
+            return {
+              title: asText(r.title, MAX_GUIDE_CELL), text: asText(r.text, MAX_LINE),
+              steps: asStepLines(r.steps), note: asText(r.note, MAX_LINE),
+            };
+          }).filter(c => c.text !== '' || c.steps.length > 0).slice(0, MAX_STEP_CARDS)
+        : [];
+      if (cards.length === 0) return null;
+      return { kind: 'steps', title: asText(o.title, MAX_GUIDE_CELL), cards };
     }
     case 'recipes': return { kind: 'recipes' };
     case 'graph': return { kind: 'graph' };
@@ -417,6 +523,8 @@ export function normalizeReportSpec(raw: unknown, base: ReportSpec = DEFAULT_REP
     sheetOrigins,
     reproduce,
     howMade: o.howMade === undefined ? base.howMade : asLines(o.howMade, MAX_HOWMADE),
+    howMadeFigure: o.howMadeFigure === undefined
+      ? base.howMadeFigure : normalizeHowMadeFigure(o.howMadeFigure),
     howMadeSource: o.howMadeSource === undefined
       ? base.howMadeSource : asText(o.howMadeSource, MAX_NOTE_LEN),
     assumptions: o.assumptions === undefined ? base.assumptions : asLines(o.assumptions, MAX_ASSUMPTIONS),
@@ -449,7 +557,10 @@ export function describeReportSpec(spec: ReportSpec): string[] {
     `シートの入手元: ${spec.sheetOrigins.length > 0 ? spec.sheetOrigins.map(o => `${o.file}（${o.items.length}件）`).join(' / ') : '（なし）'}`,
     `再現するもの: ${spec.reproduce.length > 0 ? spec.reproduce.map(r => r.label).join(' / ') : '（なし・はじめにの全体像を使う）'}`,
     `作られ方: ${spec.howMade.length > 0 ? `${spec.howMade.length} 行` : '（なし）'}`,
-    `今回の前提: ${spec.assumptions.length > 0 ? `${spec.assumptions.length} 行` : '（なし・案件の前提を使う）'}`,
+    `作られ方の図: ${spec.howMadeFigure
+      ? `${spec.howMadeFigure.groups.map(g => g.label || `${g.columns.length}列`).join(' → ')}`
+      : '（なし・箇条書きだけ）'}`,
+    `再現するうえでの前提: ${spec.assumptions.length > 0 ? `${spec.assumptions.length} 行` : '（なし・案件の前提を使う）'}`,
     `帳票の読み方: ${spec.outputPlans.length > 0
       ? spec.outputPlans.map(p => `${p.file}（${p.blocks.map(b => b.kind).join('→')}）`).join(' / ')
       : '（なし・自動生成分のみ）'}`,

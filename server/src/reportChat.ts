@@ -147,7 +147,7 @@ const SPEC_TOOL = {
       },
       assumptions: {
         type: 'array', items: { type: 'string' },
-        description: '02-2「今回の前提」（最大8件）。kpiee 側の作りとして置いている前提を1行ずつ',
+        description: '02-2「再現するうえでの前提」（最大8件）。いただいた資料の読み方と、kpiee 側の作りとして置いている前提を1行ずつ',
       },
       fileNotes: {
         type: 'array',

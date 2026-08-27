@@ -1,4 +1,4 @@
-﻿// 顧客共有用「データ構造 分析レポート」(自己完結 HTML) の生成。
+// 顧客共有用「データ構造 分析レポート」(自己完結 HTML) の生成。
 //
 // 目的: 受領データの関係分析（RelationGraph）を、顧客との読み合わせに使える1枚のHTMLへ整形する。
 //   - 確定事項（数式由来）と推定（値一致・構造推定）を視覚的に分離し、確認は推定部分だけに絞る
@@ -8,7 +8,7 @@
 //
 // 構成は5節。読み合わせの打ち合わせで上から順に説明していける並びにしてある:
 //   01 受領データ一覧 … どのブックが何で、各タブがどういう役割か（取込時に入力された情報）
-//   02 再現するアウトプットの確認 … 何を再現するのか・伺っている作り方・今回の前提
+//   02 再現するアウトプットの確認 … 何を再現するのか・伺っている作り方・再現するうえでの前提
 //   03 ロジックの確認 … 全体関係図（ブック間）→ 最終アウトプットごとに「読み方 → でき方 → 確認欄」
 //   04 ご確認いただきたい点 … 自動解析が「推定」に留まる箇所
 //   05 今後の進め方
@@ -29,6 +29,7 @@ import {
 import { FILE_REL_LABELS, type DeclaredFileRel, type FileRelAudit } from './relations/declared.js';
 import {
   DEFAULT_REPORT_SPEC, type ReportSpec, type ReportOutputBlock, type ReportOutputPlan,
+  type ReportStepTone, type ReportStepLine, type ReportHowMadeFigure,
 } from './reportSpec.js';
 
 /**
@@ -301,8 +302,6 @@ function axisLabel(r: Region): string {
   return (a.section ?? '') + body;
 }
 
-const SHAPE_SHEET_CAP = 4;  // 「この帳票の形」を書くシートの数（グラフのシートまで並べると長い）
-
 /** 最終アウトプットの節で「この帳票の形」を書くための、シート1枚ぶんの読み取り */
 interface SheetShape {
   sheet: string;
@@ -353,32 +352,6 @@ function buildSheetShape(regions: Region[], file: string, sheet: string): SheetS
   };
   const empty = shape.groups.length === 0 && shape.units.length === 0 && shape.rowLabels.length === 0;
   return empty ? null : shape;
-}
-
-/** 「この帳票の形」の箇条書き。列記号やセル番地は使わず、並んでいるものの名前だけで書く */
-function renderSheetShape(s: SheetShape, showSheet: boolean): string {
-  const li: string[] = [];
-  if (s.groups.length > 0) {
-    const g = `<b>${esc(axisList(s.groups, 6))}</b>`;
-    li.push(s.units.length > 0
-      ? `横に ${g} が並び、そのひとつひとつに <b>${esc(s.units.join('・'))}</b> があります。`
-      : `横に ${g} が並びます。`);
-  } else if (s.units.length > 0) {
-    li.push(`横に <b>${esc(axisList(s.units, 8))}</b> が並びます。`);
-  }
-  if (s.rowLabels.length > 0) {
-    const r = `<b>${esc(axisList(s.rowLabels, 6, s.rowTotal))}</b>`;
-    li.push(s.sections.length > 1
-      ? `縦は ${r} で、これが <b>${esc(s.sections.join('・'))}</b> ごとに繰り返されます。`
-      : `縦は ${r} です。`);
-  }
-  for (const t of s.totals) {
-    li.push(`<b>${esc(t.name)}</b> は <b>${esc(axisList(t.parts, 4, t.partTotal))}</b> の合計です（数式で確認しております）。`);
-  }
-  if (li.length === 0) return '';
-  // シート名は先頭の項目に付ける。「横に…」が出せない帳票でも、どのシートの話かは要る
-  if (showSheet) li[0] = `<b>${esc(s.sheet)}</b>は、${li[0]}`;
-  return `<ul class="graph-guide">${li.map(x => `\n      <li>${x}</li>`).join('')}\n    </ul>`;
 }
 
 /** 01 節の表ブロックに出す、繰り返し単位まで含めた軸の説明 */
@@ -1249,6 +1222,13 @@ function fileOrderNo(filename: string): number {
   return m ? Number(m[1]) : Number.MAX_SAFE_INTEGER;
 }
 
+/** 文字列の表示幅（px）。全角=1・半角=0.6 の概算（SVGは自動で幅を測れないため） */
+function textW(s: string, fontPx: number): number {
+  let acc = 0;
+  for (const ch of s) acc += /[\x00-\xff｡-ﾟ]/.test(ch) ? fontPx * 0.6 : fontPx;
+  return acc;
+}
+
 /** 表示幅に収まるよう全角=1・半角=0.6 で概算して省略する（SVGは自動折返ししないため） */
 function fitText(s: string, maxPx: number, fontPx: number): string {
   let acc = 0, out = '';
@@ -1951,6 +1931,102 @@ function buildPasteOrigins(
 // 確認欄の記号。04 の設問（Q-01..）と混ざらないよう、こちらは節番号＋英字にする
 const CHECK_MARKS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
 
+/**
+ * 手順の札の色。何をしている段なのかを色で見分けられるようにする。
+ * 図（SVG）と札（CSS）で同じ値を使うため、ここを唯一の出どころにする。
+ * ink=文字、bg=札の下地、cell=図のセルの下地、cellLine=セルの枠、
+ * line=図の上に置くかたまりの札の枠（セルの枠より濃くして、どこからどこまでが一段かを見せる）。
+ */
+const STEP_TONE: Record<ReportStepTone, { ink: string; bg: string; cell: string; cellLine: string; line: string }> = {
+  base: { ink: '#1F5FAE', bg: '#EDF4FC', cell: '#EDF4FC', cellLine: '#CFE0F3', line: '#8FB6DE' },
+  direct: { ink: '#7B5EA7', bg: '#F1EDF8', cell: '#F1EDF8', cellLine: '#D9CEEB', line: '#B79FD1' },
+  ratio: { ink: '#1E9E6A', bg: '#E9F7F0', cell: '#E9F7F0', cellLine: '#B6E2CD', line: '#7FCBA8' },
+  // でき上がりは最終アウトプットの色（表紙のタイル・流れ図の最後の段と同じ赤）
+  result: { ink: '#C0392B', bg: '#FBEFEF', cell: '#FBEFEF', cellLine: '#C0392B', line: '#C0392B' },
+};
+
+/** 札の色は STEP_TONE から起こす（図と札で色がずれると、同じ段の話に見えなくなる） */
+const STEP_TONE_CSS = Object.entries(STEP_TONE)
+  .map(([k, t]) => `.mini-step .tag.${k}{color:${t.ink};background:${t.bg}}`).join('\n');
+
+/** 手順の行（左に札、右に説明）。本文は担当者が書く文なので <b> をそのまま通す */
+function renderMiniSteps(steps: ReportStepLine[]): string {
+  return `<div class="mini-steps">
+        ${steps.map(s => `<div class="mini-step"><span class="tag ${s.tone}">${esc(s.tag)}</span>`
+          + `<span class="md">${s.text}</span></div>`).join('\n        ')}
+      </div>`;
+}
+
+// 「作られ方（イメージ）」の図の寸法。1行ぶんのセルを横に並べるだけなので高さは固定でよい
+const FIG_PAD = 20;        // 左右の余白
+const FIG_GAP = 30;        // かたまりの間（＋ / ＝ を置く幅）
+const FIG_COL_MIN = 70;    // 列の最小幅
+const FIG_CELL_Y = 110;    // セルの上端
+const FIG_CELL_H = 54;
+
+/** SVG の座標は小数第1位まで（列幅を割り振ると端数が出る） */
+const r1 = (n: number): number => Math.round(n * 10) / 10;
+
+/**
+ * 02-1 の「作られ方（イメージ）」。得意先1行に、段ごとに列が足されて最後の指標になる様子を、
+ * 説明のための例の値で描く。貼り付けで受け渡していて数式が残らない案件では、
+ * 自動生成のレシピ図が出せないため、伺った手順から起こしたこの図が入口になる。
+ */
+function renderHowMadeFigureSvg(f: ReportHowMadeFigure): string {
+  let x = FIG_PAD;
+  const parts: string[] = [];
+  const marks: string[] = [];
+  f.groups.forEach((g, gi) => {
+    const t = STEP_TONE[g.tone];
+    const cols = g.columns.map(c => ({
+      ...c,
+      w: Math.max(FIG_COL_MIN, textW(c.name, 11.5) + 18, textW(c.sample, 11) + 18),
+    }));
+    // 札がかたまりより広いときは、列を均等に広げて札に合わせる（札がはみ出すと隣とぶつかる）
+    const labelW = g.label === '' ? 0 : textW(g.label, 10.5) + 24;
+    const colsW = cols.reduce((a, c) => a + c.w, 0);
+    if (labelW > colsW) for (const c of cols) c.w += (labelW - colsW) / cols.length;
+    const gw = Math.max(colsW, labelW);
+    if (g.label !== '') {
+      parts.push(`<rect x="${r1(x + (gw - labelW) / 2)}" y="68" width="${r1(labelW)}" height="26" rx="13"`
+        + ` fill="#fff" stroke="${t.line}"/>`
+        + `<text x="${r1(x + gw / 2)}" y="85" font-size="10.5" font-weight="700" fill="${t.ink}"`
+        + ` text-anchor="middle">${esc(g.label)}</text>`);
+    }
+    let cx = x;
+    for (const c of cols) {
+      parts.push(`<rect x="${r1(cx)}" y="${FIG_CELL_Y}" width="${r1(c.w)}" height="${FIG_CELL_H}"`
+        + ` fill="${t.cell}" stroke="${t.cellLine}" stroke-width="1"/>`
+        + `<text x="${r1(cx + c.w / 2)}" y="130" font-size="11.5" font-weight="700" fill="#0E2A47"`
+        + ` text-anchor="middle">${esc(fitText(c.name, c.w - 8, 11.5))}</text>`
+        + (c.sample === '' ? ''
+          : `<text x="${r1(cx + c.w / 2)}" y="150" font-size="11" font-family="var(--mono)" fill="${t.ink}"`
+            + ` text-anchor="middle">${esc(fitText(c.sample, c.w - 8, 11))}</text>`));
+      cx += c.w;
+    }
+    // かたまりの間の記号。でき上がりの前だけ「＝」にして、そこが結果だと分かるようにする
+    if (gi > 0) {
+      const eq = g.tone === 'result';
+      marks.push(`<text x="${r1(x - FIG_GAP / 2)}" y="144" font-size="16" font-weight="700"`
+        + ` fill="${eq ? STEP_TONE.result.ink : '#B9C6D6'}" text-anchor="middle">${eq ? '＝' : '＋'}</text>`);
+    }
+    x += gw + FIG_GAP;
+  });
+  const w = r1(x - FIG_GAP + FIG_PAD);
+  const last = f.groups[f.groups.length - 1];
+  const alt = `1行に列が足されて ${last.columns[last.columns.length - 1]?.name ?? ''} ができるまでの様子`;
+  return `<svg viewBox="0 0 ${w} 180" role="img" aria-label="${esc(alt)}">${parts.join('')}${marks.join('')}</svg>`;
+}
+
+/** 02-1 に置く「作られ方（イメージ）」の図（見出し・図・読み方） */
+function renderHowMadeFigure(f: ReportHowMadeFigure): string {
+  return `<figure class="fig">
+      <div class="fig-h">作られ方（イメージ）${f.note === '' ? '' : `<span>${esc(f.note)}</span>`}</div>
+      <div class="map-scroll">${renderHowMadeFigureSvg(f)}</div>
+      ${f.steps.length === 0 ? '' : `<figcaption>${renderMiniSteps(f.steps)}</figcaption>`}
+    </figure>`;
+}
+
 /** 差し込み位置で受け取る自動生成分。ブロック指定が無い帳票では従来の順（レシピ→関係図）で出す */
 interface AutoBlocks { recipes: string; graph: string }
 
@@ -1983,12 +2059,19 @@ function renderFlowSvg(b: Extract<ReportOutputBlock, { kind: 'flow' }>, name: st
         : `<text x="298" y="${y + 15}" font-size="9.5" fill="#7A8794" text-anchor="end">${esc(b.sourceNote)}</text>`)
       + `<path d="M308,${y + 22} C338,${y + 22} 342,${mid} 366,${mid}" fill="none" stroke="#B9C6D6" stroke-width="1.4"/>`;
   }).join('');
+  // 突き合わせる先は1段目（土台）なので、矢印は1段目の高さへ上げてつなぐ。
+  // 高さの中央へまっすぐ引くと、段が3つのときは矢印が2段目のまん中に入り、
+  // 「2段目へ突き合わせている」ように読めてしまう（段の位置は動かさない）
+  const stage0Mid = mid - (74 * m - 22) / 2 + 26;
+  const keyOut = (x0: number): string =>
+    `<path d="M${x0},${mid} C${x0 + 34},${mid} 592,${stage0Mid} 626,${stage0Mid}"`
+    + ` fill="none" stroke="#7A8794" stroke-width="1.6" marker-end="url(#${arrow})"/>`;
   const key = kw === 0
-    ? `<path d="M366,${mid} L626,${mid}" fill="none" stroke="#7A8794" stroke-width="1.6" marker-end="url(#${arrow})"/>`
+    ? keyOut(366)
     : `<text x="${372 + kw / 2}" y="${mid - 24}" font-size="10" fill="#7A8794" text-anchor="middle">突き合わせるもの</text>`
       + `<rect x="372" y="${mid - 16}" width="${kw}" height="32" rx="16" fill="#EAF2FB" stroke="#C9DEF4"/>`
       + `<text x="${372 + kw / 2}" y="${mid + 5}" font-size="12.5" font-weight="700" fill="#1F5FAE" text-anchor="middle">${esc(b.key)}</text>`
-      + `<path d="M${372 + kw},${mid} L626,${mid}" fill="none" stroke="#7A8794" stroke-width="1.6" marker-end="url(#${arrow})"/>`;
+      + keyOut(372 + kw);
   const stages = b.stages.map((st, i) => {
     const y = mid - (74 * m - 22) / 2 + 74 * i;
     const last = i === m - 1;
@@ -2061,6 +2144,16 @@ function renderOutputBlock(b: ReportOutputBlock, mark: string, uid: string, auto
       ${b.note === '' ? '' : `<p class="tbl-note">${fill(b.note, nm)}</p>`}
     </div>`).join('\n    ');
     }
+    case 'steps':
+      // 流れ図の1段の中がさらに「集計 → 演算 → 配賦」と分かれている手順は、
+      // 図に押し込むと文字が潰れる。ステップごとのカードに分けて言葉で置く
+      return (b.title === '' ? '' : `<p class="sub-lede">${esc(b.title)}</p>\n    `)
+        + b.cards.map(c => `<div class="stepcard">
+      ${c.title === '' ? '' : `<div class="stepcard-h">${esc(c.title)}</div>`}
+      ${c.text === '' ? '' : `<p class="stepcard-p">${c.text}</p>`}
+      ${c.steps.length === 0 ? '' : renderMiniSteps(c.steps)}
+      ${c.note === '' ? '' : `<p class="tbl-note">${c.note}</p>`}
+    </div>`).join('\n    ');
     case 'recipes': return auto.recipes;
     case 'graph': return auto.graph;
   }
@@ -3175,7 +3268,7 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   // 何かしらある案件だけ。何も無いまま節を作ると、見出しだけの空の節が読み合わせの先頭に来る。
   const reproduceItems = spec.reproduce.length > 0 ? spec.reproduce : spec.overview;
   const assumeItems = spec.assumptions.length > 0 ? spec.assumptions : spec.notes;
-  const hasOutcome = reproduceItems.length > 0 || spec.howMade.length > 0
+  const hasOutcome = reproduceItems.length > 0 || spec.howMade.length > 0 || spec.howMadeFigure !== null
     || assumeItems.length > 0 || spec.sheetGuide.length > 0;
   const secOn = {
     inventory: spec.sections.inventory,
@@ -3198,17 +3291,13 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   // 小見出しの番号は「3-1」の形（節番号の 0 詰めは外す）。
   const flowNo = noFlow.replace(/^0/, '') || '3';
   let subNo = 0;
-  // 03 の各節は同じつながりを別の切り口から見たもの。切り口を札で添えないと、
-  // 読む側は節ごとに「前と同じ話か」を判断しながら読むことになる。
-  const subH = (title: string, lens = '') =>
-    `<h3 class="sub-h"><span class="n">${flowNo}-${++subNo}</span>　${esc(title)}`
-    + `${lens ? `<span class="lens">切り口：${esc(lens)}</span>` : ''}</h3>`;
+  const subH = (title: string) =>
+    `<h3 class="sub-h"><span class="n">${flowNo}-${++subNo}</span>　${esc(title)}</h3>`;
   // 02 の小見出しも同じ形。節番号が違うだけなので採番だけ別に持つ
   const outcomeNo = noOutcome.replace(/^0/, '') || '2';
   let subNoOut = 0;
-  const subHOut = (title: string, lens = '') =>
-    `<h3 class="sub-h"><span class="n">${outcomeNo}-${++subNoOut}</span>　${esc(title)}`
-    + `${lens ? `<span class="lens">切り口：${esc(lens)}</span>` : ''}</h3>`;
+  const subHOut = (title: string) =>
+    `<h3 class="sub-h"><span class="n">${outcomeNo}-${++subNoOut}</span>　${esc(title)}</h3>`;
 
   const dateStr = input.generatedAt.toISOString().slice(0, 10);
   // 本文（ヘッダ）は和暦式の表記にする。フッタの生成日時は機械可読のまま dateStr を使う
@@ -3399,33 +3488,38 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
       const fileNote = spec.fileNotes.find(n => n.file === s.filename)?.note ?? '';
       // 一覧を添えるのは、そのブックの中の集計について一言いただいているファイルだけ。
       // 全ファイルに 30 行の表を付けると、01 が関係表の束になって読み合わせで開けなくなる。
-      const inner = ownPairs.length === 0 || fileNote === '' || !spec.items.detailLogic ? '' : (() => {
+      // 関係の一覧（詳細な折りたたみ）は、「表と列の構成」と同じ深さの兄弟として置く。
+      // rbody の中に入れると左端の余白が1段分深くなり、隣の「表と列の構成を開く」と
+      // インデントがそろわなくなる。intro（見出しと件数の一文）だけ rbody に残す
+      const innerParts = ownPairs.length === 0 || fileNote === '' || !spec.items.detailLogic ? null : (() => {
         const { rows, omitted } = buildDetailRows(ownPairs, labels, pairKeys, copyQuestionByPair, regions);
-        return `<p class="sub-lede">シートの中の集計（付録）</p>
+        const intro = `<p class="sub-lede">シートの中の集計（付録）</p>
         <p class="graph-guide">${sentences(
           fileNote,
           `数式でつながっている箇所は、このファイルの中で <b>${ownPairs.length}</b> 件ございました。`,
           omitted > 0 ? `そのうち流れの順に上位 ${rows.length} 件を下に載せております。` : '',
-        )}</p>
-        <details class="fileblk">
-          <summary><b>関係の一覧を開く</b><span class="rows">${rows.length} 件</span></summary>
-          <div style="overflow-x:auto">
-            <table class="ot dl">
-              <tr><th>元の表・列</th><th>キー</th><th>処理</th><th>先の表・列</th><th>根拠</th><th>確度</th></tr>
-              ${rows.join('\n              ')}
-            </table>
-          </div>
-        </details>`;
+        )}</p>`;
+        const details = `<details class="fileblk">
+        <summary><b>関係の一覧を開く</b><span class="rows">${rows.length} 件</span></summary>
+        <div style="overflow-x:auto">
+          <table class="ot dl">
+            <tr><th>元の表・列</th><th>キー</th><th>処理</th><th>先の表・列</th><th>根拠</th><th>確度</th></tr>
+            ${rows.join('\n              ')}
+          </table>
+        </div>
+      </details>`;
+        return { intro, details };
       })();
       return `    <details class="fileblk${isOut ? ' out' : ''}">
       <summary>${head}</summary>
       <div class="rbody">
         <!-- そのブックについて伺っている一言は、中身より先に置く（何のブックかが分かってから中身を読む） -->
-        ${fileNote !== '' && inner === '' ? `<p class="graph-guide">${fileNote}</p>` : ''}
+        ${fileNote !== '' && innerParts === null ? `<p class="graph-guide">${fileNote}</p>` : ''}
         ${isOut ? tabTable : `<p class="sub-lede">取込時にご指定・ご確認いただいたシートの役割</p>
         <div class="srchips">${roleChips || '<span class="dl-none">シート情報なし</span>'}</div>`}
-        ${inner}
+        ${innerParts?.intro ?? ''}
       </div>
+      ${innerParts?.details ?? ''}
       ${spec.items.sheetDetails ? `<details class="fileblk">
         <summary><b>表と列の構成を開く</b><span class="rows">${s.regionCount}表 ／ ${s.rowTotal.toLocaleString()}行</span></summary>
         <div class="rbody">
@@ -3478,27 +3572,35 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   // 03 の「見つけられませんでした」が解析漏れではなく、資料の作り方の話として読める。
   const howMadeNext = [
     formulaCount > 0 ? 'ブックの中の計算は数式が残っており、そのまま読み取れました。' : '',
+    // 貼り付けの箇所数は 01 のタイルではなくここで出す（受領データの話ではなく作られ方の話）
     copyCount > 0 || declaredOnlyPairs.length > 0
-      ? '一方<b>ブックをまたぐ受け渡しは値を貼る形</b>のため数式が残らず、ファイルだけでは追いきれませんでした。' : '',
+      ? `一方<b>ブックをまたぐ受け渡しは値を貼る形</b>のため数式が残らず、ファイルだけでは追いきれませんでした`
+        + `${pasteTabCount > 0 ? `（${pasteTabCount}タブ）` : ''}。` : '',
     secOn.flow ? `そこは上のご説明を基に、${noFlow} で1つずつ確認させていただけますでしょうか。` : '',
   ].filter(Boolean).join('');
 
   // 表紙のすぐ下に置く道案内。節の並びと、それぞれで何をするかを1行ずつ。
   // 「はじめに（全体像）」はここではなく 02-1「再現するもの」で読ませる（結論と根拠を同じ節に置く）。
+  // text は本文と同じく sentences() を通す（文の途中で折り返さない）。
+  // ここを素の文字列連結にすると、この節だけ「相違する／点は」のように文節の途中で折れる。
   const roadmap: { no: string; title: string; text: string }[] = [
     secOn.inventory ? { no: noInventory, title: '受領データ一覧',
-      text: 'いただいたファイルと、その中のタブがそれぞれ何のためのものかを確認します。' } : null,
+      text: sentences('いただいたファイルと、その中のタブがそれぞれ何のためのものかを確認します。') } : null,
     secOn.outcome ? { no: noOutcome, title: '再現するアウトプットの確認',
-      text: `kpiee で<b>何を再現するのか</b>と、伺っている作り方・今回の前提をご確認いただきます。`
-        + `以降の内容はここを前提に組み立てておりますので、はじめに置いております。` } : null,
+      text: sentences(
+        `kpiee で<b>何を再現するのか</b>と、伺っている作り方・再現するうえでの前提をご確認いただきます。`,
+        `以降の内容はここを前提に組み立てておりますので、はじめに置いております。`,
+      ) } : null,
     secOn.flow ? { no: noFlow, title: 'ロジックの確認',
-      text: `<b>再現するアウトプットを1つずつ</b>、何から・何を突き合わせて作られているかを図で確認します。`
-        + `相違する点は図の下の欄にご記入いただけますと幸いです。`
-        + `${checkRange ? `あわせて、その場で伺いたい点を <b>${checkRange}</b> として図のそばに置いております。` : ''}` } : null,
+      text: sentences(
+        `<b>再現するアウトプットを1つずつ</b>、何から・何を突き合わせて作られているかを図で確認します。`,
+        `相違する点は図の下の欄にご記入いただけますと幸いです。`,
+        checkRange ? `あわせて、その場で伺いたい点を <b>${checkRange}</b> として図のそばに置いております。` : '',
+      ) } : null,
     secOn.questions ? { no: noQuestions, title: 'ご確認いただきたい点',
-      text: `${secOn.flow ? `${noFlow} で伺う内容のほかに、` : ''}いただいたファイルからは判断がつかなかった点をまとめています。` } : null,
+      text: sentences(`${secOn.flow ? `${noFlow} で伺う内容のほかに、` : ''}いただいたファイルからは判断がつかなかった点をまとめています。`) } : null,
     secOn.nextSteps ? { no: noNext, title: '今後の進め方',
-      text: 'この読み合わせのあと、どのように進めるかをご説明します。' } : null,
+      text: sentences('この読み合わせのあと、どのように進めるかをご説明します。') } : null,
   ].filter((r): r is { no: string; title: string; text: string } => r !== null);
 
   // 表題。冒頭に節の並び（01→02→…）は書かない。すぐ下に節そのものが続くため重複になる。
@@ -3568,8 +3670,9 @@ ${secOn.inventory ? `
       )}</p>
     </div>
     <div class="tiles">
-      <!-- 数えているものを、読み手の関心の順（何を作るのか → 何をもらったか → どこが
-           Excel から追えないか → 何を確認するか）に並べる。解析の規模（表数・関係数）は出さない -->
+      <!-- ここは受領データの話だけを数える（何を作るのか → 何をもらったか → その中身）。
+           「貼り付けで追えない箇所」は作られ方の話なので 02 の本文へ、「ご確認いただきたい点」は
+           04 の話なのでその節へ置く。解析の規模（表数・関係数）は出さない -->
       ${finalSheetNames.length > 0 ? `<div class="tile out"><div class="tl">再現するアウトプット</div><div class="tv">${finalSheetNames.length}<small>シート</small></div>
         <div class="tsub">${esc(shortText(finalSheetNames.join(' ／ '), 80))}</div></div>` : `<div class="tile out"><div class="tl">最終アウトプット</div><div class="tv">${outStats.length}<small>ファイル</small></div>
         <div class="tsub">${outStats.length > 0 ? esc(shortText(outStats.map(s => s.filename).join('、'), 38)) : '未特定'}</div></div>`}
@@ -3577,11 +3680,8 @@ ${secOn.inventory ? `
         <div class="tsub">${[srcFileCount > 0 ? `元データ ${srcFileCount}` : '', masterFileCount > 0 ? `マスタ ${masterFileCount}` : '',
           midFileCount > 0 ? `中間ファイル ${midFileCount}` : '', outStats.length > 0 ? `最終アウトプット ${outStats.length}` : '',
         ].filter(Boolean).join(' ／ ') || `${sheetTotal} シート`}</div></div>
-      ${pasteTabCount > 0 ? `<div class="tile"><div class="tl">貼り付けで受け渡している箇所</div><div class="tv">${pasteTabCount}<small>タブ</small></div>
-        <div class="tsub">Excel に根拠が残らないため、${secOn.outcome ? `${noOutcome} のご説明で補っています` : 'ご説明で補っています'}</div></div>` : `<div class="tile"><div class="tl">受領ファイルのシート</div><div class="tv">${sheetTotal}<small>シート</small></div>
-        <div class="tsub">この中から再現の対象を選んでいます</div></div>`}
-      <div class="tile warn"><div class="tl">ご確認いただきたい点</div><div class="tv">${questions.length}<small>件</small></div>
-        <div class="tsub">${checkRange ? `このほか、各アウトプットについては ${noFlow} の中で直接伺います` : noQuestions ? `${noQuestions} をご覧ください` : 'お打ち合わせでご相談'}</div></div>
+      <div class="tile"><div class="tl">受領ファイルのシート</div><div class="tv">${sheetTotal}<small>シート</small></div>
+        <div class="tsub">この中から再現の対象を選んでいます</div></div>
     </div>
     ${spec.items.fileTable ? `
     <h3 class="sub-h">ファイルごとの役割と中身</h3>
@@ -3600,8 +3700,8 @@ ${secOn.outcome ? `
         'ここが出発点になりますので、はじめにご確認いただけますでしょうか。',
       )}</p>
     </div>
-    ${reproduceItems.length > 0 || spec.howMade.length > 0 ? `
-    ${subHOut('伺っている作り方', '貴社のご説明')}
+    ${reproduceItems.length > 0 || spec.howMade.length > 0 || spec.howMadeFigure ? `
+    ${subHOut('伺っている作り方')}
     <p class="graph-guide">${sentences(
       // 出典名に「A と B」が入ることがあるので、ファイルの中身との間は読点で切る
       // （「要件定義シートと試算手順とファイルの中身から」のように「と」が並ぶのを防ぐ）
@@ -3616,7 +3716,7 @@ ${secOn.outcome ? `
         ${reproduceItems.map(o => `<li><b>${esc(o.label)}</b>${o.text.startsWith('（') ? '' : '　'}${o.text}</li>`).join('\n        ')}
       </ul>
     </div>` : ''}
-    ${spec.howMade.length > 0 ? `
+    ${spec.howMadeFigure ? renderHowMadeFigure(spec.howMadeFigure) : spec.howMade.length > 0 ? `
     <div class="summary">
       <div class="stitle">作られ方</div>
       <ul>
@@ -3625,8 +3725,11 @@ ${secOn.outcome ? `
     </div>` : ''}
     ${howMadeNext ? `<p class="graph-guide">${howMadeNext}</p>` : ''}` : ''}
     ${assumeItems.length > 0 ? `
-    ${subHOut('今回の前提', 'kpiee 側の作り')}
-    <p class="graph-guide">kpiee 側の作りとして、今回は次の前提で考えております。ここもあわせてご確認いただけますでしょうか。</p>
+    ${subHOut('再現するうえでの前提')}
+    <p class="graph-guide">${sentences(
+      'いただいた資料をこう読み、kpiee 側ではこう作る、という前提を置いております。',
+      'ここもあわせてご確認いただけますでしょうか。',
+    )}</p>
     <div class="summary">
       <ul>
         ${assumeItems.map(n => `<li>${n}</li>`).join('\n        ')}
@@ -3666,7 +3769,7 @@ ${secOn.flow ? `
       )}</p>
     </div>
     ${showFileFlow ? (fileFlow ? `
-    ${subH(stepFlow ? 'ファイルどうしの全体関係図（伺った作成手順）' : 'ファイルどうしの全体関係図', 'ファイル単位')}
+    ${subH(stepFlow ? 'ファイルどうしの全体関係図（伺った作成手順）' : 'ファイルどうしの全体関係図')}
     ${stepFlow ? `<ul class="graph-guide">
       <li>各ステップの右端にある ${esc(stepFlow.backbone)} が<b>土台</b>です。左の丸が、そのステップで突き合わせる受領ファイルです。</li>
       <li><b>＋</b> は、そのステップで土台の表に足される列です。上から順に足していき、最後に${stepFlow.output === '' ? '' : ` ${esc(stepFlow.output)} `}になります。</li>
@@ -3733,23 +3836,8 @@ ${secOn.flow ? `
       // この帳票の読み方（伺った内容）。指定があれば、その並びどおりに置いていく
       const plan = planFor(spec.outputPlans, sec.filename);
       return `
-    ${subH(`最終アウトプット${OUT_NO[si] ?? `(${si + 1})`}　${sec.filename}`, 'ブックの中')}
-    <div class="colchips tsheets"><span class="tsh">この中で再現する対象のシート</span>${sec.finalSheets.map(sh => `<span class="colchip">${esc(sh)}</span>`).join('')}</div>
-    ${plan?.blocks.some(b => 'title' in b && b.title.includes('帳票の形')) ? '' : (() => {
-      // 再現する帳票が「縦に何・横に何が並び、どれが合計か」を先に置く。ここが合っていないと
-      // ダッシュボードの軸がずれるので、関係図より前に読んでいただく。
-      // 帳票の形を言葉でいただいている場合（同名のブロックがある）は、そちらを使う
-      const shapes = sec.finalSheets.slice(0, SHAPE_SHEET_CAP)
-        .map(sh => buildSheetShape(regions, sec.file, sh))
-        .filter((s): s is SheetShape => s !== null);
-      if (shapes.length === 0) return '';
-      return `<p class="sub-lede">この帳票の形</p>\n    `
-        + shapes.map(s => renderSheetShape(s, shapes.length > 1 || s.sheet !== sec.filename)).join('\n    ');
-    })()}
-    ${sec.blocks.length === 0 ? `<p class="sec-lede"><b>ほかのファイルからこの帳票への受け渡しは、数式の形では見つけられませんでした。</b>`
-      + `${srcQuestionRef ? `確認事項の <b>${srcQuestionRef}</b> に記載しております。` : 'お打ち合わせでご確認をお願いいたします。'}`
-      + 'ブックの中での計算は、下の図でご覧いただけます。</p>' : ''}
-    ${secPastes.length > 0 ? `<p class="graph-guide">ブックの中の ${secPastes.length} シートは、受領ファイルを貼り付けたものと見ております。その入手元を図の<b>点線</b>で結んでいます（列の見出しの一致、または伺った内容が根拠です）。読み合わせでこの対応が合っているかをご確認ください。</p>` : ''}
+    ${subH(`最終アウトプット${OUT_NO[si] ?? `(${si + 1})`}　${sec.filename}`)}
+    <div class="colchips tsheets"><span class="tsh">この中で再現する対象のシート</span>${sec.finalSheets.map(sh => `<span class="colchip out">${esc(sh)}</span>`).join('')}</div>
     ${(() => {
       // 数式に残らない受け渡しは、伺った内容が唯一の根拠になる。それを教えていただいて
       // いるファイルでは、「分かりません」ではなく「こう理解しております」の形で出す
@@ -3807,7 +3895,7 @@ ${secOn.flow ? `
     }).join('\n')}
 
     ${isolatedFiles.length > 0 ? `
-    ${subH('つながりが検出できなかったファイル', 'つながり未検出')}
+    ${subH('つながりが検出できなかったファイル')}
     <div class="lb iso">
       <div class="lb-head"><span class="lb-no">—</span>
         <div><b>${isolatedFiles.map(s => esc(s.filename)).join('、')}</b></div>
@@ -3937,15 +4025,13 @@ h2{font-family:var(--disp);font-weight:700;font-size:26px;color:var(--ink);line-
 /* 本文の幅は図や表と同じにする。ここだけ 46em で止めると、右側が大きく空いた状態で
    行が折り返り、「なぜここで切れたのか」が分からない見え方になる */
 .sec-lede{margin-top:12px;color:var(--text)}
-.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
+.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
 .tile{background:#fff;border:1px solid var(--line);border-radius:16px;padding:20px 22px}
 .tile .tl{font-size:12px;color:var(--sub);letter-spacing:.04em}
 .tile .tv{font-family:var(--mono);font-size:30px;color:var(--ink);line-height:1.4;margin-top:2px}
 .tile .tv small{font-size:14px;color:var(--sub);margin-left:2px}
 /* タイルの補足行。数字だけでは「で、それが何なのか」が伝わらないので、対象名や参照先を1行添える */
 .tile .tsub{font-size:11.5px;color:var(--sub);line-height:1.5;margin-top:4px;overflow-wrap:anywhere}
-.tile.warn{border-top:4px solid var(--amber)}
-.tile.warn .tv{color:var(--amber)}
 /* 最終アウトプット＝kpiee で再現する対象。読み合わせの目的地なので色で際立たせる */
 .tile.out{border-top:4px solid var(--red)}
 .tile.out .tv{color:var(--red)}
@@ -3957,17 +4043,23 @@ h2{font-family:var(--disp);font-weight:700;font-size:26px;color:var(--ink);line-
 .sum-h{font-family:var(--disp);font-weight:700;font-size:19px;color:var(--ink)}
 .sum-sub{font-size:12px;color:var(--sub);margin-top:2px}
 .sumlist{list-style:none;display:flex;flex-direction:column;gap:13px;margin-top:18px}
-/* 左の見出しは番号＋節名で必ず2行になる。本文が1行の行を上端でそろえると番号の横だけに
-   文字が来て上に寄って見えるので、中央でそろえて番号と節名の間に置く */
-.sumlist li{display:flex;gap:16px;align-items:center}
-/* 左の見出し語は、読み合わせで「ここの話です」と指すための目印 */
-/* 節番号と節名を自動折り返しに任せると、節名の中に句切り（「の」など）がある行だけ
-   「02 ロジックの」／「確認」のように途中で折れて、行ごとに見え方が変わってしまう。
-   番号を必ず1行目、節名を必ず2行目に固定し、幅は最も長い節名が1行に収まるまで広げる。
-   行送りは倍率ではなく実寸をそろえる（12px×2.1＝25.2px＝右の 14px×1.8） */
-.sumlist .sk{flex:0 0 136px;font-size:12px;font-weight:700;color:var(--blue);letter-spacing:.04em;line-height:2.1}
-.sumlist .sk .skn{display:block}
+/* 左の見出しを番号／節名の2行に折って中央でそろえると、本文が1行の項（01・04・05）は
+   本文が番号と節名の間に落ちて、左右どちらの行とも合わない。番号＋節名を1行に置き、
+   右の本文の1行目とベースラインでそろえる */
+.sumlist li{display:flex;gap:16px;align-items:baseline}
+/* 左の見出し語は、読み合わせで「ここの話です」と指すための目印。
+   幅は最も長い節名（13文字ぶん）が1行に収まる実寸。
+   行送りは倍率ではなく実寸をそろえてあるので（12px×2.1＝25.2px＝右の 14px×1.8）、
+   節名が長くて2行に折れた案件でも2行目どうしがそろう。
+   折れた2行目は番号の下に潜らせず、ぶら下げインデントで節名の頭にそろえる */
+.sumlist .sk{flex:0 0 196px;padding-left:22px;text-indent:-22px;font-size:12px;font-weight:700;color:var(--blue);letter-spacing:.04em;line-height:2.1}
+/* inline-block はそれ自体が text-indent を受けるので、番号側では打ち消す */
+.sumlist .sk .skn{display:inline-block;width:22px;text-indent:0;font-family:var(--mono)}
 .sumlist .sv{flex:1;min-width:0;font-size:14px;line-height:1.8}
+/* 本文も他の段落と同じく文単位で折り返す（.s）。inline-block は既定で「最終行」の
+   ベースラインを返すので、文が2行になると左の見出しがその最終行まで引き下げられる。
+   top でそろえると行送りが同じぶん1行目のベースラインが一致する */
+.sumlist .sv .s{vertical-align:top}
 .sum-next{margin-top:18px;padding-top:15px;border-top:1px solid var(--line);font-size:13px}
 .sum-next a{color:var(--blue);text-decoration:none;border-bottom:1px solid #A9C8E8;font-weight:700}
 .sum-next a:hover{border-bottom-color:var(--blue)}
@@ -4039,6 +4131,7 @@ details.fileblk[open]>summary::before{transform:rotate(90deg)}
 .colchip.key{border-color:#C9DEF4;background:var(--blue-bg);color:var(--blue);font-weight:700}
 .colchip.formula{border-color:#BFE5D3;background:var(--green-bg);color:var(--green)}
 .colchip.manual{border-color:#F0D8B0;background:var(--amber-bg);color:var(--amber)}
+.colchip.out{border-color:#E8B8B8;background:var(--red-bg);color:var(--red);font-weight:700}
 .rnote{font-size:12px;color:var(--sub)}
 .key-note{font-size:12.5px;margin-top:8px}
 .key-note b{color:var(--ink)}
@@ -4106,7 +4199,7 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
   .qgrid dt{padding-top:6px}
   /* 幅が狭いと見出し語と本文が同じ行に並びきらず、本文が数文字ずつに折り返される */
   .sumlist li{flex-direction:column;gap:2px}
-  .sumlist .sk{flex:none;line-height:1.6}
+  .sumlist .sk{flex:none;line-height:1.6;padding-left:0;text-indent:0}
 }
 .via{font-family:var(--mono);font-size:10.5px;color:var(--sub);margin-left:8px;white-space:nowrap}
 
@@ -4125,13 +4218,17 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
 /* details の余白は .rbody が持っているが、包んでいない箇所（入れ子の開閉ブロックなど）では
    文字や表が枠線に貼りついて見える。直下の要素にも同じ左右の余白を入れてそろえる。
    関係図（map-*）は枠いっぱいに見せたいので左右の余白からは外す */
-.fileblk>*:not(summary):not(.rbody):not([class*="map-"]){padding-left:20px;padding-right:20px}
-.fileblk>summary+*:not(.rbody){margin-top:14px}
-.fileblk>*:not(summary):not(.rbody):last-child{padding-bottom:16px}
+.fileblk>*:not(summary):not(.rbody):not([class*="map-"]):not(.fileblk){padding-left:20px;padding-right:20px}
+.fileblk>summary+*:not(.rbody):not(.fileblk){margin-top:14px}
+.fileblk>*:not(summary):not(.rbody):last-child:not(.fileblk){padding-bottom:16px}
 /* 最終アウトプット＝kpiee で再現する目的地。01 はファイルとタブの一覧なので、
    どのブックのどのタブが目的地なのかを、開かなくても色で分かるようにする。
    色は表紙のタイル（.tile.out）と関係図の凡例で使っている赤にそろえる */
-.fileblk.out{border-left:4px solid var(--red)}
+/* 赤の縁は border を太らせず、枠の外に 3px 描き足して作る。border-left を 4px にすると
+   その3px ぶん内側が狭くなり、中の開閉ブロック（表と列の構成）だけ、ほかのファイルより
+   細く・右にずれて見える。影は場所を取らないので、どのファイルも枠の寸法が同じになる。
+   背景を印刷しない設定でも、左の border が赤い線として残る */
+.fileblk.out{border-left-color:var(--red);box-shadow:-3px 0 0 var(--red)}
 .fileblk.out>summary .rnote{color:var(--red)}
 .ot tr.out td{background:var(--red-bg)}
 .ot tr.out td:first-child b{color:var(--red)}
@@ -4174,6 +4271,26 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
 .kh span{display:block;font-size:10.5px;color:var(--sub)}
 /* ---- 02「何と何を、何で突き合わせて、何ができるか」---- */
 .rcp{border:1px solid var(--line);border-radius:14px;padding:14px 16px 8px;margin-top:14px;background:#fff}
+/* ---- 例の値を入れた1行の図と、その読み方 ---- */
+/* figure は操作版のグラフでも使うので、こちらは .fig に限って当てる */
+figure.fig{background:#fff;border:1px solid var(--line);border-radius:14px;padding:22px 24px 18px;margin:0 0 20px}
+figure.fig figcaption{font-size:13px;color:var(--sub);line-height:1.8;margin-top:14px;padding-top:13px;border-top:1px solid var(--line)}
+figure.fig figcaption b{color:var(--ink)}
+.fig-h{font-family:var(--disp);font-size:15.5px;font-weight:700;color:var(--ink);margin-bottom:16px}
+/* 見出しに添える注記（例の値であることわり）は、見出しと同じ行に小さく置く */
+.fig-h span{font-family:var(--body);font-size:12px;font-weight:400;color:var(--sub);margin-left:8px}
+/* ---- 手順の内訳カード ---- */
+.stepcard{border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:10px;background:#fff}
+.stepcard-h{font-size:13.5px;font-weight:700;color:var(--ink);margin-bottom:8px}
+.stepcard-p{font-size:12.5px;color:var(--text);line-height:1.8}
+.stepcard .tbl-note{margin-top:10px}
+.mini-steps{display:flex;flex-direction:column;gap:2px}
+/* 札と本文は1行目でそろえる（本文が2行になっても札が下がらない） */
+.mini-step{display:flex;align-items:baseline;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)}
+.mini-step:last-child{border-bottom:none}
+.mini-step .tag{flex:none;font-size:11.5px;font-weight:700;border-radius:6px;padding:3px 10px;white-space:nowrap}
+.mini-step .md{font-size:12px;color:var(--text);line-height:1.7}
+${STEP_TONE_CSS}
 .rcp-f{font-size:11.5px;font-weight:700;color:var(--sub);letter-spacing:.04em;margin-bottom:4px}
 .rcp-t{font-size:13.5px;line-height:1.9;margin-bottom:6px}
 .rcp-t b{color:var(--ink)}
@@ -4189,11 +4306,6 @@ table.dl td{vertical-align:top}
 .sub-h{font-family:var(--disp);font-weight:700;font-size:18px;color:var(--ink);margin:30px 0 6px}
 /* 小見出しの番号（2-1 など）も口頭で指す。本文と同じ濃さでは埋もれる */
 .sub-h .n{color:var(--blue);margin-right:2px}
-/* 各節は同じ関係を別の切り口で見ている。切り口を書かないと、
-   読む側は節ごとに「前と同じ話か」を判断しながら読むことになる */
-.sub-h .lens{font-family:var(--body);font-size:11.5px;font-weight:700;letter-spacing:.04em;
-  color:var(--blue);background:var(--blue-bg);border-radius:999px;padding:3px 11px;
-  margin-left:10px;vertical-align:2px;white-space:nowrap}
 .graph-guide{font-size:12.5px;color:var(--text);line-height:1.7;margin-bottom:12px}
 /* 図の凡例テキスト: 1行1項目で読ませる */
 ul.graph-guide{list-style:none;padding:0;display:flex;flex-direction:column;gap:4px}
