@@ -44,17 +44,20 @@ const html = buildRelationsReportHtml({
     howMade: ['元データ → 中間ファイル → 最終アウトプットです。'],
     // 図の指定が入っていれば、箇条書きの箱ではなく図のほうを出す
     howMadeFigure: {
+      title: '',
       note: '数値は説明のための例です。',
       groups: [
         { label: '元データ（土台）', tone: 'base', columns: [
           { name: '得意先', sample: '甲社' }, { name: '売上', sample: '500' },
         ] },
         { label: '足すもの', tone: 'ratio', columns: [{ name: '経費', sample: '80' }] },
+        { label: '手入力', tone: 'manual', columns: [{ name: '調整', sample: '0' }] },
         { label: '＝利益', tone: 'result', columns: [{ name: '利益', sample: '420' }] },
       ],
       steps: [
         { tag: '土台', tone: 'base', text: 'もとからある<b>売上</b>です。' },
         { tag: '足す', tone: 'ratio', text: '売上の比率で経費を配賦します。' },
+        { tag: '手入力', tone: 'manual', text: '調整額は数式が無いため、入力としていただきます。' },
       ],
     },
     assumptions: ['取込は縦持ちで揃える前提です。'],
@@ -95,8 +98,12 @@ const checks: [string, boolean][] = [
   ['作られ方の図が出る',
     html.includes('<figure class="fig">') && html.includes('作られ方（イメージ）')
     && html.includes('<figcaption>')],
-  ['図の指定があれば箇条書きの箱は出さない', !html.includes('<div class="stitle">作られ方</div>')],
+  // 図は箇条書きを置き換えず、その下に並ぶ（図に寄せた項目を箇条書きから外すのは指定側の仕事）
+  ['箇条書きの箱と図が並ぶ',
+    html.includes('<div class="stitle">作られ方</div>')
+    && html.indexOf('<div class="stitle">作られ方</div>') < html.indexOf('<figure class="fig">')],
   ['図の値と札が出る', html.includes('>甲社<') && html.includes('class="tag base"')],
+  ['手入力の色が出る', html.includes('class="tag manual"') && html.includes('.mini-step .tag.manual{')],
   ['図と札のCSSが入る', html.includes('figure.fig{') && html.includes('.mini-step .tag.ratio{')],
   // ステップ別の内訳カード
   ['ステップの内訳カードが出る',

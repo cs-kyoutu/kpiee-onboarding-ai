@@ -86,11 +86,12 @@ export interface ReportSheetOrigin {
 /**
  * 手順の1行につける札の色。何をしている段なのかを、色で見分けられるようにする。
  *   base   … 土台（もとからある数字）
- *   direct … そのまま付ける（比率を使わない付与）
+ *   direct … そのまま付ける（比率を使わない付与・数式で足すもの）
  *   ratio  … 比率で配る（配賦・按分）
+ *   manual … 手入力（数式が無く、kpiee では入力としていただくもの）
  *   result … でき上がり（最終の指標）
  */
-export type ReportStepTone = 'base' | 'direct' | 'ratio' | 'result';
+export type ReportStepTone = 'base' | 'direct' | 'ratio' | 'manual' | 'result';
 
 /** 手順の1行（左に札、右に説明）。図の下の読み方と、ステップの内訳カードで同じ形を使う */
 export interface ReportStepLine {
@@ -109,6 +110,8 @@ export interface ReportStepLine {
  * 伺った手順から描ける。例の値を入れた1行を絵にして、読み合わせの入口に置く。
  */
 export interface ReportHowMadeFigure {
+  /** 図の見出し。空なら「作られ方（イメージ）」 */
+  title: string;
   /** 見出しに添える注記（例: 数値は説明のための例（単位：万円）です。実際の値ではございません。） */
   note: string;
   /** 左から並べる列のかたまり。かたまりの間は「＋」、最後の result の前は「＝」でつなぐ */
@@ -204,9 +207,9 @@ export interface ReportSpec {
   /** 02-1「作られ方」。どのタブに何を入れて、どこがそれを拾うのかの説明。<b> は使える */
   howMade: string[];
   /**
-   * 02-1 の「作られ方」を、箇条書きの代わりに図で見せる指定。
-   * 入っていれば箇条書きの箱ではなくこの図を出す（同じ内容を二度読ませないため、
-   * 手順の文は図の下の steps に書く）。null なら従来どおり howMade の箱だけ。
+   * 02-1 の「作られ方」を絵で見せる指定。箇条書き（howMade）の下に置く。
+   * 図と同じ内容を箇条書きにも書くと二度読ませることになるので、
+   * 図に寄せた項目は howMade から外し、手順の文は図の下の steps に書く。
    */
   howMadeFigure: ReportHowMadeFigure | null;
   /** 02-1 の導入で名前を出す出典（例: 指示メモ（0. 20260807 受け渡しデータ））。空なら既定文だけ */
@@ -310,7 +313,7 @@ const asText = (v: unknown, max: number): string =>
 const asLines = (v: unknown, cap: number, max = MAX_LINE): string[] =>
   Array.isArray(v) ? v.map(x => asText(x, max)).filter(x => x !== '').slice(0, cap) : [];
 const asRecord = (v: unknown): Record<string, unknown> => (v ?? {}) as Record<string, unknown>;
-const STEP_TONES: ReportStepTone[] = ['base', 'direct', 'ratio', 'result'];
+const STEP_TONES: ReportStepTone[] = ['base', 'direct', 'ratio', 'manual', 'result'];
 /** 知らない色名は「土台」に寄せる（色が付かないより、既定の色で並んでいた方が読める） */
 const asTone = (v: unknown): ReportStepTone =>
   STEP_TONES.find(t => t === v) ?? 'base';
@@ -340,7 +343,10 @@ function normalizeHowMadeFigure(raw: unknown): ReportHowMadeFigure | null {
       }).filter(g => g.columns.length > 0).slice(0, MAX_FIG_GROUPS)
     : [];
   if (groups.length === 0) return null;
-  return { note: asText(o.note, MAX_NOTE_LEN), groups, steps: asStepLines(o.steps) };
+  return {
+    title: asText(o.title, MAX_GUIDE_CELL), note: asText(o.note, MAX_NOTE_LEN),
+    groups, steps: asStepLines(o.steps),
+  };
 }
 
 /** 03 のブロック1つ。kind が知らない値・中身が空のものは呼び出し側で落とす */

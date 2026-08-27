@@ -1944,6 +1944,8 @@ const STEP_TONE: Record<ReportStepTone, { ink: string; bg: string; cell: string;
   base: { ink: '#1F5FAE', bg: '#EDF4FC', cell: '#EDF4FC', cellLine: '#CFE0F3', line: '#8FB6DE' },
   direct: { ink: '#7B5EA7', bg: '#F1EDF8', cell: '#F1EDF8', cellLine: '#D9CEEB', line: '#B79FD1' },
   ratio: { ink: '#1E9E6A', bg: '#E9F7F0', cell: '#E9F7F0', cellLine: '#B6E2CD', line: '#7FCBA8' },
+  // 手入力は、関係図の手コピーや列の札と同じ橙。kpiee では入力としていただく箇所の色
+  manual: { ink: '#B96A00', bg: '#FFF4E3', cell: '#FFF4E3', cellLine: '#F0D8B0', line: '#E0B876' },
   // でき上がりは最終アウトプットの色（表紙のタイル・流れ図の最後の段と同じ赤）
   result: { ink: '#C0392B', bg: '#FBEFEF', cell: '#FBEFEF', cellLine: '#C0392B', line: '#C0392B' },
 };
@@ -2024,7 +2026,7 @@ function renderHowMadeFigureSvg(f: ReportHowMadeFigure): string {
 /** 02-1 に置く「作られ方（イメージ）」の図（見出し・図・読み方） */
 function renderHowMadeFigure(f: ReportHowMadeFigure): string {
   return `<figure class="fig">
-      <div class="fig-h">作られ方（イメージ）${f.note === '' ? '' : `<span>${esc(f.note)}</span>`}</div>
+      <div class="fig-h">${esc(f.title || '作られ方（イメージ）')}${f.note === '' ? '' : `<span>${esc(f.note)}</span>`}</div>
       <div class="map-scroll">${renderHowMadeFigureSvg(f)}</div>
       ${f.steps.length === 0 ? '' : `<figcaption>${renderMiniSteps(f.steps)}</figcaption>`}
     </figure>`;
@@ -3719,13 +3721,14 @@ ${secOn.outcome ? `
         ${reproduceItems.map(o => `<li><b>${esc(o.label)}</b>${o.text.startsWith('（') ? '' : '　'}${o.text}</li>`).join('\n        ')}
       </ul>
     </div>` : ''}
-    ${spec.howMadeFigure ? renderHowMadeFigure(spec.howMadeFigure) : spec.howMade.length > 0 ? `
+    ${spec.howMade.length > 0 ? `
     <div class="summary">
       <div class="stitle">作られ方</div>
       <ul>
         ${spec.howMade.map(n => `<li>${n}</li>`).join('\n        ')}
       </ul>
     </div>` : ''}
+    ${spec.howMadeFigure ? renderHowMadeFigure(spec.howMadeFigure) : ''}
     ${howMadeNext ? `<p class="graph-guide">${howMadeNext}</p>` : ''}` : ''}
     ${assumeItems.length > 0 ? `
     ${subHOut('再現するうえでの前提')}
