@@ -56,6 +56,22 @@ if (tableHit) html = html.replace(OLD_TABLE, NEW_TABLE);
 const subhHit = html.includes(OLD_SUBH);
 if (subhHit) html = html.replace(OLD_SUBH, NEW_SUBH);
 
+// 「受領ファイルのシート N シート」のタイル（解析の規模で、読み手が使う数字ではない）
+const tileHit = /<div class="tile"><div class="tl">受領ファイルのシート<\/div>[\s\S]*?<\/div><\/div>/.test(html);
+if (tileHit) {
+  html = html.replace(/\s*<div class="tile"><div class="tl">受領ファイルのシート<\/div>[\s\S]*?<\/div><\/div>/, '');
+  html = html.replace('.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}',
+    '/* タイルの数は案件によって変わる（最終アウトプットの出し方で1〜2枚）。\n'
+    + '   数を決め打ちにすると、2枚のときに右が大きく空く */\n'
+    + '.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:18px}');
+}
+
+// 02 の「ここが出発点になりますので…」（節の位置と道案内カードで分かる）
+const startHit = html.includes('ここが出発点になりますので');
+if (startHit) {
+  html = html.replace(/<span class="s">ここが出発点になりますので[^<]*<\/span>(<wbr>)?/, '');
+}
+
 // 04 の導入文（見出しと各カードで足りているので置かない）
 const ledeHit = /<p class="sec-lede" id="qlede">[\s\S]*?<\/p>/.test(html);
 if (ledeHit) html = html.replace(/\s*<p class="sec-lede" id="qlede">[\s\S]*?<\/p>/, '');
@@ -76,5 +92,7 @@ console.log(`札のCSS: ${cssHit ? '差し替えました' : '（すでに新し
   + ` ／ 表のCSS: ${tableHit ? '入れました' : '（すでに入っていました）'}`
   + ` ／ 小見出しの余白: ${subhHit ? '広げました' : '（すでに広げてありました）'}`
   + ` ／ 04 の導入文: ${ledeHit ? '外しました' : '（すでにありませんでした）'}`
+  + ` ／ シート数のタイル: ${tileHit ? '外しました' : '（すでにありませんでした）'}`
+  + ` ／ 02 の一文: ${startHit ? '外しました' : '（すでにありませんでした）'}`
   + ` ／ 幅を入れた塊: ${groups} 件`);
 for (const m of html.matchAll(/<div class="mini-steps" style="--tagw:(\d+)px">/g)) console.log(`  --tagw: ${m[1]}px`);

@@ -3707,8 +3707,6 @@ ${secOn.inventory ? `
         <div class="tsub">${[srcFileCount > 0 ? `元データ ${srcFileCount}` : '', masterFileCount > 0 ? `マスタ ${masterFileCount}` : '',
           midFileCount > 0 ? `中間ファイル ${midFileCount}` : '', outStats.length > 0 ? `最終アウトプット ${outStats.length}` : '',
         ].filter(Boolean).join(' ／ ') || `${sheetTotal} シート`}</div></div>
-      <div class="tile"><div class="tl">受領ファイルのシート</div><div class="tv">${sheetTotal}<small>シート</small></div>
-        <div class="tsub">この中から再現の対象を選んでいます</div></div>
     </div>
     ${spec.items.fileTable ? `
     <h3 class="sub-h">ファイルごとの役割</h3>
@@ -3726,9 +3724,10 @@ ${secOn.outcome ? `
   <div class="wrap">
     <div class="sec-head">
       <h2><span class="secno">${noOutcome}</span>再現するアウトプットの確認</h2>
+      <!-- 「はじめにご確認ください」の一文は置かない。節の位置（02）と道案内カードで
+           先に読む節だと分かっており、確認のお願いは各節の中身に付いている -->
       <p class="sec-lede">${sentences(
         'kpiee で再現する対象と、その作られ方について、弊社の理解をまとめました。',
-        'ここが出発点になりますので、はじめにご確認いただけますでしょうか。',
       )}</p>
     </div>
     ${reproduceItems.length > 0 || spec.howMade.length > 0 || spec.howMadeFigure ? `
@@ -4096,7 +4095,9 @@ h2{font-family:var(--disp);font-weight:700;font-size:26px;color:var(--ink);line-
 /* 本文の幅は図や表と同じにする。ここだけ 46em で止めると、右側が大きく空いた状態で
    行が折り返り、「なぜここで切れたのか」が分からない見え方になる */
 .sec-lede{margin-top:12px;color:var(--text)}
-.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+/* タイルの数は案件によって変わる（最終アウトプットの出し方で1〜2枚）。
+   数を決め打ちにすると、2枚のときに右が大きく空く */
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:18px}
 .tile{background:#fff;border:1px solid var(--line);border-radius:16px;padding:20px 22px}
 .tile .tl{font-size:12px;color:var(--sub);letter-spacing:.04em}
 .tile .tv{font-family:var(--mono);font-size:30px;color:var(--ink);line-height:1.4;margin-top:2px}
