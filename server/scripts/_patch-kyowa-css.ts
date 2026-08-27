@@ -56,6 +56,10 @@ if (tableHit) html = html.replace(OLD_TABLE, NEW_TABLE);
 const subhHit = html.includes(OLD_SUBH);
 if (subhHit) html = html.replace(OLD_SUBH, NEW_SUBH);
 
+// 04 の導入文（見出しと各カードで足りているので置かない）
+const ledeHit = /<p class="sec-lede" id="qlede">[\s\S]*?<\/p>/.test(html);
+if (ledeHit) html = html.replace(/\s*<p class="sec-lede" id="qlede">[\s\S]*?<\/p>/, '');
+
 // 塊ごとに、その中の札でいちばん長いものへ幅を合わせる
 let groups = 0;
 html = html.replace(/<div class="mini-steps"(?: style="[^"]*")?>([\s\S]*?)<\/div>\s*(?:<\/figcaption>|<p class="tbl-note"|<\/div>)/g,
@@ -71,5 +75,6 @@ writeFileSync(file, html, 'utf8');
 console.log(`札のCSS: ${cssHit ? '差し替えました' : '（すでに新しい指定でした）'}`
   + ` ／ 表のCSS: ${tableHit ? '入れました' : '（すでに入っていました）'}`
   + ` ／ 小見出しの余白: ${subhHit ? '広げました' : '（すでに広げてありました）'}`
+  + ` ／ 04 の導入文: ${ledeHit ? '外しました' : '（すでにありませんでした）'}`
   + ` ／ 幅を入れた塊: ${groups} 件`);
 for (const m of html.matchAll(/<div class="mini-steps" style="--tagw:(\d+)px">/g)) console.log(`  --tagw: ${m[1]}px`);

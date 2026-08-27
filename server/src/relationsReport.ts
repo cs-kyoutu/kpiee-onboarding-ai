@@ -3970,11 +3970,9 @@ ${secOn.questions ? `
   <div class="wrap">
     <div class="sec-head">
       <h2><span class="secno">${noQuestions}</span>ご確認いただきたい点　<span id="qcount">${questions.length}</span>件</h2>
-      <p class="sec-lede" id="qlede">${sentences(
-        `${secOn.flow ? `${noFlow} で伺う内容のほかに、` : ''}以下の <span id="qcount2">${questions.length}</span> 点は、いただいたファイルからは判断がつきませんでした。`,
-        'お打ち合わせの場で結構ですので、分かる範囲でお聞かせください。',
-        'メモ欄はこの画面に直接ご入力いただけます。入力内容はこのブラウザに保存され、印刷してもそのまま残ります。',
-      )}</p>
+      <!-- 節の導入文は置かない。見出し（ご確認いただきたい点 N 件）と、各カードの
+           「分かったこと／ご教示ください」で用件は足りており、メモ欄の使い方は
+           入力欄そのものに書いてある（この場でご入力いただけます） -->
       <!-- 読み合わせの前に、こちらで文面を直したり、要らない設問を消したりするための道具。
            編集内容はブラウザに保存され、「HTMLとして保存」で配布用のファイルにも焼き込める。 -->
       <div class="qedit-bar" id="qedit-bar" hidden>
