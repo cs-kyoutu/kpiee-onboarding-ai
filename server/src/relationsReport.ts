@@ -3873,9 +3873,17 @@ ${secOn.flow ? `
       // いるファイルでは、「分かりません」ではなく「こう理解しております」の形で出す
       const og = spec.sheetOrigins.find(o => o.file === sec.filename);
       if (og) {
-        return `<p class="graph-guide">数式・列見出しからは入手元を特定できなかったシートが ${secOrphans.length} 枚ありましたが、`
-          + `いただいた内容${noOutcome ? `（${noOutcome}）` : ''}で判明しております。この理解で合っているかをご確認ください。</p>\n`
-          + `<ul class="graph-guide">${og.items.map(it => `\n      <li><b>${esc(it.sheets)}</b> ＝ ${esc(it.from)}</li>`).join('')}\n    </ul>`;
+        // 「タブ ＝ 入手元」は対応そのものなので、箇条書きに並べず表にする。
+        // 箇条書きにすると ＝ の位置が行ごとにずれて、左右のどちらを読んでいるのか分からなくなる
+        return `<p class="graph-guide">${sentences(
+          `数式・列見出しからは入手元をたどれないシートが ${secOrphans.length} 枚ございました。`,
+          `入手元は伺った内容${noOutcome ? `（${noOutcome}）` : ''}で分かっておりますので、`
+            + '下の対応で合っているかをご確認ください。',
+        )}</p>\n    `
+          + renderSimpleTable({
+            title: '', head: ['シート', '入手元（伺った内容）'], note: '',
+            rows: og.items.map(it => [`<b>${esc(it.sheets)}</b>`, esc(it.from)]),
+          });
       }
       if (secOrphans.length === 0) return '';
       return `<p class="graph-guide">入手元を特定できなかったシートが ${secOrphans.length} 枚あります：`
@@ -4125,6 +4133,14 @@ h2{font-family:var(--disp);font-weight:700;font-size:26px;color:var(--ink);line-
 .ot th{background:var(--ink);color:#fff;padding:8px 12px;text-align:left;font-weight:500;white-space:nowrap}
 .ot td{padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
 .ot tr:last-child td{border-bottom:none}
+/* 列の区切り。長い文が入る表では、横線だけだと隣の列と地続きに見えて、
+   どこまでが「行」でどこからが「作り方」なのかを目で分けられない。
+   まとめ列（rowspan）があると行ごとにセル数が変わるので、左ではなく右に引く */
+.ot td{border-right:1px solid var(--line)}
+.ot th{border-right:1px solid rgba(255,255,255,.22)}
+.ot tr>td:last-child,.ot tr>th:last-child{border-right:none}
+/* まとめ列は、どこからどこまでが1つの塊かが分かるよう地色を敷く */
+.ot td[rowspan]{background:#F7F9FC}
 .ot td.mono{font-family:var(--mono);font-size:11.5px;white-space:nowrap}
 .ot td.r{text-align:right;font-family:var(--mono);font-size:11.5px}
 .tbl-note{font-size:11.5px;color:var(--sub);margin-top:8px}
