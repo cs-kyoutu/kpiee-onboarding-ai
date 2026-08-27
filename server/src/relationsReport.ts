@@ -3424,6 +3424,10 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
     { role: '独立', cls: 'iso', label: 'つながりが見つからなかったファイル' },
   ];
   const REGION_CAP_PER_FILE = 8;
+  // 01 で開くのは「どのファイルが何か」までにする。列構成と数式の根拠は、読み合わせでは
+  // 開かない資料なので付録へ回す（ファイルごとに開閉が2つ並ぶと、01 が資料の束になる）。
+  // ここに貯めたものを、最後の付録の節でまとめて出す
+  const fileAppendix: string[] = [];
   const renderFileBlock = (s: FileStat): string => {
     {
       const myRegions = regions.filter(r => r.file === s.label)
@@ -3538,6 +3542,20 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
       </details>`;
         return { intro, details };
       })();
+      // 細かい中身（関係の一覧・表と列の構成）は 01 には置かず、付録へ送る
+      const detail = [
+        innerParts?.details ?? '',
+        spec.items.sheetDetails ? `<details class="fileblk">
+        <summary><b>表と列の構成を開く</b><span class="rows">${s.regionCount}表 ／ ${s.rowTotal.toLocaleString()}行</span></summary>
+        <div class="rbody">
+          ${regionBlocks || '<p class="dl-none">表を検出できませんでした。</p>'}
+          ${moreRegions}
+        </div>
+      </details>` : '',
+      ].filter(x => x !== '').join('\n      ');
+      if (detail !== '') {
+        fileAppendix.push(`<p class="sub-lede">${esc(s.filename)}</p>\n      ${detail}`);
+      }
       return `    <details class="fileblk${isOut ? ' out' : ''}">
       <summary>${head}</summary>
       <div class="rbody">
@@ -3547,17 +3565,11 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
         <div class="srchips">${roleChips || '<span class="dl-none">シート情報なし</span>'}</div>`}
         ${innerParts?.intro ?? ''}
       </div>
-      ${innerParts?.details ?? ''}
-      ${spec.items.sheetDetails ? `<details class="fileblk">
-        <summary><b>表と列の構成を開く</b><span class="rows">${s.regionCount}表 ／ ${s.rowTotal.toLocaleString()}行</span></summary>
-        <div class="rbody">
-          ${regionBlocks || '<p class="dl-none">表を検出できませんでした。</p>'}
-          ${moreRegions}
-        </div>
-      </details>` : ''}
     </details>`;
     }
   };
+  // 表どうしの関係図も、読み合わせでは開かないので付録へ回す（本文は帳票の読み方だけにする）
+  const graphAppendix: string[] = [];
   const fileList = ROLE_GROUPS.map(g => {
     const list = [...fileStats.values()].filter(s => s.role === g.role)
       .sort((a, b) => (fileOrderNo(a.filename) - fileOrderNo(b.filename)) || (b.rowTotal - a.rowTotal));
@@ -3712,8 +3724,12 @@ ${secOn.inventory ? `
         <div class="tsub">この中から再現の対象を選んでいます</div></div>
     </div>
     ${spec.items.fileTable ? `
-    <h3 class="sub-h">ファイルごとの役割と中身</h3>
-    <p class="graph-guide">各行をクリックすると、そのファイルの<b>タブごとの役割と中身</b>が開きます。「何が並ぶタブか」は、いただいたファイルの見出しから読み取った内容です。</p>
+    <h3 class="sub-h">ファイルごとの役割</h3>
+    <p class="graph-guide">${sentences(
+      `受領した<b>${input.fileCount}ファイル</b>の一覧です。`,
+      '列構成や数式の根拠など、細かい中身は<b>付録</b>にまとめています。',
+      outStats.length > 0 ? '<b>最終アウトプット</b>のみ、タブごとの役割を開いてご確認いただけます。' : '',
+    )}</p>
 ${fileList}` : ''}
   </div>
 </section>` : ''}
@@ -3917,13 +3933,18 @@ ${secOn.flow ? `
         ${secPastes.length > 0 ? `<span class="li"><span class="sw dot" style="border-color:${DECLARED_ONLY.color}"></span>点線＝貼り付け元と見ている受領ファイル</span>` : ''}
       </div>
       ${spec.items.interactiveGraph ? '<p class="tbl-note only-print">※ 印刷では静止画になります。表をクリックすると計算ロジックが開きますので、詳しくはブラウザでご覧ください。</p>' : ''}`;
+      // 表どうしの関係図は、経路を追うときだけ開く資料。読み合わせでは使わないので付録へ送る
+      if (graphBody !== '') {
+        graphAppendix.push(`<p class="sub-lede">${esc(sec.filename)} の表どうしの関係図</p>
+      <details class="fileblk">
+        <summary><b>表どうしの関係図（クリックで開く）</b><span class="rows">細かい経路を追うとき用</span></summary>
+        ${graphBody}
+      </details>`);
+      }
       const auto: AutoBlocks = {
         recipes: sec.blocks.map((b, i) =>
           renderLogicBlock(b, i + 1, regions, graph.keyLinks ?? [], labels, fileNameOf, showEr)).join('\n'),
-        graph: graphBody === '' ? '' : `<details class="fileblk">
-      <summary><b>表どうしの関係図（クリックで開く・付録）</b><span class="rows">細かい経路を追うとき用</span></summary>
-      ${graphBody}
-    </details>`,
+        graph: '',
       };
       if (!plan) return `${auto.graph}\n    ${auto.recipes}`;
       return plan.blocks
@@ -4006,6 +4027,27 @@ ${secOn.nextSteps ? `
     </div>
   </div>
 </section>` : ''}
+
+${fileAppendix.length + graphAppendix.length === 0 ? '' : `
+<!-- 付録。読み合わせで開くものではないので節番号は振らず、既定は閉じておく。
+     本文（01〜05）から細かい資料を追い出すための置き場 -->
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <h2><span class="secno">付録</span>列構成とロジックの根拠</h2>
+      <p class="sec-lede">${sentences(
+        `${secOn.inventory ? `${noInventory} の各ファイルにあった` : 'いただいたファイルの'}<b>列構成</b>と<b>数式の根拠</b>の詳細です。`,
+        '読み合わせでは開く必要はありません。取込設定の作業時にご参照ください。',
+      )}</p>
+    </div>
+    <details class="fileblk">
+      <summary><b>付録を開く</b><span class="rows">全${input.fileCount}ファイルの列構成・数式根拠</span></summary>
+      <div class="rbody">
+      ${[...graphAppendix, ...fileAppendix].join('\n      ')}
+      </div>
+    </details>
+  </div>
+</section>`}
 
 <footer>
   <div class="wrap">© dataX Inc.　|　kpiee データ構造分析レポート　${dateStr} 生成　|　本資料は貴社との確認用資料であり、社外への共有はお控えください。</div>
