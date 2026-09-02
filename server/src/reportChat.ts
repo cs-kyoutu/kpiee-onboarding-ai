@@ -139,7 +139,35 @@ const SPEC_TOOL = {
       },
       howMade: {
         type: 'array', items: { type: 'string' },
-        description: '02-1「作られ方」（最大8件）。どのタブに何を入れて、どこがそれを拾うのかを1行ずつ。<b> で強調できる',
+        description: '02-1「作られ方」（最大8件）。どのタブに何を入れて、どこがそれを拾うのかを1行ずつ。<b> で強調できる。'
+          + 'howMadeFlows で図にしたアウトプットは、同じ話を二度読ませないためここから外す',
+      },
+      howMadeFlows: {
+        type: 'array',
+        description: '02-1「作られ方」の流れ図（最大4本）。再現するアウトプットごとに'
+          + '「元のタブ → 途中の形 → 最終帳票」を1本の帯にして並べる。'
+          + '02 は入口なので箱は4つまで。どの月で拾うか等の詳しいでき方は 03 に出るため書かない',
+        items: {
+          type: 'object',
+          properties: {
+            label: { type: 'string', description: 'このアウトプットの呼び名（例: 収支サマリー）。reproduce の label と揃える' },
+            text: { type: 'string', description: '図の下に置く読み方の1文。<b> で強調できる' },
+            steps: {
+              type: 'array',
+              description: '左から右へ。最後の箱が最終アウトプット（赤で出る）',
+              items: {
+                type: 'object',
+                properties: {
+                  title: { type: 'string', description: '箱の見出し（例: ②前年〜⑭実績 の各タブ）' },
+                  note: { type: 'string', description: '箱の下段の添え書き（例: 月ごとの数字を入れておく）' },
+                  via: { type: 'string', description: 'この箱へ入る矢印に添える言葉（例: 月で拾う）。先頭の箱では使わない' },
+                },
+                required: ['title'],
+              },
+            },
+          },
+          required: ['label', 'steps'],
+        },
       },
       howMadeSource: {
         type: 'string',
@@ -147,7 +175,11 @@ const SPEC_TOOL = {
       },
       assumptions: {
         type: 'array', items: { type: 'string' },
-        description: '02-2「再現するうえでの前提」（最大8件）。いただいた資料の読み方と、kpiee 側の作りとして置いている前提を1行ずつ',
+        description: '02-2「再現するうえでの前提」（最大8件）。いただいた資料の読み方と、kpiee 側の作りとして置いている前提を1行ずつ。'
+          + 'ここへ入れるのは、シートの中身を開かなくてもその場で合意できることだけ'
+          + '（取込形式・どの指標を見せるか・何を入力としていただくか など）。'
+          + '「どこまで弊社側で行うか」「様式をどこまで揃えるか」のように中身を見てから決まる範囲・分担の話は、'
+          + 'ここではなく 03 の確認欄か 04 の確認事項へ回す',
       },
       fileNotes: {
         type: 'array',
@@ -175,6 +207,12 @@ function systemText(facts: ProjectFacts, spec: ReportSpec): string {
     '  判断が要る点を2〜3個だけ質問する。質問は一度にまとめて、選びやすい形（A/B や 出す/出さない）で聞く。',
     '- 決まっていない項目は既定（出す）のままにしておき、次のターンで確認する。',
     '- 回答は日本語で簡潔に。装飾記号（** や #）は使わず、箇条書きは「- 」で書く。',
+    '',
+    '## 節の役割（どこに何を書くか）',
+    '- 02 は「何を再現するか」を合意する入口。作られ方は流れ図（howMadeFlows）で見せ、',
+    '  前提（assumptions）はシートの中身を開かなくてもその場で合意できるものだけを置く。',
+    '- 範囲・分担・キーのように、中身を見てからでないと決まらない話は 03 の確認欄と 04 の確認事項が受け持つ。',
+    '  02 でそこまで踏み込むと、ロジックを見る前に話が終わらなくなるため、02 には書かない。',
     '',
     '## 反映のしかた（厳守）',
     '- 担当者の指示で決まった項目は、**必ず同じターンで update_report_spec を呼ぶ**。',

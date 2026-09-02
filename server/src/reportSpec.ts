@@ -127,6 +127,32 @@ export interface ReportHowMadeFigure {
 }
 
 /**
+ * 02-1 の「作られ方」を、アウトプット1本ぶんの流れとして描く指定。
+ *
+ * 再現するアウトプットは、どれも「元のタブ → 途中の形 → 最終帳票」という同じ形をしている。
+ * 文だけで並べると、読む側は行ごとにその形を組み立て直すことになるので、
+ * レーンにして横に並べ、最後の箱（最終アウトプット）の位置を揃えて見せる。
+ *
+ * ここは 02（何を再現するかの確認）なので、箱は4つまで・添え書きは1行までに抑える。
+ * どの月で拾うか・どこを足して全社にするかといった詳しいでき方は 03 に出る。
+ */
+export interface ReportHowMadeFlow {
+  /** レーンの名前。図の左上と、図の下の読み方の札に出る（例: 収支サマリー） */
+  label: string;
+  /** 図の下の読み方に置く1文。<b> は使える。空ならその行を出さない */
+  text: string;
+  /** 左から右へ。最後の箱が最終アウトプットとして赤で出る */
+  steps: {
+    /** 箱の見出し（例: ②前年〜⑭実績 の各タブ） */
+    title: string;
+    /** 箱の下段の添え書き（例: 月ごとの数字を入れておく）。空なら出さない */
+    note: string;
+    /** この箱へ入る矢印に添える言葉（例: 月で拾う）。先頭の箱では使わない */
+    via: string;
+  }[];
+}
+
+/**
  * 02-1 に置く小さな表。「どのファイルがどのタブの入り口か」のような対応は、
  * 文章に並べると1行が長くなり、どれとどれが対なのかを目で追えない。
  */
@@ -180,6 +206,16 @@ export type ReportOutputBlock =
    */
   | { kind: 'steps'; title: string;
       cards: { title: string; text: string; steps: ReportStepLine[]; note: string }[] }
+  /**
+   * 伺った手順から起こした図（02-1 の「作られ方（イメージ）」と同じ描き方）を、
+   * ロジックの隣に置く。
+   *
+   * 再現するロジックそのものではない図（インプットの予算が、どう作られていたか等）は
+   * collapsed: true にして既定は閉じておく。02 に置くと、何を再現するかを合意する場で
+   * 別の論点が開いてしまうため、根拠はそれを読んでいる表のそばに置く。
+   */
+  | { kind: 'figure'; lede: string; collapsed: boolean; summary: string; badge: string;
+      figure: ReportHowMadeFigure }
   /** 自動生成のレシピ図（数式から起こした「でき方」）を差し込む位置 */
   | { kind: 'recipes' }
   /** 自動生成の関係図（付録・開閉ブロック）を差し込む位置 */
@@ -225,6 +261,12 @@ export interface ReportSpec {
   /** 02-1「作られ方」。どのタブに何を入れて、どこがそれを拾うのかの説明。<b> は使える */
   howMade: string[];
   /**
+   * 02-1「作られ方」を、アウトプットごとの流れ図で見せる指定。
+   * 図の下の読み方に同じ文が出るので、図に寄せたアウトプットは howMade から外す
+   * （同じ話を箇条書きと図で二度読ませない）。
+   */
+  howMadeFlows: ReportHowMadeFlow[];
+  /**
    * 02-1 の「作られ方」に添える表（数字の入り口の一覧など）。箇条書きの下・図の上に置く。
    * null なら出さない。
    */
@@ -241,6 +283,13 @@ export interface ReportSpec {
    * 02-2「再現するうえでの前提」。いただいた資料の読み方と、kpiee 側の作りとして置いている前提。
    * 「今回の前提」だと何の前提か分からないので、再現作業の前提であることを名前に出す。
    * 空なら notes（案件の前提）をそのまま使う。
+   *
+   * ここへ置くのは、シートの中身を開かなくてもその場で合意できることに限る
+   * （取込形式・どの指標を見せるか・何を入力としていただくか など）。
+   * 「どこまで弊社側で行うか」「様式をどこまで揃えるか」のように、
+   * 中身を見てからでないと決まらない範囲・分担の話は、ここではなく 03 の確認欄（check）か
+   * 04 の確認事項へ置く。02 は読み合わせの入口で、ここで範囲の議論を始めると
+   * ロジックを見る前に話が終わらなくなるため。
    */
   assumptions: string[];
   /** 03 の最終アウトプットごとに並べる中身。指定の無いファイルは自動生成分だけになる */
@@ -266,6 +315,7 @@ export const DEFAULT_REPORT_SPEC: ReportSpec = {
   sheetOrigins: [],
   reproduce: [],
   howMade: [],
+  howMadeFlows: [],
   howMadeTable: null,
   howMadeFigure: null,
   howMadeSource: '',
@@ -324,6 +374,13 @@ const MAX_TABLE_COLS = 6;
 const MAX_FLOW_SOURCES = 8;
 const MAX_FLOW_STAGES = 5;
 const MAX_REPEAT = 5;
+// 「作られ方」の流れ図。レーンも箱も増やすと、02 が 03（ロジックの確認）の代わりになってしまう。
+// 箱の見出しと添え書きは、箱の幅（最小 106px）に収まる長さで切る
+const MAX_LANES = 4;
+const MAX_LANE_STEPS = 4;
+const MAX_LANE_TITLE = 22;
+const MAX_LANE_NOTE = 30;
+const MAX_LANE_VIA = 12;
 // 「作られ方（イメージ）」の図。1行を横に伸ばして描くので、かたまりも列も増やせない
 const MAX_FIG_GROUPS = 6;
 const MAX_FIG_COLUMNS = 4;
@@ -364,6 +421,31 @@ function normalizeSimpleTable(raw: unknown): ReportSimpleTable | null {
     title: asText(o.title, MAX_GUIDE_CELL), head: asLines(o.head, MAX_TABLE_COLS),
     rows, note: asText(o.note, MAX_LINE),
   };
+}
+
+/** 02-1 の「作られ方」の流れ図。箱が1つのレーンは流れにならないので落とす */
+function normalizeHowMadeFlows(raw: unknown): ReportHowMadeFlow[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map(v => {
+      const o = asRecord(v);
+      const steps = Array.isArray(o.steps)
+        ? o.steps
+            .map(s => {
+              const r = asRecord(s);
+              return {
+                title: asText(r.title, MAX_LANE_TITLE),
+                note: asText(r.note, MAX_LANE_NOTE),
+                via: asText(r.via, MAX_LANE_VIA),
+              };
+            })
+            .filter(s => s.title !== '')
+            .slice(0, MAX_LANE_STEPS)
+        : [];
+      return { label: asText(o.label, MAX_OVERVIEW_LABEL), text: asText(o.text, MAX_LINE), steps };
+    })
+    .filter(f => f.steps.length >= 2)
+    .slice(0, MAX_LANES);
 }
 
 /** 02-1 の「作られ方（イメージ）」。列が1つも無い図は絵にならないので null にする */
@@ -427,6 +509,14 @@ function normalizeOutputBlock(raw: unknown): ReportOutputBlock | null {
       const items = asLines(o.items, MAX_BLOCK_ITEMS);
       if (items.length === 0) return null;
       return { kind: 'summary', title: asText(o.title, MAX_GUIDE_CELL), items };
+    }
+    case 'figure': {
+      const figure = normalizeHowMadeFigure(o.figure);
+      if (figure === null) return null;
+      return {
+        kind: 'figure', lede: asText(o.lede, MAX_LINE), collapsed: asBool(o.collapsed, false),
+        summary: asText(o.summary, MAX_GUIDE_CELL), badge: asText(o.badge, MAX_OVERVIEW_LABEL), figure,
+      };
     }
     case 'check': {
       const question = asText(o.question, MAX_LINE);
@@ -574,6 +664,8 @@ export function normalizeReportSpec(raw: unknown, base: ReportSpec = DEFAULT_REP
     sheetOrigins,
     reproduce,
     howMade: o.howMade === undefined ? base.howMade : asLines(o.howMade, MAX_HOWMADE),
+    howMadeFlows: o.howMadeFlows === undefined
+      ? base.howMadeFlows : normalizeHowMadeFlows(o.howMadeFlows),
     howMadeTable: o.howMadeTable === undefined
       ? base.howMadeTable : normalizeSimpleTable(o.howMadeTable),
     howMadeFigure: o.howMadeFigure === undefined
@@ -610,6 +702,9 @@ export function describeReportSpec(spec: ReportSpec): string[] {
     `シートの入手元: ${spec.sheetOrigins.length > 0 ? spec.sheetOrigins.map(o => `${o.file}（${o.items.length}件）`).join(' / ') : '（なし）'}`,
     `再現するもの: ${spec.reproduce.length > 0 ? spec.reproduce.map(r => r.label).join(' / ') : '（なし・はじめにの全体像を使う）'}`,
     `作られ方: ${spec.howMade.length > 0 ? `${spec.howMade.length} 行` : '（なし）'}`,
+    `作られ方の流れ図: ${spec.howMadeFlows.length > 0
+      ? spec.howMadeFlows.map(f => `${f.label}（${f.steps.map(s => s.title).join(' → ')}）`).join(' / ')
+      : '（なし・箇条書きだけ）'}`,
     `作られ方の図: ${spec.howMadeFigure
       ? `${spec.howMadeFigure.groups.map(g => g.label || `${g.columns.length}列`).join(' → ')}`
       : '（なし・箇条書きだけ）'}`,
