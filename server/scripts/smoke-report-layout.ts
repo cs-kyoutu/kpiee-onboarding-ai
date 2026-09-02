@@ -42,6 +42,26 @@ const html = buildRelationsReportHtml({
       { label: '4本グラフ', text: '週次の収支表をもとに<b>経常利益差異</b>を分解したものです。' },
     ],
     howMade: ['元データ → 中間ファイル → 最終アウトプットです。'],
+    // アウトプットごとの流れ図。箱2つのレーンと3つのレーンで、最後の箱の位置がそろうこと
+    howMadeFlows: [
+      {
+        label: '収支サマリー',
+        text: '各タブに入れた数字を、<b>月で拾って</b>並べます。',
+        steps: [
+          { title: '②前年〜⑭実績 の各タブ', note: '月ごとの数字を入れておく', via: '' },
+          { title: '①サマリー', note: '拠点 → 全社 と足し上げる', via: '月で拾う' },
+        ],
+      },
+      {
+        label: '利益グラフ',
+        text: '収支表を全事業所共通の形へ組み替えてから作ります。',
+        steps: [
+          { title: '①2607（収支表）', note: '事業所が毎週入力する', via: '' },
+          { title: '②グラフ用縦表', note: '全事業所共通の形', via: '勘定科目で揃える' },
+          { title: '③④利益グラフ', note: '売上・仕入・固定費 に分解', via: '' },
+        ],
+      },
+    ],
     // 図の指定が入っていれば、箇条書きの箱ではなく図のほうを出す
     howMadeTable: {
       title: '数字の入り口', head: ['ファイル', '入るタブ'],
@@ -83,6 +103,18 @@ const html = buildRelationsReportHtml({
           ] },
         ] },
         { kind: 'check', question: 'この読み方で合っておりますでしょうか。', detail: ['根拠の1文目です。'] },
+        // 再現ロジックそのものではない図（インプットの作られ方）は、それを読んでいる表のそばに
+        // 閉じた状態で置く。02 に置くと、何を再現するかを合意する場で別の論点が開いてしまう
+        { kind: 'figure', collapsed: true, summary: '予算の作られ方を開く', badge: '仮予算 ⇒ 本予算',
+          lede: '上の表が読んでいる予算は、次のように作られておりました。',
+          figure: {
+            title: '仮予算 ⇒ 本予算', note: '金額は入れておりません。',
+            groups: [
+              { label: '仮予算', tone: 'base', columns: [{ name: '仮予算', sample: '' }] },
+              { label: '＝本予算', tone: 'result', columns: [{ name: '本予算', sample: '' }] },
+            ],
+            steps: [{ tag: '手入力', tone: 'manual', text: '端数調整は手入力の金額でした。' }],
+          } },
         { kind: 'graph' },
       ],
     }],
@@ -107,6 +139,16 @@ const checks: [string, boolean][] = [
   ['箇条書きの箱と図が並ぶ',
     html.includes('<div class="stitle">作られ方</div>')
     && html.indexOf('<div class="stitle">作られ方</div>') < html.indexOf('<figure class="fig">')],
+  // アウトプットごとの流れ図（レーン）。最後の箱は最終アウトプットとして赤＋★で出す
+  ['作られ方の流れ図が出る',
+    html.includes('収支サマリー のでき方') && html.includes('利益グラフ のでき方')
+    && html.includes('★ ①サマリー') && html.includes('#FBEFEF')],
+  ['流れ図の矢印に言葉が付く', html.includes('>月で拾う<') && html.includes('>勘定科目で揃える<')],
+  ['流れ図の読み方が札付きで出る',
+    html.includes('<span class="tag base">収支サマリー</span>')
+    && html.includes('各タブに入れた数字を、<b>月で拾って</b>並べます。')],
+  // 最後の箱の位置は全レーンでそろえる（そろわないと、同じ形をしていることが読み取れない）
+  ['流れ図の最後の箱がレーンでそろう', (html.match(/x="570" y="\d+" width="318"/g) ?? []).length === 2],
   ['作られ方の表が出る',
     html.includes('数字の入り口') && html.includes('<th>入るタブ</th>')
     && html.indexOf('<th>入るタブ</th>') < html.indexOf('<figure class="fig">')],
@@ -132,6 +174,14 @@ const checks: [string, boolean][] = [
   ['カードのCSSが入る（内訳）', html.includes('.stepcard{') && html.includes('.mini-steps{')],
   ['帳票の読み方（指定）が出る', html.includes('この帳票の形') && html.includes('横に <b>得意先</b>')],
   ['伺った作り方の流れ図が出る', html.includes('突き合わせるもの') && html.includes('拠点ごとの売上')],
+  // 03 に置く図。既定は閉じておき、開くとその場で読める
+  ['03 の図が閉じた開閉ブロックに入る',
+    html.includes('<b>予算の作られ方を開く</b>') && html.includes('仮予算 ⇒ 本予算')
+    && html.includes('上の表が読んでいる予算は')],
+  ['開閉の中の図は枠が二重にならない', html.includes('.rbody figure.fig{border:0')],
+  // 02 の図とは別物。03 の図が 02 側に出てしまっていないこと
+  ['03 の図が 02 に出ていない',
+    html.indexOf('予算の作られ方を開く') > html.indexOf('<span class="secno">03')],
   ['確認欄が 03-A で出る', html.includes('class="chk"') && html.includes('ここをご確認ください　03-A')],
   ['確認欄のCSSが入る', html.includes('.chk{')],
   ['道案内から確認欄を指している', html.includes('<b>03-A</b>')],

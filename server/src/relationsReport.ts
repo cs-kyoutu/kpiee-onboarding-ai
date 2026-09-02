@@ -29,7 +29,8 @@ import {
 import { FILE_REL_LABELS, type DeclaredFileRel, type FileRelAudit } from './relations/declared.js';
 import {
   DEFAULT_REPORT_SPEC, type ReportSpec, type ReportOutputBlock, type ReportOutputPlan,
-  type ReportStepTone, type ReportStepLine, type ReportHowMadeFigure, type ReportSimpleTable,
+  type ReportStepTone, type ReportStepLine, type ReportHowMadeFigure, type ReportHowMadeFlow,
+  type ReportSimpleTable,
 } from './reportSpec.js';
 
 /**
@@ -2046,6 +2047,83 @@ function renderSimpleTable(t: ReportSimpleTable): string {
     + (t.note === '' ? '' : `\n    <p class="tbl-note">${t.note}</p>`);
 }
 
+// 「作られ方」の流れ図。レーンを縦に積み、最後の箱（最終アウトプット）の位置を全レーンで揃える。
+// 位置を揃えないと、レーンごとに終点が別の場所にあるように見えて、同じ形だと分からない
+const LANE_W = 900;
+const LANE_PITCH = 100;   // レーン1本ぶん（札 + 箱）の高さ
+const LANE_BOX_H = 56;
+const LANE_TOP = 32;      // 1本目の箱の上端（その上に札が入る）
+const LANE_OUT = { x: 570, w: 318 };  // 最後の箱（最終アウトプット）
+// 途中の箱の位置。箱を増やすほど1つが痩せるので、4つ目からは添え書きが入らない
+const LANE_COLS: Record<number, { x: number; w: number }[]> = {
+  1: [{ x: 12, w: 230 }],
+  2: [{ x: 12, w: 230 }, { x: 342, w: 198 }],
+  3: [{ x: 12, w: 186 }, { x: 236, w: 170 }, { x: 434, w: 106 }],
+};
+// 読み方の札の色。レーンを見分けるためだけのもので、色そのものに意味は無い
+const LANE_TONES: ReportStepTone[] = ['base', 'result', 'direct', 'ratio'];
+
+/**
+ * 02-1 の「作られ方」。アウトプットごとに「元のタブ → 途中の形 → 最終帳票」を1本の帯にして、
+ * 複数のアウトプットを縦に並べる。文で並べるより、2本が同じ形をしていることが先に伝わる。
+ */
+function renderHowMadeFlowsSvg(flows: ReportHowMadeFlow[], uid: string): string {
+  const arrow = `ar-${uid}`;
+  const parts: string[] = [
+    `<defs><marker id="${arrow}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7"`
+    + ' orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7A8794"/></marker></defs>',
+  ];
+  flows.forEach((f, li) => {
+    const top = LANE_TOP + LANE_PITCH * li;
+    const mid = top + LANE_BOX_H / 2;
+    const cols = LANE_COLS[Math.min(f.steps.length - 1, 3)] ?? LANE_COLS[1];
+    const boxes = f.steps.map((s, i) => {
+      const last = i === f.steps.length - 1;
+      return { ...s, last, ...(last ? LANE_OUT : cols[i] ?? LANE_OUT) };
+    });
+    parts.push(`<text x="12" y="${top - 10}" font-size="11" font-weight="700" fill="#7A8794">`
+      + `${esc(f.label)} のでき方</text>`);
+    boxes.forEach((b, i) => {
+      // 最終アウトプットは赤（表紙のタイル・関係図の凡例と同じ色）。★ も関係図と揃える
+      parts.push(`<rect x="${b.x}" y="${top}" width="${b.w}" height="${LANE_BOX_H}" rx="9"`
+        + ` fill="${b.last ? '#FBEFEF' : '#fff'}" stroke="${b.last ? '#C0392B' : '#1F5FAE'}"`
+        + ` stroke-opacity="${b.last ? '.7' : '.5'}"/>`
+        + `<text x="${b.x + 14}" y="${top + 25}" font-size="12.5"`
+        + `${b.last ? ' font-weight="700"' : ''} fill="#0E2A47">`
+        + `${esc(fitText(b.last ? `★ ${b.title}` : b.title, b.w - 28, 12.5))}</text>`
+        + (b.note === '' ? ''
+          : `<text x="${b.x + 14}" y="${top + 43}" font-size="10.5" fill="#7A8794">`
+            + `${esc(fitText(b.note, b.w - 28, 10.5))}</text>`));
+      if (i === 0) return;
+      const prev = boxes[i - 1];
+      // 矢印の先は箱の手前で止める（頭が箱に食い込むと、線と枠がつながって見える）
+      const x0 = prev.x + prev.w, x1 = b.x - 10;
+      parts.push(`<path d="M${x0},${mid} L${x1},${mid}" fill="none" stroke="#7A8794" stroke-width="1.6"`
+        + ` marker-end="url(#${arrow})"/>`
+        // 矢印に添える言葉は線の上（箱の高さに入らない位置）。狭い矢印では文字を落とす
+        + (b.via === '' || x1 - x0 < 60 ? ''
+          : `<text x="${(x0 + x1) / 2}" y="${mid - 10}" font-size="10.5" font-weight="700"`
+            + ` fill="#1F5FAE" text-anchor="middle">${esc(fitText(b.via, x1 - x0, 10.5))}</text>`));
+    });
+  });
+  const h = LANE_PITCH * flows.length + 12;
+  const alt = flows.map(f => f.label).join('と');
+  return `<svg viewBox="0 0 ${LANE_W} ${h}" role="img" aria-label="${esc(alt)}の、それぞれのでき方">`
+    + `${parts.join('')}</svg>`;
+}
+
+/** 02-1 に置く「作られ方」の流れ図（見出し・図・読み方）。読み方は図の下に札つきで並べる */
+function renderHowMadeFlows(flows: ReportHowMadeFlow[], uid: string, detail: string): string {
+  const steps: ReportStepLine[] = flows
+    .filter(f => f.text !== '')
+    .map((f, i) => ({ tag: f.label, tone: LANE_TONES[i % LANE_TONES.length], text: f.text }));
+  return `<figure class="fig" style="margin-top:26px">
+      <div class="fig-h">作られ方${detail === '' ? '' : `<span>${esc(detail)}</span>`}</div>
+      <div class="map-scroll">${renderHowMadeFlowsSvg(flows, uid)}</div>
+      ${steps.length === 0 ? '' : `<figcaption>${renderMiniSteps(steps)}</figcaption>`}
+    </figure>`;
+}
+
 /** 02-1 に置く「作られ方（イメージ）」の図（見出し・図・読み方） */
 function renderHowMadeFigure(f: ReportHowMadeFigure): string {
   return `<figure class="fig">
@@ -2157,6 +2235,18 @@ function renderOutputBlock(b: ReportOutputBlock, mark: string, uid: string, auto
         ${b.items.map(i => `<li>${i}</li>`).join('\n        ')}
       </ul>
     </div>`;
+    case 'figure': {
+      const body = (b.lede === '' ? '' : `<p class="graph-guide">${b.lede}</p>\n      `)
+        + renderHowMadeFigure(b.figure);
+      if (!b.collapsed) return body;
+      // 再現ロジックそのものではない図は、既定は閉じておく（読み合わせで頭から読む内容ではない）。
+      // それでも、その図を必要とする表のそばに置いておけば、その場で辿れる
+      return `<details class="fileblk">
+      <summary><b>${esc(b.summary || '図を開く')}</b>${
+        b.badge === '' ? '' : `<span class="rows">${esc(b.badge)}</span>`}</summary>
+      <div class="rbody">${body}</div>
+    </details>`;
+    }
     case 'check':
       return `<div class="chk">
       <div class="chk-h">ここをご確認ください　${esc(mark)}</div>
@@ -2355,7 +2445,12 @@ function assignFileRoles(
     // 参照元の数式が無ければ痕跡が残らないだけで、孤立しているわけではない
     if (masters.has(s.label)) { s.role = 'マスタ'; continue; }
     if (s.inFiles.size === 0 && s.outFiles.size === 0) { s.role = '独立'; continue; }
-    if (s.inFiles.size === 0) { s.role = '元データ'; continue; }
+    // マスタから伸びる参照は「そのファイルを読むための引き当て」であって、そのファイルを
+    // 作った流れではない。これを上流として数えると、会計システムから出したままの明細
+    // （勘定科目マスタが引き当てられている仕訳 CSV）が「誰かが加工して作った中間ファイル」に
+    // 見えてしまう。中間ファイルと呼ぶのは、受領ファイルを加工して作られたものだけにする。
+    const madeFrom = [...s.inFiles.keys()].filter(f => !masters.has(f));
+    if (madeFrom.length === 0) { s.role = '元データ'; continue; }
     s.role = s.outFiles.size > 0 || declared ? '中間ファイル' : '最終アウトプット';
   }
 }
@@ -3301,7 +3396,7 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   const reproduceItems = spec.reproduce.length > 0 ? spec.reproduce : spec.overview;
   const assumeItems = spec.assumptions.length > 0 ? spec.assumptions : spec.notes;
   const hasOutcome = reproduceItems.length > 0 || spec.howMade.length > 0 || spec.howMadeFigure !== null
-    || assumeItems.length > 0 || spec.sheetGuide.length > 0;
+    || spec.howMadeFlows.length > 0 || assumeItems.length > 0 || spec.sheetGuide.length > 0;
   const secOn = {
     inventory: spec.sections.inventory,
     outcome: hasOutcome,
@@ -3324,12 +3419,12 @@ export function buildRelationsReportHtml(input: RelationsReportInput): string {
   const flowNo = noFlow.replace(/^0/, '') || '3';
   let subNo = 0;
   const subH = (title: string) =>
-    `<h3 class="sub-h"><span class="n">${flowNo}-${++subNo}</span>　${esc(title)}</h3>`;
+    `<h3 class="sub-h"><span class="n">${flowNo}-${++subNo}</span><span>${esc(title)}</span></h3>`;
   // 02 の小見出しも同じ形。節番号が違うだけなので採番だけ別に持つ
   const outcomeNo = noOutcome.replace(/^0/, '') || '2';
   let subNoOut = 0;
   const subHOut = (title: string) =>
-    `<h3 class="sub-h"><span class="n">${outcomeNo}-${++subNoOut}</span>　${esc(title)}</h3>`;
+    `<h3 class="sub-h"><span class="n">${outcomeNo}-${++subNoOut}</span><span>${esc(title)}</span></h3>`;
 
   const dateStr = input.generatedAt.toISOString().slice(0, 10);
   // 本文（ヘッダ）は和暦式の表記にする。フッタの生成日時は機械可読のまま dateStr を使う
@@ -3730,7 +3825,7 @@ ${secOn.outcome ? `
         'kpiee で再現する対象と、その作られ方について、弊社の理解をまとめました。',
       )}</p>
     </div>
-    ${reproduceItems.length > 0 || spec.howMade.length > 0 || spec.howMadeFigure ? `
+    ${reproduceItems.length > 0 || spec.howMade.length > 0 || spec.howMadeFlows.length > 0 || spec.howMadeFigure ? `
     ${subHOut('伺っている作り方')}
     <p class="graph-guide">${sentences(
       // 出典名に「A と B」が入ることがあるので、ファイルの中身との間は読点で切る
@@ -3753,6 +3848,11 @@ ${secOn.outcome ? `
         ${spec.howMade.map(n => `<li>${n}</li>`).join('\n        ')}
       </ul>
     </div>` : ''}
+    ${spec.howMadeFlows.length > 0 ? `
+    <!-- 「作られ方」は、どのアウトプットも「元 → 途中 → 最終帳票」の同じ形なので、並べて見せる。
+         詳しいでき方は 03 にあるので、ここは箱を4つまでにとどめる -->
+    ${renderHowMadeFlows(spec.howMadeFlows, 'hmf',
+      secOn.flow ? `詳しいでき方は ${noFlow} でご覧いただきます。` : '')}` : ''}
     ${spec.howMadeTable ? renderSimpleTable(spec.howMadeTable) : ''}
     ${spec.howMadeFigure ? renderHowMadeFigure(spec.howMadeFigure) : ''}
 ` : ''}
@@ -3811,7 +3911,7 @@ ${secOn.flow ? `
       <span class="lg-h">丸＝ファイル</span>
       <span class="li"><span class="nrole src"></span>元データ</span>
       ${masterFileCount > 0 ? '<span class="li"><span class="nrole mst"></span>マスタ</span>' : ''}
-      <span class="li"><span class="nrole mid"></span>中間ファイル</span>
+      ${midFileCount > 0 ? '<span class="li"><span class="nrole mid"></span>中間ファイル</span>' : ''}
       <span class="li"><span class="nrole out"></span>最終アウトプット</span>
       ${stepFlow ? '<span class="li">各段の右端＝土台のファイル（同じファイルが毎段に出ます）</span>'
         : '<span class="li"><span class="nrole iso"></span>つながり未検出</span>'}
@@ -3865,6 +3965,9 @@ ${secOn.flow ? `
         [...pairs.filter(p => sec.regionIds.has(p.from) && sec.regionIds.has(p.to)), ...pastePairs],
         labels, copyQuestionByPair, roles,
         edges.filter(e => sec.regionIds.has(secRegionOf(e.from)) && sec.regionIds.has(secRegionOf(e.to))), pairKeys);
+      // 凡例は図に出ている役割だけを並べる。出ていない役割まで載せると、
+      // 「中間集計はどこにあるのか」と図を探させることになる
+      const secRoles = new Set((secMap?.data.nodes ?? []).map(n => n.role));
       // この帳票の読み方（伺った内容）。指定があれば、その並びどおりに置いていく
       const plan = planFor(spec.outputPlans, sec.filename);
       return `
@@ -3913,11 +4016,11 @@ ${secOn.flow ? `
       ${secMap.omittedNodes > 0 ? `<p class="tbl-note">※ つながりの多い表を優先して表示しております。ほか ${secMap.omittedNodes} 表は省略しております。</p>` : ''}
       <div class="legend">
         <span class="lg-h">丸＝表</span>
-        <span class="li"><span class="nrole src"></span>元データ</span>
-        <span class="li"><span class="nrole mst"></span>マスタ</span>
-        <span class="li"><span class="nrole mid"></span>中間集計</span>
+        ${secRoles.has('元データ') ? '<span class="li"><span class="nrole src"></span>元データ</span>' : ''}
+        ${secRoles.has('マスタ') ? '<span class="li"><span class="nrole mst"></span>マスタ</span>' : ''}
+        ${secRoles.has('中間集計') ? '<span class="li"><span class="nrole mid"></span>中間集計</span>' : ''}
         <span class="li"><span class="nrole out"></span>最終アウトプット</span>
-        <span class="li"><span class="nrole iso"></span>独立</span>
+        ${secRoles.has('独立') ? '<span class="li"><span class="nrole iso"></span>独立</span>' : ''}
       </div>
       <div class="legend">
         <span class="lg-h">線</span>
@@ -4354,6 +4457,8 @@ footer{padding:30px 0 42px;color:var(--sub);font-size:11.5px;text-align:center}
 /* ---- 例の値を入れた1行の図と、その読み方 ---- */
 /* figure は操作版のグラフでも使うので、こちらは .fig に限って当てる */
 figure.fig{background:#fff;border:1px solid var(--line);border-radius:14px;padding:22px 24px 18px;margin:0 0 20px}
+/* 開閉ブロックの中に入れた図は、外側の枠と二重にならないよう枠を外す */
+.rbody figure.fig{border:0;padding:0;margin:0}
 figure.fig figcaption{font-size:13px;color:var(--sub);line-height:1.8;margin-top:14px;padding-top:13px;border-top:1px solid var(--line)}
 figure.fig figcaption b{color:var(--ink)}
 .fig-h{font-family:var(--disp);font-size:15.5px;font-weight:700;color:var(--ink);margin-bottom:16px}
@@ -4387,13 +4492,22 @@ table.dl td{vertical-align:top}
 /* ---- 図の凡例・見出し ---- */
 /* 小見出しの前は広めに空ける。前の話（凡例や表）と次の小見出しが近いと、
    どこで話が変わったのかが見た目で分からない */
-.sub-h{font-family:var(--disp);font-weight:700;font-size:18px;color:var(--ink);margin:44px 0 6px}
+/* 小見出し（3-1 など）は blk-h より必ず上位に見せる。
+   両方 18px / 16px と近く、線が blk-h 側にだけあると、節の中の切れ目のほうが
+   小見出しより強く見えて「どこから 3-2 なのか」が読み取れなくなる。
+   ここは太い線＋番号のチップで、blk-h（細い破線）とはっきり差をつける */
+.sub-h{font-family:var(--disp);font-weight:700;font-size:20px;color:var(--ink);
+  margin:60px 0 10px;padding-top:22px;border-top:2px solid var(--blue);
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 /* 節の中の話の切れ目。1ブックに複数のアウトプットがある案件では、図・表・確認欄が
-   続けて並ぶため、線と余白で「ここから別の帳票の話」と分かるようにする */
+   続けて並ぶため、線と余白で「ここから別の帳票の話」と分かるようにする。
+   小見出し（sub-h）と紛れないよう、線は破線にして一段弱く見せる */
 .blk-h{font-family:var(--disp);font-weight:700;font-size:16px;color:var(--ink);
-  margin:40px 0 10px;padding-top:16px;border-top:1px solid var(--line)}
-/* 小見出しの番号（2-1 など）も口頭で指す。本文と同じ濃さでは埋もれる */
-.sub-h .n{color:var(--blue);margin-right:2px}
+  margin:38px 0 10px;padding-top:14px;border-top:1px dashed var(--line)}
+/* 小見出しの番号（2-1 など）も口頭で指す。本文と同じ濃さでは埋もれるので、
+   青い札にして、離れた場所からでも「今どこの話か」が拾えるようにする */
+.sub-h .n{flex:none;background:var(--blue);color:#fff;font-size:13px;font-weight:700;
+  line-height:1;padding:6px 10px;border-radius:6px;letter-spacing:.04em}
 .graph-guide{font-size:12.5px;color:var(--text);line-height:1.7;margin-bottom:12px}
 /* 図の凡例テキスト: 1行1項目で読ませる */
 ul.graph-guide{list-style:none;padding:0;display:flex;flex-direction:column;gap:4px}
