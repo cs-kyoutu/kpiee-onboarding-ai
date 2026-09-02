@@ -20,7 +20,7 @@ import { classifySheetRoles } from '../src/preprocess/classify.js';
 import { analyzeArtifacts, fileLabelOf, type RelationInput } from '../src/preprocess/relations.js';
 import { buildRelationsReportHtml, type ReportArtifact } from '../src/relationsReport.js';
 import { applyDeclaredFileRelations, type DeclaredFileRel, type FileRelType } from '../src/relations/declared.js';
-import { DEFAULT_REPORT_SPEC } from '../src/reportSpec.js';
+import { DEFAULT_REPORT_SPEC, type ReportHowMadeFigure } from '../src/reportSpec.js';
 
 const OUT = process.argv[2] ?? 'C:/Users/seongjin.park/kpiee-research/収支報告4本グラフ_データ構造分析レポート.html';
 // 原本 xlsx の置き場。案件フォルダ配下を先に見て、無ければ従来の Downloads を使う
@@ -143,6 +143,40 @@ const declared: DeclaredFileRel[] = RELS.map(([from, to, relType, note], i) => (
 
 const merged = applyDeclaredFileRelations(graph, declared);
 
+// 「仮予算に何を足すと本予算になるか」の1枚。足すもののうち3つは手入力で、
+// kpiee 側では計算で再現できない。そこが色で分かるようにする。
+//
+// 置き場所は 03 の ①サマリー（本予算・仮予算 の行を読んでいる表）のそば。02 に置くと、
+// 何を再現するかを合意する場で、予算の作られ方という別の論点が開いてしまう。
+const YOSAN_FIG: ReportHowMadeFigure = {
+  title: '仮予算 ⇒ 本予算',
+  note: '④本予算…Final の「仮予算⇒本予算」シートの調整です。金額は入れておりません。',
+  groups: [
+    { label: '仮予算（4月10日）', tone: 'base', columns: [{ name: '仮予算', sample: '' }] },
+    { label: '数式で足すもの', tone: 'direct', columns: [
+      { name: 'FC売上', sample: '' }, { name: 'FC仕入', sample: '' }, { name: '営業外収益', sample: '' },
+    ] },
+    { label: '手入力の金額', tone: 'manual', columns: [
+      { name: '4・5月実績に置き換え', sample: '' },
+      { name: '6月以降下方修正', sample: '' },
+      { name: '端数調整', sample: '' },
+    ] },
+    { label: '＝本予算（5月26日）', tone: 'result', columns: [{ name: '本予算', sample: '' }] },
+  ],
+  steps: [
+    { tag: '仮予算', tone: 'base', text: '4月10日時点の予算です。ここが土台になります。' },
+    { tag: '数式', tone: 'direct',
+      text: '<b>FC売上・FC仕入・営業外収益</b>は、「仮予算⇒本予算」シートの数式のまま足されておりました。' },
+    // 「だから入力としていただく」の結びも、この図と一緒に 03 で伺う。
+    // 02-2 の前提には置かない（予算の作られ方を見ないと判断できない話のため）
+    { tag: '手入力', tone: 'manual',
+      text: '<b>4・5月実績への置き換え・6月以降の下方修正・端数調整</b>は、数式ではなく手入力の金額でした。'
+        + 'kpiee では計算で再現できませんので、<b>入力としていただく</b>形になります。' },
+    { tag: '本予算', tone: 'result',
+      text: '足し上げた結果が本予算（5月26日）です。最後に「まとめシート」との差異を取って検算されていました。' },
+  ],
+};
+
 const html = buildRelationsReportHtml({
   customerName: 'デリカフーズホールディングス',
   generatedAt: new Date(),
@@ -235,50 +269,41 @@ const html = buildRelationsReportHtml({
           + '<b>売上・仕入・変動費・固定費・営業外</b> に分解したグラフです。'
           + 'あわせて ⑮⑯折れ線グラフ、⑰利益乖離率、および収支表の作成も対象と伺っています。' },
     ],
-    howMade: [
-      '<b>収支サマリー</b>は、同じブックの ②前年〜⑭実績 の各タブに月ごとの数字を入れておき、'
-        + '①サマリー がそこから<b>月で拾って</b>並べる作りです。',
-      '<b>利益グラフ</b>は、事業所が毎週入力する収支表（①2607）を、'
-        + '全事業所共通の形（②グラフ用縦表）へ組み替えてから作ります。',
+    // 2本とも「元のタブ → 途中の形 → 最終帳票」の同じ形なので、文で並べず図にする。
+    // 文（text）は図の下の読み方に出るため、howMade（箇条書き）には同じ話を書かない
+    howMade: [],
+    howMadeFlows: [
+      {
+        label: '収支サマリー',
+        text: '同じブックの <b>②前年〜⑭実績</b> の各タブに月ごとの数字を入れておき、'
+          + '<b>①サマリー</b> がそこから<b>月で拾って</b>並べる作りです。',
+        steps: [
+          { title: '②前年〜⑭実績 の各タブ', note: '月ごとの数字を入れておく', via: '' },
+          { title: '①サマリー（収支サマリー）', note: '拠点 → DF計 → 全社 と足し上げる', via: '月で拾う' },
+        ],
+      },
+      {
+        label: '利益グラフ',
+        text: '事業所が毎週入力する収支表（<b>①2607</b>）を、'
+          + '全事業所共通の形（<b>②グラフ用縦表</b>）へ組み替えてから作ります。',
+        steps: [
+          { title: '①2607（各事業所の収支表）', note: '事業所が毎週入力する', via: '' },
+          { title: '②グラフ用縦表', note: '全事業所共通の形', via: '勘定科目で揃える' },
+          { title: '③④利益グラフ（1本・4本）', note: '売上・仕入・変動費・固定費・営業外 に分解', via: '' },
+        ],
+      },
     ],
     // 「どのファイルがどのタブの入り口か」は 01 の「タブごとの役割と中身」に
     // 入手元の列として出ている。ここに同じ対応を置くと、同じ表を3か所で読むことになる
-    // 「仮予算に何を足すと本予算になるか」を1枚にする。足すもののうち3つは手入力で、
-    // kpiee 側では計算で再現できない（入力としていただく）。そこが色で分かるようにする
-    howMadeFigure: {
-      title: '予算の作り方（仮予算 ⇒ 本予算）のイメージ',
-      note: '④本予算…Final の「仮予算⇒本予算」シートの調整です。金額は入れておりません。',
-      groups: [
-        { label: '仮予算（4月10日）', tone: 'base', columns: [{ name: '仮予算', sample: '' }] },
-        { label: '数式で足すもの', tone: 'direct', columns: [
-          { name: 'FC売上', sample: '' }, { name: 'FC仕入', sample: '' }, { name: '営業外収益', sample: '' },
-        ] },
-        { label: '手入力の金額', tone: 'manual', columns: [
-          { name: '4・5月実績に置き換え', sample: '' },
-          { name: '6月以降下方修正', sample: '' },
-          { name: '端数調整', sample: '' },
-        ] },
-        { label: '＝本予算（5月26日）', tone: 'result', columns: [{ name: '本予算', sample: '' }] },
-      ],
-      steps: [
-        { tag: '仮予算', tone: 'base', text: '4月10日時点の予算です。ここが土台になります。' },
-        { tag: '数式', tone: 'direct',
-          text: '<b>FC売上・FC仕入・営業外収益</b>は、「仮予算⇒本予算」シートの数式のまま足されておりました。' },
-        { tag: '手入力', tone: 'manual',
-          text: '<b>4・5月実績への置き換え・6月以降の下方修正・端数調整</b>は手入力の金額でした。'
-            + 'kpiee では計算で再現できませんので、<b>入力としていただく</b>形になります。' },
-        { tag: '本予算', tone: 'result',
-          text: '足し上げた結果が本予算（5月26日）です。最後に「まとめシート」との差異を取って検算されていました。' },
-      ],
-    },
+    // 予算そのものの作られ方（YOSAN_FIG）は再現ロジックではないので、02 ではなく 03 に置く
+    howMadeFigure: null,
+    // 02-2 に置くのは、シートを開かなくてもその場で合意できることだけ。
+    // 「②グラフ用縦表 の並べ替えをどこまで弊社側で行うか」「事業所ごとの様式をどこまで揃えるか」
+    // 「予算を入力としていただくか」は、中身を見てからでないと決まらない話なので、
+    // 02 には書かず 03（予算は 3-2 の図）で伺う
     assumptions: [
       '取込形式は「日付／科目コード／科目／月初見込・1週目〜5週目／組織」の<b>縦持ち</b>で揃える前提です。',
-      'ただし <b>②グラフ用縦表</b> は、勘定科目が縦・時点（月初見込・各週・速報）が横に並ぶ表で、'
-        + '組織と月度は表の外に1か所だけ書かれておりました。'
-        + '<b>縦持ちへの並べ替え</b>が別途必要になりますので、どこまで弊社側で行うかをご相談させてください。',
       '収支サマリーはシート上は経常利益ですが、<b>できれば営業利益を見せたい</b>と伺っています。',
-      '事業所ごとに収支表の様式が異なっておりますため（奈良が標準縦表に一番近いと伺っています）、'
-        + 'まずは<b>様式を揃える範囲</b>をご相談させていただければ幸いです。',
     ],
     // 01 で、そのブックを開いたときに最初に読む一言
     fileNotes: [
@@ -361,6 +386,13 @@ const html = buildRelationsReportHtml({
                 + '各タブの A 列の月と突き合わせておりました。',
               '単月と累計で1か月ずれる形ですので、毎月どちらの月を入れていらっしゃるかをお聞かせいただけますでしょうか。',
             ] },
+          // 上の表で「本予算は ④本予算 タブから」まで読んだ方が、その場で辿れる位置に置く。
+          // 再現ロジックそのものではないので既定は閉じておく
+          { kind: 'figure', collapsed: true,
+            summary: '③仮予算・④本予算 のタブに入る「予算」の作られ方を開く', badge: '仮予算 ⇒ 本予算',
+            lede: '上の表の <b>本予算・仮予算</b> の行が読んでいる ③仮予算・④本予算 のタブは、'
+              + '予算編成のファイルから来ております。その予算そのものは、次のように作られておりました。',
+            figure: YOSAN_FIG },
           // ここから別の帳票（グラフ3枚）の話になる。確認欄をはさんで表が続くと、
           // ①サマリーの続きに見えてしまうので、話の切れ目を見出しで示す
           { kind: 'heading', title: '⑮⑯折れ線グラフ・⑰利益乖離率（グラフ3枚）',
