@@ -203,6 +203,31 @@ CREATE TABLE IF NOT EXISTS report_chat_messages (
   spec_patch TEXT,
   created_at ${ts}
 );
+
+-- SQL構築の会話。目的が別の履歴（Q&A・レポート相談）とは表を分ける（上と同じ理由）。
+-- tool_trace には run_sql / save_sql 等の呼び出しと結果の要約を残す。
+-- 画面が「AI がどの SQL を流してどんな結果を見たか」を会話に沿って出すために使う。
+CREATE TABLE IF NOT EXISTS sql_chat_messages (
+  id ${pk},
+  project_id INTEGER NOT NULL REFERENCES projects(id),
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  tool_trace TEXT,
+  created_at ${ts}
+);
+
+-- 構築した SQLジョブ（1案件に複数本。協和は STEP1〜4 ＋ 統合の5本）。
+-- output_spec は出力仕様（順番 → 別名 → 予測物理名 → 原本の列 → 下流での用途）。
+-- ジョブ登録で別名は物理名に変わるため、これが無いと下流の担当者が参照名を辿れない。
+CREATE TABLE IF NOT EXISTS sql_jobs (
+  id ${pk},
+  project_id INTEGER NOT NULL REFERENCES projects(id),
+  name TEXT NOT NULL,
+  sql TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  output_spec TEXT NOT NULL DEFAULT '',
+  updated_at ${ts}
+);
 `);
 
   // 既存 DB への列追加。CREATE TABLE IF NOT EXISTS は既存テーブルには効かないため、

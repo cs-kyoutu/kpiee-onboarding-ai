@@ -32,6 +32,7 @@ import {
   startReportChat, REPORT_CHAT_KICKOFF, type ProjectFacts,
 } from './reportChat.js';
 import { REPORT_ITEM_LABELS, REPORT_SECTION_LABELS } from './reportSpec.js';
+import { sqlChatHistory, isSqlChatPending, startSqlChat, listSqlJobs, deleteSqlJob } from './sqlChat.js';
 import { invalidateBooks } from './qa/tools.js';
 import { aiAvailable, callStructured, MODEL, estimateCostUsd } from './ai/client.js';
 import { STEP_FLOW_SCHEMA, REQUIREMENTS_SCHEMA } from './ai/schemas.js';
@@ -166,6 +167,8 @@ app.delete('/api/projects/:id', async (req, res) => {
     await t.prepare(`DELETE FROM project_flags WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM report_specs WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM report_chat_messages WHERE project_id = ?`).run(projectId);
+    await t.prepare(`DELETE FROM sql_chat_messages WHERE project_id = ?`).run(projectId);
+    await t.prepare(`DELETE FROM sql_jobs WHERE project_id = ?`).run(projectId);
     // file_relations は artifacts を参照するので artifacts より先に消す
     await t.prepare(`DELETE FROM file_relations WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM artifacts WHERE project_id = ?`).run(projectId);
@@ -982,6 +985,50 @@ app.post('/api/projects/:id/report-chat', async (req, res) => {
     res.status(202).json(await startReportChat(projectId, text, await reportFacts(projectId)));
   } catch (e) {
     res.status(409).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ---- SQL構築チャット ----
+// レポート読み合わせ後の工程。ナレッジ（kpiee-sql-builder）の4ターン運用で SQLジョブを組み立てる。
+// AI が run_sql（DuckDB サンドボックス）で検証・本体・検算を自分で流すため、応答は非同期＋ポーリング。
+app.get('/api/projects/:id/sql-chat', async (req, res) => {
+  const projectId = Number(req.params.id);
+  try {
+    res.json({
+      messages: await sqlChatHistory(projectId),
+      pending: isSqlChatPending(projectId),
+      jobs: await listSqlJobs(projectId),
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.post('/api/projects/:id/sql-chat', async (req, res) => {
+  const projectId = Number(req.params.id);
+  const { message } = req.body as { message?: string };
+  if (!message?.trim()) return res.status(400).json({ error: 'message は必須です' });
+  try {
+    res.status(202).json(await startSqlChat(projectId, message.trim()));
+  } catch (e) {
+    res.status(409).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+app.get('/api/projects/:id/sql-jobs', async (req, res) => {
+  try {
+    res.json(await listSqlJobs(Number(req.params.id)));
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.delete('/api/sql-jobs/:id', async (req, res) => {
+  try {
+    await deleteSqlJob(Number(req.params.id));
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
   }
 });
 

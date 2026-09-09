@@ -78,44 +78,110 @@ function toGrid(parsed: ParsedArtifact): { header: string[]; data: (string | num
 }
 
 /**
+ * Snowflake 方言の最小ポリフィル。
+ *
+ * 本番の SQLジョブは Snowflake で動くが、ローカル検証は DuckDB。
+ * ナレッジ（kpiee-sql-builder）が必ず使わせる関数（TRY_TO_DECIMAL 等）が DuckDB に無く、
+ * そのままだと「正しい SQL がローカルでだけ落ちる」状態になるため、意味の等しいマクロで埋める。
+ * 埋めるのは決定的に等価にできるものだけ。挙動が違う関数は埋めない（黙って違う結果を出すより
+ * エラーで気づけるほうがよい）。
+ */
+const SNOWFLAKE_POLYFILLS: string[] = [
+  // 金額・率の数値化。TRY_TO_NUMBER の既定 scale=0（小数切り捨て）も Snowflake に合わせる
+  `CREATE MACRO TRY_TO_DECIMAL(x, p, s) AS TRY_CAST(REPLACE(REPLACE(TRIM(CAST(x AS VARCHAR)), ',', ''), '¥', '') AS DECIMAL(38, 10))`,
+  `CREATE MACRO TRY_TO_NUMBER(x) AS TRY_CAST(TRY_CAST(REPLACE(REPLACE(TRIM(CAST(x AS VARCHAR)), ',', ''), '¥', '') AS DECIMAL(38, 10)) AS BIGINT)`,
+  // 日付は書式明示の2引数版のみ（1引数版はナレッジ側が禁止している。ここでも用意しない）
+  `CREATE MACRO TRY_TO_DATE(x, fmt) AS TRY_CAST(try_strptime(CAST(x AS VARCHAR),
+     REPLACE(REPLACE(REPLACE(REPLACE(fmt, 'YYYY', '%Y'), 'MM', '%m'), 'DD', '%d'), 'HH24:MI:SS', '%H:%M:%S')) AS DATE)`,
+  `CREATE MACRO IFF(c, a, b) AS (CASE WHEN c THEN a ELSE b END)`,
+  `CREATE MACRO NVL(a, b) AS COALESCE(a, b)`,
+  `CREATE MACRO ZEROIFNULL(x) AS COALESCE(x, 0)`,
+  `CREATE MACRO DIV0(a, b) AS (CASE WHEN b = 0 OR b IS NULL THEN 0 ELSE a / b END)`,
+];
+
+/** ポリフィルを登録する。DuckDB 側に同名が既にあるものは黙って飛ばす */
+async function installPolyfills(conn: { run(sql: string): Promise<unknown> }): Promise<void> {
+  for (const ddl of SNOWFLAKE_POLYFILLS) {
+    try {
+      await conn.run(ddl);
+    } catch { /* 既存の組み込みと衝突したら組み込み側を使う */ }
+  }
+}
+
+/**
+ * SQL のローカル実行サンドボックス。
+ *
+ * インプットデータを DuckDB のテーブルとして一度だけ登録し、複数の SQL を続けて流せる。
+ * SQL構築チャットは1回の質問処理で「事前検証 → 本体 → 検算」と何本も実行するため、
+ * 毎回テーブルを作り直すと大きな取込データで待ち時間が実行本数ぶん倍になる。
+ */
+export class SqlSandbox {
+  private constructor(
+    private readonly instance: DuckDBInstance,
+    private readonly conn: Awaited<ReturnType<DuckDBInstance['connect']>>,
+    /** 登録できたテーブル（名前と列。AI へ「何が FROM に書けるか」を示すために持つ） */
+    readonly tables: { name: string; columns: string[]; rowCount: number }[],
+  ) {}
+
+  static async create(inputs: { tableName: string; parsed: ParsedArtifact }[]): Promise<SqlSandbox> {
+    const instance = await DuckDBInstance.create(':memory:');
+    const conn = await instance.connect();
+    const tables: { name: string; columns: string[]; rowCount: number }[] = [];
+    try {
+      await installPolyfills(conn);
+      for (const input of inputs) {
+        const { header, data } = toGrid(input.parsed);
+        if (header.length === 0) continue;
+        // 列型は数値率で推定（過半が数値なら DOUBLE）
+        const types = header.map((_, i) => {
+          const vals = data.map(r => r[i]).filter(v => v !== null && v !== '');
+          const numCount = vals.filter(v => typeof v === 'number').length;
+          return vals.length > 0 && numCount > vals.length / 2 ? 'DOUBLE' : 'VARCHAR';
+        });
+        const cols = header.map((h, i) => `"${h.replace(/"/g, '""')}" ${types[i]}`).join(', ');
+        await conn.run(`CREATE TABLE "${input.tableName}" (${cols})`);
+        if (data.length > 0) {
+          const values = data.map(r =>
+            `(${r.map((v, i) => {
+              if (v === null || v === '') return 'NULL';
+              return types[i] === 'DOUBLE' ? String(Number(v)) : q(String(v));
+            }).join(', ')})`,
+          ).join(',\n');
+          await conn.run(`INSERT INTO "${input.tableName}" VALUES ${values}`);
+        }
+        tables.push({ name: input.tableName, columns: header, rowCount: data.length });
+      }
+      return new SqlSandbox(instance, conn, tables);
+    } catch (e) {
+      conn.closeSync();
+      throw e;
+    }
+  }
+
+  /** SQL を1本実行する。Snowflake 方言との差異はポリフィルの範囲まで（それ以外はエラーで返る） */
+  async run(sql: string): Promise<{ columns: string[]; rows: Record<string, unknown>[] }> {
+    const reader = await this.conn.runAndReadAll(sql);
+    return { columns: reader.columnNames(), rows: reader.getRowObjects() as Record<string, unknown>[] };
+  }
+
+  close(): void {
+    this.conn.closeSync();
+  }
+}
+
+/**
  * インプットデータを DuckDB のテーブルとして登録し、生成 SQL を実行して結果グリッドを返す。
+ * （1本だけ流す従来 API。照合パイプラインが使う）
  */
 export async function runSqlSimulation(
   inputs: { tableName: string; parsed: ParsedArtifact }[],
   sql: string,
 ): Promise<{ columns: string[]; rows: Record<string, unknown>[] }> {
-  const instance = await DuckDBInstance.create(':memory:');
-  const conn = await instance.connect();
+  const sandbox = await SqlSandbox.create(inputs);
   try {
-    for (const input of inputs) {
-      const { header, data } = toGrid(input.parsed);
-      if (header.length === 0) continue;
-      // 列型は数値率で推定（過半が数値なら DOUBLE）
-      const types = header.map((_, i) => {
-        const vals = data.map(r => r[i]).filter(v => v !== null && v !== '');
-        const numCount = vals.filter(v => typeof v === 'number').length;
-        return vals.length > 0 && numCount > vals.length / 2 ? 'DOUBLE' : 'VARCHAR';
-      });
-      const cols = header.map((h, i) => `"${h.replace(/"/g, '""')}" ${types[i]}`).join(', ');
-      await conn.run(`CREATE TABLE "${input.tableName}" (${cols})`);
-      if (data.length > 0) {
-        const values = data.map(r =>
-          `(${r.map((v, i) => {
-            if (v === null || v === '') return 'NULL';
-            return types[i] === 'DOUBLE' ? String(Number(v)) : q(String(v));
-          }).join(', ')})`,
-        ).join(',\n');
-        await conn.run(`INSERT INTO "${input.tableName}" VALUES ${values}`);
-      }
-    }
-
-    // Snowflake 方言と DuckDB の差異はローカル検証の限界として許容する（Phase 2 で実 API 検証へ移行）
-    const reader = await conn.runAndReadAll(sql);
-    const columns = reader.columnNames();
-    const rows = reader.getRowObjects() as Record<string, unknown>[];
-    return { columns, rows };
+    return await sandbox.run(sql);
   } finally {
-    conn.closeSync();
+    sandbox.close();
   }
 }
 

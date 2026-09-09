@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// 案件ごとの4ステップ。
-//   ① 資料・データ取り込み → ② 分類確認 → ③ 構造把握 → ④ レポートを見ながら相談・生成
+// 案件ごとの5ステップ。
+//   ① 資料・データ取り込み → ② 分類確認 → ③ 構造把握 → ④ レポート作成 → ⑤ SQL構築
 //
 // 以前は機能ごとのタブ（ProjectDetail.vue）が10個並ぶ従来UI と併存していたが、
 // この4つ以外の入口（解読検収・成果物生成・数値照合・顧客確認事項・AI Q&A）は
@@ -22,6 +22,7 @@ import DocsPanel from '../components/wizard/DocsPanel.vue'
 import ClassifyStep from '../components/wizard/ClassifyStep.vue'
 import AnalyzeStep from '../components/wizard/AnalyzeStep.vue'
 import OutputStep from '../components/wizard/OutputStep.vue'
+import SqlBuildStep from '../components/wizard/SqlBuildStep.vue'
 
 const props = defineProps<{ projectId: number }>()
 
@@ -40,6 +41,7 @@ const STEPS = [
   { no: 2, label: '分類確認', desc: 'インプット / マスタ / 中間 / 最終アウトプット' },
   { no: 3, label: '構造把握', desc: 'シート関係・ブック関係・要確認を見る' },
   { no: 4, label: 'レポート作成', desc: '出来上がりを見ながら相談・修正して出力' },
+  { no: 5, label: 'SQL構築', desc: '読み合わせ後、SQLジョブを対話で組み立てる' },
 ] as const
 
 const parsedArtifacts = computed(() => project.value?.artifacts.filter(a => a.parse_status === 'done') ?? [])
@@ -47,7 +49,8 @@ const done = computed(() => ({
   1: parsedArtifacts.value.length > 0,
   2: parsedArtifacts.value.length > 0 && (project.value?.flags ?? []).includes('roles_confirmed'),
   3: true, // 解析結果の確認。ここで止める条件は無い（表0件なら画面側で警告を出す）
-  4: false, // 最終ステップ。ここは「終わり」ではなく何度でも作り直す場所
+  4: true, // レポートは何度でも作り直す場所。ここで止めると SQL構築へ進めない
+  5: false, // 最終ステップ
 }) as Record<number, boolean>)
 
 /** そのステップを開いてよいか（前のステップが終わっているか） */
@@ -142,7 +145,8 @@ watch(step, () => { void load() })
         v-else-if="step === 3" :project-id="props.projectId" :artifacts="project.artifacts"
         :runs="project.runs" @changed="load"
       />
-      <OutputStep v-else :project-id="props.projectId" @changed="load" />
+      <OutputStep v-else-if="step === 4" :project-id="props.projectId" @changed="load" />
+      <SqlBuildStep v-else :project-id="props.projectId" />
       </div>
       </Transition>
     </div>

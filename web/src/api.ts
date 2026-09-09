@@ -325,6 +325,55 @@ export function extractRequirements(projectId: number): Promise<RequirementsDraf
   return post<RequirementsDraft>(`/projects/${projectId}/requirements/extract`)
 }
 
+// ---- SQL構築チャット ----
+// レポート読み合わせ後の工程。AI がナレッジ（kpiee-sql-builder）の4ターン運用で SQLジョブを組み立て、
+// 検証・本体・検算を取込済みの実データ（DuckDB サンドボックス）で自分で流す。
+export interface SqlToolTrace {
+  tool: string
+  /** run_sql の目的 / read_reference の名前 / save_sql の成果物名 */
+  label: string
+  sql?: string
+  result?: { columns: string[]; rows: string[][]; totalRows: number; truncated: boolean }
+  error?: string
+}
+
+export interface SqlChatMessage {
+  id: number
+  role: 'user' | 'assistant'
+  content: string
+  /** SqlToolTrace[] の JSON。AI がどの SQL を流してどんな結果を見たかを会話に沿って出す */
+  tool_trace: string | null
+  created_at: string
+}
+
+export interface SqlJob {
+  id: number
+  name: string
+  sql: string
+  note: string
+  /** 出力仕様（順番→別名→予測物理名→原本の列→下流での用途）。Markdown */
+  output_spec: string
+  updated_at: string
+}
+
+export interface SqlChatState {
+  messages: SqlChatMessage[]
+  pending: boolean
+  jobs: SqlJob[]
+}
+
+export function getSqlChat(projectId: number): Promise<SqlChatState> {
+  return get<SqlChatState>(`/projects/${projectId}/sql-chat`)
+}
+
+export function sendSqlChat(projectId: number, message: string): Promise<{ pending: boolean }> {
+  return post<{ pending: boolean }>(`/projects/${projectId}/sql-chat`, { message })
+}
+
+export function deleteSqlJob(jobId: number): Promise<{ ok: boolean }> {
+  return del<{ ok: boolean }>(`/sql-jobs/${jobId}`)
+}
+
 // ---- シート関係性グラフ ----
 export type RelType = 'lookup-join' | 'filter-key' | 'filtered-agg' | 'aggregation' | 'passthrough' | 'derived' | 'copy'
 
