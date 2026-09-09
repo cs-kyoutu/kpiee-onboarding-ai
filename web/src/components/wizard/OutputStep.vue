@@ -38,6 +38,11 @@ const savingSpec = ref(false)
 // プレビューを作り直すための連番。指定が変わるたびに増やす
 const reloadKey = ref(0)
 const previewOn = ref(true)
+// レポート生成中の表示。サーバー側の生成（関係グラフ読み込み＋HTML組み立て）は数秒〜数十秒かかり、
+// 無反応に見えると「壊れた」と思われるため、iframe が読み終わるまで回転を出す
+const previewLoading = ref(true)
+watch(reloadKey, () => { previewLoading.value = true })
+watch(previewOn, on => { if (on) previewLoading.value = true })
 
 const previewSrc = computed(() => `${reportUrl(props.projectId, true)}&v=${reloadKey.value}`)
 const sectionKeys = computed(() => Object.keys(sectionLabels.value) as (keyof ReportSpecSections)[])
@@ -327,7 +332,14 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
     <div class="wz-studio">
       <!-- 出来上がり（現行フォーマットそのまま） -->
       <div v-if="previewOn" class="wz-card wz-preview">
-        <iframe :key="reloadKey" :src="previewSrc" title="レポートのプレビュー"></iframe>
+        <div v-if="previewLoading" class="wz-preview-loading">
+          <span class="wz-spinner"></span>
+          <span>レポートを作っています…</span>
+        </div>
+        <iframe
+          :key="reloadKey" :src="previewSrc" title="レポートのプレビュー"
+          @load="previewLoading = false"
+        ></iframe>
       </div>
 
       <div class="wz-studio-side">
