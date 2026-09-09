@@ -34,9 +34,9 @@ import {
 import { REPORT_ITEM_LABELS, REPORT_SECTION_LABELS } from './reportSpec.js';
 import { invalidateBooks } from './qa/tools.js';
 import { aiAvailable, callStructured, MODEL, estimateCostUsd } from './ai/client.js';
-import { STEP_FLOW_SCHEMA } from './ai/schemas.js';
+import { STEP_FLOW_SCHEMA, REQUIREMENTS_SCHEMA } from './ai/schemas.js';
 import {
-  googleConfigured, fetchDriveArtifact, fetchDriveForRelations, clearStreamCache, listSpreadsheets, listFolderChildren, extractSpreadsheetId,
+  googleConfigured, fetchDriveArtifact, fetchDriveDoc, fetchDriveForRelations, clearStreamCache, listSpreadsheets, listFolderChildren, extractSpreadsheetId,
   oauthClientConfigured, connectionStatus, buildAuthUrl, exchangeCodeAndStore, disconnect, warmupDrive,
 } from './google/drive.js';
 
@@ -162,6 +162,7 @@ app.delete('/api/projects/:id', async (req, res) => {
     await t.prepare(`DELETE FROM match_results WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM deliverables WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM project_scripts WHERE project_id = ?`).run(projectId);
+    await t.prepare(`DELETE FROM project_docs WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM project_flags WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM report_specs WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM report_chat_messages WHERE project_id = ?`).run(projectId);
@@ -303,11 +304,16 @@ app.get('/api/google/spreadsheets', async (req, res) => {
   }
 });
 
-// フォルダ別ブラウズ: 指定フォルダ（既定=マイドライブ直下）のサブフォルダ + 表ファイルを返す。
+// フォルダ別ブラウズ: 指定フォルダ（既定=マイドライブ直下）のサブフォルダ + ファイルを返す。
+// kind=docs では表ではなく業務資料（txt / md / docx / pdf / Google ドキュメント）を並べる。
+// 手順書は案件データと同じフォルダに置かれていることが多いため、同じ辿り方で拾えるようにする。
 app.get('/api/google/drive', async (req, res) => {
   if (!googleConfigured()) return res.status(400).json({ error: 'Google 連携が未設定です' });
   try {
-    res.json(await listFolderChildren(typeof req.query.folder === 'string' ? req.query.folder : undefined));
+    res.json(await listFolderChildren(
+      typeof req.query.folder === 'string' ? req.query.folder : undefined,
+      req.query.kind === 'docs' ? 'docs' : 'sheets',
+    ));
   } catch (e) {
     res.status(502).json({ error: String(e) });
   }
@@ -590,6 +596,19 @@ interface FileRelRow {
   step: number | null; step_title: string | null; adds: string | null;
 }
 
+/**
+ * 資料に書かれたファイル名を受領ファイルへ解決する関数を作る。
+ * 完全一致 → ラベル一致（①68期集計得意先別実績 のような接頭記号込みの呼び名）→
+ * 記号・空白を落とした一致の順。資料側は「①68期実績」のように省略で書かれることが多い。
+ */
+function artifactNameResolver(arts: { id: number; original_filename: string }[]): (name: string) => number | null {
+  const norm = (s: string) => s.replace(/\.[A-Za-z0-9]+$/, '').replace(/[\s　_\-.]/g, '').toLowerCase();
+  const byExact = new Map(arts.map(a => [a.original_filename, a.id]));
+  const byLabel = new Map(arts.map(a => [fileLabelOf(a.original_filename), a.id]));
+  const byNorm = new Map(arts.map(a => [norm(a.original_filename), a.id]));
+  return (name: string) => byExact.get(name) ?? byLabel.get(fileLabelOf(name)) ?? byNorm.get(norm(name)) ?? null;
+}
+
 /** 解析対象になるアーティファクト（関係グラフの file ラベルと対応づくもの）を返す */
 async function relationArtifacts(projectId: number): Promise<{ id: number; original_filename: string; kind: string; sheet_roles: string | null }[]> {
   const rows = await db.prepare(
@@ -831,6 +850,115 @@ app.put('/api/projects/:id/report-spec', async (req, res) => {
   }
 });
 
+/**
+ * 業務資料（要件定義シート・手順書）から案件の要件を読み取り、案として返す。
+ *
+ * なぜ必要か: 「何を再現するのか」「どのタブがアウトプットか」「配賦の例外」は要件定義シートに
+ * 書かれている指定で、数式・値の一致からは一切出てこない。これを人が画面へ書き写すのは、
+ * 資料を貰っているのに二度手間になる（実際に協和案件ではスクリプトへ転記して作った）。
+ *
+ * 保存はしない。読み取り違いをそのまま顧客レポートへ載せないため、確定は人が行う。
+ */
+app.post('/api/projects/:id/requirements/extract', async (req, res) => {
+  const projectId = Number(req.params.id);
+  try {
+    if (!aiAvailable()) {
+      return res.status(400).json({ error: 'ANTHROPIC_API_KEY が未設定のため、資料の読み取りは使えません' });
+    }
+    const arts = await relationArtifacts(projectId);
+    if (arts.length === 0) return res.status(400).json({ error: '受領ファイルがまだありません' });
+    const docs = (await listProjectDocs(projectId)).filter(d => d.content.trim() !== '');
+    if (docs.length === 0) {
+      return res.status(400).json({
+        error: '業務資料が登録されていません。要件定義シート・手順書（txt / md / docx / pdf）を先にアップロードしてください',
+      });
+    }
+
+    // ファイルとシートの一覧を渡す。シート名まで渡すのは、資料が「対象タブはメイン」のように
+    // タブ名で指定してくるため（役割の当て込みはシート単位でしか効かない）。
+    const fileList = arts.map(a => {
+      const sheets = Object.keys(parseSheetRoles(a.sheet_roles) ?? {});
+      return `- ${a.original_filename}${sheets.length > 0 ? `（シート: ${sheets.join(' / ')}）` : ''}`;
+    }).join('\n');
+    const body = docs.map(d => `<doc name="${d.filename}">\n${d.content}\n</doc>`).join('\n');
+    const instruction = [
+      '次の業務資料（要件定義シート・手順書）から、この案件の要件を取り出してください。',
+      '顧客へ渡す構造分析レポートの「再現するアウトプット」「作られ方」「前提」に載せる内容になります。',
+      '',
+      '守ること:',
+      '- 資料に書かれていないことは作らない。読み取れない項目は空配列・空文字で返す',
+      '- ファイル名・シート名は、下の受領ファイル一覧の名前をそのまま使う（言い換え・省略をしない）',
+      '- 資料の項目が空欄なら、それは「まだいただいていない」ものとして assumptions へ1行入れる',
+      '- 顧客が読む文章になるため、資料の言い回しを尊重し、こちらの推測で断定しない',
+      '',
+      `<received_files>\n${fileList}\n</received_files>`,
+      `<docs>\n${body}\n</docs>`,
+    ].join('\n');
+
+    interface Extracted {
+      reproduce: { label: string; text: string }[];
+      howMade: string[];
+      howMadeSource: string;
+      assumptions: string[];
+      fileNotes: { file: string; note: string }[];
+      roleHints: { file: string; sheet: string; role: string; reason: string }[];
+    }
+    const result = await callStructured<Extracted>(
+      projectId, 'requirements', instruction, REQUIREMENTS_SCHEMA as unknown as Record<string, unknown>,
+    );
+    const data = result.data;
+
+    // ファイル名を受領ファイルへ解決する。解決できた fileNotes だけがレポートで効く
+    // （spec の fileNotes は受領時のファイル名で突き合わせるため）。
+    const idOf = artifactNameResolver(arts);
+    const nameOf = new Map(arts.map(a => [a.id, a.original_filename]));
+    const sheetsOf = new Map(arts.map(a => [a.id, Object.keys(parseSheetRoles(a.sheet_roles) ?? {})]));
+    const unresolved = new Set<string>();
+
+    const fileNotes = data.fileNotes.map(n => {
+      const id = idOf(n.file);
+      if (id === null) unresolved.add(n.file);
+      // 解決できたら受領時のファイル名へ揃える（資料側の省略表記のままだと 01 の突き合わせが外れる）
+      return id === null ? null : { file: nameOf.get(id)!, note: n.note };
+    }).filter((n): n is { file: string; note: string } => n !== null);
+
+    // 役割の当て込み案。シート名も突き合わせ、資料が指すシートが実在するかを画面へ返す
+    const roleHints = data.roleHints.map(h => {
+      const artifactId = idOf(h.file);
+      if (artifactId === null) unresolved.add(h.file);
+      const sheets = artifactId === null ? [] : sheetsOf.get(artifactId) ?? [];
+      const sheet = sheets.find(s => s === h.sheet)
+        ?? sheets.find(s => s.replace(/[\s　]/g, '') === h.sheet.replace(/[\s　]/g, ''))
+        ?? null;
+      return {
+        file: artifactId === null ? h.file : nameOf.get(artifactId)!,
+        artifactId,
+        sheet: sheet ?? h.sheet,
+        sheetFound: sheet !== null,
+        role: h.role,
+        reason: h.reason,
+      };
+    });
+
+    res.json({
+      docCount: docs.length,
+      docNames: docs.map(d => d.filename),
+      // そのまま PUT /report-spec へ渡せる形（画面で確認・編集してから保存する）
+      spec: {
+        reproduce: data.reproduce,
+        howMade: data.howMade,
+        howMadeSource: data.howMadeSource,
+        assumptions: data.assumptions,
+        fileNotes,
+      },
+      roleHints,
+      unresolved: [...unresolved],
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
 /** 相談履歴。回答生成は非同期なので pending で状態を返す（Q&A と同じ方式） */
 app.get('/api/projects/:id/report-chat', async (req, res) => {
   const projectId = Number(req.params.id);
@@ -988,14 +1116,9 @@ app.post('/api/projects/:id/file-relations/from-docs', async (req, res) => {
       projectId, 'step-flow', instruction, STEP_FLOW_SCHEMA as unknown as Record<string, unknown>,
     );
 
-    // ファイル名 → artifact id へ解決する。完全一致 → ラベル一致 → 記号・空白を落とした一致の順。
-    // 解決できなかったものは捨てずに返し、画面で「どのファイルか」を選べるようにする。
-    const norm = (s: string) => s.replace(/\.[A-Za-z0-9]+$/, '').replace(/[\s　_\-.]/g, '').toLowerCase();
-    const byExact = new Map(arts.map(a => [a.original_filename, a.id]));
-    const byLabel = new Map(arts.map(a => [fileLabelOf(a.original_filename), a.id]));
-    const byNorm = new Map(arts.map(a => [norm(a.original_filename), a.id]));
-    const idOf = (name: string): number | null =>
-      byExact.get(name) ?? byLabel.get(fileLabelOf(name)) ?? byNorm.get(norm(name)) ?? null;
+    // ファイル名 → artifact id へ解決する。解決できなかったものは捨てずに返し、
+    // 画面で「未受領のファイルを指している可能性」として見せる。
+    const idOf = artifactNameResolver(arts);
     const proposals = result.data.steps.map(s => ({
       ...s,
       relType: (FILE_REL_TYPES as string[]).includes(s.relType) ? s.relType : 'unknown',
@@ -1138,6 +1261,33 @@ app.post('/api/projects/:id/docs', upload.single('file'), async (req, res) => {
     });
   } catch (e) {
     res.status(500).json({ error: String(e) });
+  }
+});
+
+/**
+ * ドライブから業務資料を取り込む。
+ *
+ * 要件定義書は手元から上げることが多いが、手順書の txt やロジックのメモは
+ * 案件データと同じドライブフォルダに一緒に置かれている。データの取り込みと同じ経路で
+ * 拾えないと、資料だけ手元へ落として上げ直すことになる。
+ * 無保存モード（ARTIFACT_EPHEMERAL）でも資料は本文を保存する — 原本データではなく、
+ * 解読の前提として繰り返し参照する文書のため（運用方針: 派生結果物は保存、raw のみ ephemeral）。
+ */
+app.post('/api/projects/:id/docs/from-drive', async (req, res) => {
+  const projectId = Number(req.params.id);
+  const { url } = req.body as { url?: string };
+  if (!url) return res.status(400).json({ error: 'url（ドライブの URL または ID）は必須です' });
+  if (!googleConfigured()) return res.status(400).json({ error: 'Google 連携が未設定です' });
+  try {
+    const { filename, buffer } = await fetchDriveDoc(url);
+    const id = await addProjectDoc(projectId, filename, buffer);
+    const doc = (await listProjectDocs(projectId)).find(d => d.id === id)!;
+    res.status(201).json({
+      id: doc.id, filename: doc.filename, byte_size: doc.byte_size,
+      text_length: doc.content.length, extract_error: doc.extract_error, created_at: doc.created_at,
+    });
+  } catch (e) {
+    res.status(502).json({ error: String(e) });
   }
 });
 

@@ -93,17 +93,27 @@ server/src/
   ai/mock.ts               … モック AI（API キーなしで全フロー動作）
   pipeline/orchestrator.ts … P1解読→P2生成→P3検証(最大3回再生成)→P4照合→P5パッケージ（§7.2）
   match/simulate.ts        … DuckDB ローカルシミュレーション照合（§6.5）
+  projectDocs.ts           … 業務資料（要件定義書・手順書）の取り込みと本文抽出。AI へ前提として渡す
+  relationsReport.ts       … 顧客共有レポート（HTML）の生成
+  reportSpec.ts            … レポートの指定（載せる節・伺った要件）の型と正規化
 web/src/
-  views/ProjectList.vue    … SC-01 プロジェクト一覧
-  views/ProjectDetail.vue  … SC-02 進行ボード（ステッパー＋タブ）
-  views/AdminView.vue      … SC-08 AI 使用量ダッシュボード
-  components/UploadPanel.vue       … SC-03 アップロード＋シートプレビュー
-  components/ReviewPanel.vue       … SC-04 解読検収（左:シート/右:解読項目）
-  components/DeliverablesPanel.vue … SC-05 成果物ビューア（検証バッジ付き）
-  components/MatchPanel.vue        … SC-06 数値照合結果
-  components/QuestionsPanel.vue    … SC-07 顧客確認事項（メール文面出力）
-  components/SheetViewer.vue       … 数式ハイライト付きシートビューア
+  views/ProjectList.vue    … プロジェクト一覧
+  views/ProjectWizard.vue  … プロジェクト画面（4ステップ）
+  views/AdminView.vue      … AI 使用量ダッシュボード
+  components/wizard/DrivePickStep.vue … ① データ取り込み（ドライブ / ローカル）
+  components/wizard/DocsPanel.vue     … ① 業務資料（要件定義書・手順書。ドライブ / ローカル）
+  components/wizard/ClassifyStep.vue  … ② 分類確認（資料の指定を当て込める）
+  components/wizard/AnalyzeStep.vue   … ③ 構造把握（概要 / シート関係 / ブック関係 / 要確認）
+  components/wizard/OutputStep.vue    … ④ レポート作成（プレビュー＋相談＋要件定義の確認）
+  components/RelationsPanel.vue       … シート関係グラフ（③ から開く）
+  components/FileRelationsPanel.vue   … ブック関係の登録（③ から開く）
+  components/AttentionPanel.vue       … 要確認の内訳（③ から開く）
+  components/ScriptsPanel.vue         … Apps Script 原文の登録（① の資料の中）
 ```
+
+画面はレポート作成の流れ（資料・データ取り込み → 分類確認 → 構造把握 → レポート作成）だけを持つ。
+機能ごとのタブを並べた従来UI（解読検収・成果物生成・数値照合・顧客確認事項・AI Q&A）は、
+この流れに関係しないため 2026-09 に削除した（API は残っている）。
 
 ## Phase 2 以降（未実装・設計書 §10）
 

@@ -53,10 +53,20 @@ export function listDriveSheets(q?: string): Promise<DriveSheet[]> {
   return get<DriveSheet[]>(`/google/spreadsheets${q ? `?q=${encodeURIComponent(q)}` : ''}`)
 }
 
-/** フォルダ別ブラウズ: 指定フォルダ（未指定=マイドライブ直下）のサブフォルダ + 表ファイル */
+/**
+ * フォルダ別ブラウズ: 指定フォルダ（未指定=マイドライブ直下）のサブフォルダ + ファイル。
+ * kind='docs' では表ではなく業務資料（txt / md / docx / pdf / Google ドキュメント）を並べる。
+ * 手順書は案件データと同じフォルダに置かれていることが多いため、同じ辿り方で拾える。
+ */
 export interface DriveFolder { id: string; name: string }
-export function browseDrive(folderId?: string): Promise<{ folders: DriveFolder[]; files: DriveSheet[] }> {
-  return get<{ folders: DriveFolder[]; files: DriveSheet[] }>(`/google/drive${folderId ? `?folder=${encodeURIComponent(folderId)}` : ''}`)
+export function browseDrive(
+  folderId?: string, kind: 'sheets' | 'docs' = 'sheets',
+): Promise<{ folders: DriveFolder[]; files: DriveSheet[] }> {
+  const q = new URLSearchParams()
+  if (folderId) q.set('folder', folderId)
+  if (kind === 'docs') q.set('kind', 'docs')
+  const s = q.toString()
+  return get<{ folders: DriveFolder[]; files: DriveSheet[] }>(`/google/drive${s ? `?${s}` : ''}`)
 }
 
 // ---- Google Web ログイン（OAuth）----
@@ -242,6 +252,77 @@ export function addScript(projectId: number, name: string, code: string): Promis
 
 export function deleteScript(scriptId: number): Promise<{ ok: boolean }> {
   return del<{ ok: boolean }>(`/scripts/${scriptId}`)
+}
+
+// ---- 業務資料（要件定義シート・手順書・引継ぎメモ）----
+// データ（xlsx/csv）とは置き場所を分ける。資料は「データがどう作られるか」を書いた文書で、
+// 関係分析やシート役割判定へ混ぜると判定を汚すだけ。一方で中身は AI の解読・要件の読み取りに効かせる。
+export interface ProjectDoc {
+  id: number
+  filename: string
+  byte_size: number
+  /** 抽出できた本文の文字数。0 なら「入れたのに効いていない」ので画面で警告する */
+  text_length: number
+  extract_error: string | null
+  created_at: string
+}
+
+export function getProjectDocs(projectId: number): Promise<ProjectDoc[]> {
+  return get<ProjectDoc[]>(`/projects/${projectId}/docs`)
+}
+
+/** 資料をアップロードする。kind は使わないが uploadFile の形に合わせる */
+export function uploadProjectDoc(projectId: number, file: File): Promise<ProjectDoc> {
+  return uploadFile<ProjectDoc>(`/projects/${projectId}/docs`, file, 'doc')
+}
+
+/** ドライブにある資料（手順書 txt・ロジックのメモ等）をそのまま取り込む */
+export function importDocFromDrive(projectId: number, url: string): Promise<ProjectDoc> {
+  return post<ProjectDoc>(`/projects/${projectId}/docs/from-drive`, { url })
+}
+
+/** 何が読み取れたかの確認用（本文をそのまま返す） */
+export function getProjectDocText(docId: number): Promise<{
+  filename: string; content: string; extract_error: string | null
+}> {
+  return get<{ filename: string; content: string; extract_error: string | null }>(`/docs/${docId}/text`)
+}
+
+export function deleteProjectDoc(docId: number): Promise<{ ok: boolean }> {
+  return del<{ ok: boolean }>(`/docs/${docId}`)
+}
+
+/** 資料が指定しているシート役割（分類確認の当て込みに使う） */
+export interface RoleHint {
+  file: string
+  /** 受領ファイルへ解決できた場合の artifact id。null なら未受領のファイルを指している */
+  artifactId: number | null
+  sheet: string
+  /** 資料の指すシートが実在したか。false なら当て込めない（シート名の言い換えか未受領） */
+  sheetFound: boolean
+  role: string
+  reason: string
+}
+
+export interface RequirementsDraft {
+  docCount: number
+  docNames: string[]
+  /** そのまま saveReportSpec へ渡せる形（画面で確認・編集してから保存する） */
+  spec: {
+    reproduce: { label: string; text: string }[]
+    howMade: string[]
+    howMadeSource: string
+    assumptions: string[]
+    fileNotes: { file: string; note: string }[]
+  }
+  roleHints: RoleHint[]
+  /** 資料に出てきたが受領ファイルに無い名前（未受領の可能性） */
+  unresolved: string[]
+}
+
+/** 業務資料から案件の要件を読み取る。保存はせず、案を返すだけ */
+export function extractRequirements(projectId: number): Promise<RequirementsDraft> {
+  return post<RequirementsDraft>(`/projects/${projectId}/requirements/extract`)
 }
 
 // ---- シート関係性グラフ ----
@@ -465,12 +546,30 @@ export interface ReportSpecItems {
   fileTable: boolean; sheetDetails: boolean; declaredAudit: boolean
   fileFlow: boolean; erDiagram: boolean; detailLogic: boolean; interactiveGraph: boolean
 }
+/** 02-1「再現するもの」の1件。02 の入口で「何を作り直すのか」を帳票の単位で並べる */
+export interface ReportOverviewItem { label: string; text: string }
+/** 01 でファイルを開いた先頭に出す補足（そのブックの読み方） */
+export interface ReportFileNote { file: string; note: string }
+
+// 要件定義シート由来の指定（reproduce / howMade / assumptions / fileNotes）は、
+// 数式からは出てこない「伺った内容」。サーバーの ReportSpec と同じ名前で持ち、
+// 画面から直接確認・編集できるようにする（従来は AI 相談かスクリプト転記しか経路が無かった）。
 export interface ReportSpec {
   title: string
   focus: string
   sections: ReportSpecSections
   items: ReportSpecItems
   notes: string[]
+  /** 02-1「再現するもの」。kpiee で再現する帳票 */
+  reproduce: ReportOverviewItem[]
+  /** 02-1「作られ方」。どのファイルから何を付与するか（1行ずつ） */
+  howMade: string[]
+  /** 02-1 の導入で名前を出す出典（例: 要件定義シート（○○様_△△pjt）と試算手順） */
+  howMadeSource: string
+  /** 02-2「再現するうえでの前提」。配賦の例外・未受領データの扱いなど */
+  assumptions: string[]
+  /** 01 のファイルごとの補足（種別・更新頻度・対象タブなど） */
+  fileNotes: ReportFileNote[]
 }
 
 /** 相談の前提として画面にも出す解析結果の要約 */

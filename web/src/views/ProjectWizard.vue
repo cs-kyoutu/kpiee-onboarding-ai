@@ -1,10 +1,11 @@
 <script setup lang="ts">
-// 新UI: 案件ごとの4ステップ。
-//   ① データ取り込み（Google ドライブ）→ ② 分類確認 → ③ 構造解析 → ④ レポートを見ながら相談・生成
+// 案件ごとの4ステップ。
+//   ① 資料・データ取り込み → ② 分類確認 → ③ 構造把握 → ④ レポートを見ながら相談・生成
 //
-// 従来UI（ProjectDetail.vue のタブ）は機能ごとの入口が10個並び、初見では「次に何をするか」が読めない。
-// こちらは「1画面に1つの決めごと」に絞り、完了条件を満たすと次へ進める形にする。
-// どちらが使いやすいか比べるため、両方を残して ProjectPage.vue のトグルで切り替える。
+// 以前は機能ごとのタブ（ProjectDetail.vue）が10個並ぶ従来UI と併存していたが、
+// この4つ以外の入口（解読検収・成果物生成・数値照合・顧客確認事項・AI Q&A）は
+// レポート作成の流れに関係しないため畳んだ。構造把握に必要な入口（シート関係・ブック関係・要確認）は
+// ステップ3の中へ移し、数式に残らない前提（業務資料・Apps Script）はステップ1の中へ移した。
 //
 // ④ は「相談」と「出来上がりの確認」を1画面にまとめている。何を直したいかは実物を見て初めて
 // 出てくるため、プレビューを見ながら相談し、その場で作り直せる形にした。
@@ -17,11 +18,15 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { get, type ProjectDetailData } from '../api'
 import DrivePickStep from '../components/wizard/DrivePickStep.vue'
+import DocsPanel from '../components/wizard/DocsPanel.vue'
 import ClassifyStep from '../components/wizard/ClassifyStep.vue'
 import AnalyzeStep from '../components/wizard/AnalyzeStep.vue'
 import OutputStep from '../components/wizard/OutputStep.vue'
 
 const props = defineProps<{ projectId: number }>()
+
+/** データ取り込みで開いているドライブフォルダ。資料の受け口の初期表示に渡す */
+const dataFolder = ref<{ id?: string; name: string }>({ name: 'マイドライブ' })
 
 // ?step=2 で開始位置を指定できる（「分類のところを見て」と URL で渡せるように）
 const route = useRoute()
@@ -31,9 +36,9 @@ const step = ref(1)
 const error = ref('')
 
 const STEPS = [
-  { no: 1, label: 'データ取り込み', desc: 'ドライブから案件のファイルを選ぶ' },
+  { no: 1, label: '資料・データ取り込み', desc: '案件のファイルと、要件定義書・手順書を入れる' },
   { no: 2, label: '分類確認', desc: 'インプット / マスタ / 中間 / 最終アウトプット' },
-  { no: 3, label: '構造解析', desc: '表どうしの関係を解析して確認' },
+  { no: 3, label: '構造把握', desc: 'シート関係・ブック関係・要確認を見る' },
   { no: 4, label: 'レポート作成', desc: '出来上がりを見ながら相談・修正して出力' },
 ] as const
 
@@ -75,7 +80,7 @@ function next() {
   if (step.value < STEPS.length && reachable(step.value + 1)) step.value++
 }
 
-// パイプライン実行中は状態が変わるのでポーリングする（従来UI と同じ間隔）
+// パイプライン実行中は状態が変わるのでポーリングする
 let timer: ReturnType<typeof setInterval> | null = null
 onMounted(async () => {
   await load()
@@ -119,15 +124,23 @@ watch(step, () => { void load() })
     <div class="wz-panel">
       <Transition name="wz-step" mode="out-in">
       <div :key="step" class="wz-step-body">
-      <DrivePickStep
-        v-if="step === 1" :project-id="props.projectId" :artifacts="project.artifacts" @changed="load"
-      />
+      <!-- ① データと資料。受け口は分けるが、同じフォルダから拾えるよう1画面に置く -->
+      <template v-if="step === 1">
+        <DrivePickStep
+          :project-id="props.projectId" :artifacts="project.artifacts"
+          @changed="load" @folder="dataFolder = $event"
+        />
+        <DocsPanel
+          :project-id="props.projectId" :folder-id="dataFolder.id" :folder-name="dataFolder.name"
+        />
+      </template>
       <ClassifyStep
         v-else-if="step === 2" :project-id="props.projectId" :artifacts="project.artifacts"
         :confirmed="(project.flags ?? []).includes('roles_confirmed')" @changed="load"
       />
       <AnalyzeStep
-        v-else-if="step === 3" :project-id="props.projectId" :runs="project.runs" @changed="load"
+        v-else-if="step === 3" :project-id="props.projectId" :artifacts="project.artifacts"
+        :runs="project.runs" @changed="load"
       />
       <OutputStep v-else :project-id="props.projectId" @changed="load" />
       </div>

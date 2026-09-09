@@ -3,17 +3,22 @@ import { createRouter, createWebHistory } from 'vue-router'
 import './style.css'
 import App from './App.vue'
 import ProjectList from './views/ProjectList.vue'
-import ProjectPage from './views/ProjectPage.vue'
+import ProjectWizard from './views/ProjectWizard.vue'
 import AdminView from './views/AdminView.vue'
 import UsageView from './views/UsageView.vue'
 
-// 画面構成（設計書 §5）: SC-01 一覧 / SC-02〜07 プロジェクト詳細 / SC-08 管理
-// プロジェクト画面は新UI（5ステップ）と従来UI（タブ）を持ち、ProjectPage が切り替える。
+// 画面構成: 一覧 / プロジェクト（4ステップ）/ 使用量 / 管理。
+// 機能ごとのタブを並べた従来UI は畳んだ（レポート作成の流れに関係しない入口だったため）。
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', component: ProjectList },
-    { path: '/projects/:id', component: ProjectPage },
+    {
+      path: '/projects/:id',
+      component: ProjectWizard,
+      // ルートパラメータを props へ。ProjectWizard は projectId を受け取る作りのため
+      props: route => ({ projectId: Number(route.params.id) }),
+    },
     { path: '/usage', component: UsageView },
     { path: '/admin', component: AdminView },
   ],

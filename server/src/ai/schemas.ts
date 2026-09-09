@@ -48,6 +48,87 @@ export const STEP_FLOW_SCHEMA = {
   additionalProperties: false,
 } as const;
 
+/**
+ * 業務資料（要件定義シート・手順書）から読み取る「案件の要件」のスキーマ。
+ *
+ * 要件定義シートには、数式からは絶対に出てこない指定が書かれている:
+ *   何を再現するのか（対象ブックと対象タブ）／どのファイルが何番のインプットか／
+ *   配賦の例外などの特殊対応／ファイルごとの更新頻度・備考。
+ * これをレポートの指定（reproduce / howMade / assumptions / fileNotes）と
+ * シート役割の当て込み（roleHints）の案として取り出し、人が確認して確定する。
+ *
+ * 資料に書かれていないことは作らせない。空配列で返させ、画面には「読み取れなかった」と出す。
+ * ファイル名は受領ファイル名そのままを返させる（言い換えられると artifact へ解決できない）。
+ */
+export const REQUIREMENTS_SCHEMA = {
+  type: 'object',
+  properties: {
+    reproduce: {
+      type: 'array',
+      description: 'kpiee で再現する帳票（最大6件）。資料に「アウトプット」として指定されているもの',
+      items: {
+        type: 'object',
+        properties: {
+          label: { type: 'string', description: '帳票の呼び名（例: 顧客別営業利益）' },
+          text: { type: 'string', description: 'どのファイルのどのタブで、何を並べた表なのか' },
+        },
+        required: ['label', 'text'],
+        additionalProperties: false,
+      },
+    },
+    howMade: {
+      type: 'array', items: { type: 'string' },
+      description: '作られ方（最大8件）。どのファイルから何を付与し、どこがそれを拾うのかを1行ずつ。'
+        + '資料に手順として書かれている順に並べる',
+    },
+    howMadeSource: {
+      type: 'string',
+      description: '出典の呼び名。資料そのものの名前を使う（例: 要件定義シート（○○様_△△pjt）と試算手順）',
+    },
+    assumptions: {
+      type: 'array', items: { type: 'string' },
+      description: '再現するうえでの前提（最大8件）。資料の「特殊対応」や例外の指定'
+        + '（例: 配賦基準の計算では粗利が負の場合は 0 として扱う）。'
+        + '未受領・空欄の資料項目も「まだいただいていないものとして整理」の形で1件にする',
+    },
+    fileNotes: {
+      type: 'array',
+      description: 'ファイルごとの補足。資料の種別・更新頻度・備考をそのまま写す',
+      items: {
+        type: 'object',
+        properties: {
+          file: { type: 'string', description: '対象ファイル名。受領ファイル一覧の名前をそのまま使う' },
+          note: { type: 'string', description: 'そのファイルについての一言（例: アウトプット（月次）。対象タブは「メイン」）' },
+        },
+        required: ['file', 'note'],
+        additionalProperties: false,
+      },
+    },
+    roleHints: {
+      type: 'array',
+      description: '資料が指定しているシートの役割。タブ名まで指定されているものだけを挙げる。'
+        + '資料から読み取れないシートは挙げない（自動判定のままにする）',
+      items: {
+        type: 'object',
+        properties: {
+          file: { type: 'string', description: '対象ファイル名。受領ファイル一覧の名前をそのまま使う' },
+          sheet: { type: 'string', description: '対象シート（タブ）名。シート一覧の名前をそのまま使う' },
+          role: {
+            type: 'string',
+            enum: ['input_data', 'master_data', 'working_sheet', 'final_output', 'unknown'],
+            description: 'インプット / マスタ / 中間 / 最終アウトプット / 不明',
+          },
+          reason: { type: 'string', description: '資料のどの記述からそう読んだか（例: 要件定義シート「受領データの確認」でアウトプット指定）' },
+        },
+        required: ['file', 'sheet', 'role', 'reason'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['reproduce', 'howMade', 'howMadeSource', 'assumptions', 'fileNotes', 'roleHints'],
+  additionalProperties: false,
+} as const;
+
 /** P1 解読: 解読項目リスト＋全体構造の自然言語サマリのスキーマ */
 export const FINDINGS_SCHEMA = {
   type: 'object',

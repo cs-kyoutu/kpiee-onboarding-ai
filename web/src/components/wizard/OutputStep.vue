@@ -10,7 +10,9 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   getReportChat, sendReportChat, getReportSpec, getReportFacts, saveReportSpec, reportUrl,
-  type ReportChatMessage, type ReportFacts, type ReportSpec, type ReportSpecItems, type ReportSpecSections,
+  extractRequirements,
+  type ReportChatMessage, type ReportFacts, type ReportFileNote, type ReportOverviewItem,
+  type ReportSpec, type ReportSpecItems, type ReportSpecSections,
 } from '../../api'
 
 const props = defineProps<{ projectId: number }>()
@@ -76,6 +78,12 @@ function patchSummary(raw?: string | null): string[] {
       out.push(`${itemLabels.value[k] ?? k}: ${v ? '出す' : '出さない'}`)
     }
     if (p.notes) out.push(`補足 ${p.notes.length} 件`)
+    // 要件（伺った内容）側の変更。ここが変わるとレポートの 02 が変わるので必ず出す
+    if (p.reproduce) out.push(`再現するもの ${p.reproduce.length} 件`)
+    if (p.howMade) out.push(`作られ方 ${p.howMade.length} 件`)
+    if (p.howMadeSource !== undefined) out.push(`出典「${p.howMadeSource}」`)
+    if (p.assumptions) out.push(`前提 ${p.assumptions.length} 件`)
+    if (p.fileNotes) out.push(`ファイルの備考 ${p.fileNotes.length} 件`)
     return out
   } catch {
     return ['構成を更新しました']
@@ -87,6 +95,88 @@ async function loadSpec() {
   spec.value = d.spec
   sectionLabels.value = d.sectionLabels
   itemLabels.value = d.itemLabels
+  if (!reqDirty.value) syncRequirements(d.spec)
+}
+
+// ---- 要件定義（伺った内容）----
+// 「何を再現するか」「作られ方」「前提」「ファイルごとの備考」は、要件定義書・手順書に
+// 書かれている指定で、数式・値の一致からは一切出てこない。以前はここへ入れる経路が
+// AI 相談かスクリプトへの転記しか無く、実際に協和案件はスクリプトへ書き写して作った。
+// 資料から読み取って、この欄で確認・修正してから保存する形にする。
+const reqBusy = ref(false)
+const reqMsg = ref('')
+const reqNotes = ref<string[]>([])
+const reqSaving = ref(false)
+/** 人が触った or 読み取った後は、ポーリングでの取り直しで上書きしない */
+const reqDirty = ref(false)
+
+const fReproduce = ref<ReportOverviewItem[]>([])
+const fHowMade = ref('')
+const fHowMadeSource = ref('')
+const fAssumptions = ref('')
+const fFileNotes = ref<ReportFileNote[]>([])
+
+/** 保存済みの指定を編集欄へ写す（1行=1件のテキストへ落とす） */
+function syncRequirements(s: ReportSpec) {
+  fReproduce.value = s.reproduce.map(r => ({ ...r }))
+  fHowMade.value = s.howMade.join('\n')
+  fHowMadeSource.value = s.howMadeSource
+  fAssumptions.value = s.assumptions.join('\n')
+  fFileNotes.value = s.fileNotes.map(n => ({ ...n }))
+}
+
+const lines = (s: string): string[] => s.split('\n').map(t => t.trim()).filter(Boolean)
+
+/** 業務資料から読み取って編集欄へ入れる。保存はしない（読み取り違いをそのまま載せないため） */
+async function readRequirements() {
+  reqBusy.value = true
+  reqMsg.value = ''
+  reqNotes.value = []
+  error.value = ''
+  try {
+    const r = await extractRequirements(props.projectId)
+    fReproduce.value = r.spec.reproduce
+    fHowMade.value = r.spec.howMade.join('\n')
+    fHowMadeSource.value = r.spec.howMadeSource
+    fAssumptions.value = r.spec.assumptions.join('\n')
+    fFileNotes.value = r.spec.fileNotes
+    reqDirty.value = true
+    const n = r.spec.reproduce.length + r.spec.howMade.length + r.spec.assumptions.length + r.spec.fileNotes.length
+    reqMsg.value = n === 0
+      ? `業務資料 ${r.docCount} 件からは要件を読み取れませんでした。`
+      : `業務資料 ${r.docCount} 件（${r.docNames.join('、')}）から ${n} 件読み取りました。確かめてから保存してください。`
+    if (r.unresolved.length > 0) {
+      reqNotes.value.push(`受領ファイルに見当たらない名前: ${r.unresolved.join('、')} — 未受領の可能性があります`)
+    }
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    reqBusy.value = false
+  }
+}
+
+async function saveRequirements() {
+  reqSaving.value = true
+  error.value = ''
+  try {
+    const res = await saveReportSpec(props.projectId, {
+      reproduce: fReproduce.value.filter(r => r.label.trim() || r.text.trim()),
+      howMade: lines(fHowMade.value),
+      howMadeSource: fHowMadeSource.value.trim(),
+      assumptions: lines(fAssumptions.value),
+      fileNotes: fFileNotes.value.filter(n => n.file.trim() && n.note.trim()),
+    })
+    spec.value = res.spec
+    syncRequirements(res.spec)
+    reqDirty.value = false
+    reqMsg.value = 'レポートへ反映しました。'
+    reloadKey.value++
+    emit('changed')
+  } catch (e) {
+    error.value = String(e)
+  } finally {
+    reqSaving.value = false
+  }
 }
 
 /** 解析結果の要約。重いので画面を開いたときの1回だけ（構成の保存では取り直さない） */
@@ -103,6 +193,8 @@ async function loadChat() {
   messages.value = d.messages
   pending.value = d.pending
   spec.value = d.spec
+  // AI 相談が要件（前提・作られ方）を変えることもある。編集中でなければ欄へ写す
+  if (!reqDirty.value) syncRequirements(d.spec)
   // サーバー側の履歴に自分の発話が入ったら、仮表示は用済み
   if (echo.value && d.messages.some(m => m.role === 'user' && m.content === echo.value)) echo.value = ''
 }
@@ -285,6 +377,64 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
             </div>
           </div>
         </div>
+
+        <!-- 要件定義（伺った内容）。数式からは出てこない指定を、資料から起こして確認する -->
+        <details class="wz-card wz-spec" open>
+          <summary class="wz-h">要件定義（伺った内容）</summary>
+          <p class="muted">
+            レポートの <b>02 再現するアウトプットの確認</b> になる部分です。
+            数式には残らないため、<b>要件定義書・手順書が唯一の根拠</b>になります。
+            資料から読み取って、言い回しを直してから保存してください。
+          </p>
+
+          <div class="wz-actions">
+            <button :disabled="reqBusy || reqSaving" @click="readRequirements">
+              {{ reqBusy ? '読み取り中…' : '業務資料から読み取る' }}
+            </button>
+            <button class="primary" :disabled="reqSaving || reqBusy" @click="saveRequirements">
+              {{ reqSaving ? '保存中…' : 'この内容でレポートへ反映' }}
+            </button>
+            <span v-if="reqDirty" class="badge warn">未保存</span>
+          </div>
+          <p v-if="reqMsg" class="muted">{{ reqMsg }}</p>
+          <ul v-if="reqNotes.length > 0" class="wz-list">
+            <li v-for="(n, i) in reqNotes" :key="i" class="muted">{{ n }}</li>
+          </ul>
+
+          <h4 class="wz-h4">再現するもの（帳票）</h4>
+          <div v-for="(r, i) in fReproduce" :key="`rp${i}`" class="wz-pair">
+            <input v-model="r.label" placeholder="呼び名（例: 顧客別営業利益）" @input="reqDirty = true">
+            <input v-model="r.text" placeholder="どのファイルのどのタブで、何を並べた表か" @input="reqDirty = true">
+            <button class="link danger" @click="fReproduce.splice(i, 1); reqDirty = true">削除</button>
+          </div>
+          <button class="link" @click="fReproduce.push({ label: '', text: '' }); reqDirty = true">＋ 行を足す</button>
+
+          <label class="wz-field">
+            <span>作られ方（1行に1件。どのファイルから何を付与するか）</span>
+            <textarea v-model="fHowMade" rows="4" @input="reqDirty = true"></textarea>
+          </label>
+
+          <label class="wz-field">
+            <span>出典の呼び名（例: 要件定義シート（○○様_△△pjt）と試算手順）</span>
+            <input v-model="fHowMadeSource" @input="reqDirty = true">
+          </label>
+
+          <label class="wz-field">
+            <span>再現するうえでの前提（1行に1件。配賦の例外・未受領データの扱いなど）</span>
+            <textarea v-model="fAssumptions" rows="4" @input="reqDirty = true"></textarea>
+          </label>
+
+          <h4 class="wz-h4">ファイルごとの備考（01 で開いた先頭に出ます）</h4>
+          <div v-for="(n, i) in fFileNotes" :key="`fn${i}`" class="wz-pair">
+            <select v-model="n.file" @change="reqDirty = true">
+              <option value="">（ファイルを選ぶ）</option>
+              <option v-for="f in facts?.files ?? []" :key="f.filename" :value="f.filename">{{ f.filename }}</option>
+            </select>
+            <input v-model="n.note" placeholder="例: アウトプット（月次）。対象タブは「メイン」" @input="reqDirty = true">
+            <button class="link danger" @click="fFileNotes.splice(i, 1); reqDirty = true">削除</button>
+          </div>
+          <button class="link" @click="fFileNotes.push({ file: '', note: '' }); reqDirty = true">＋ 行を足す</button>
+        </details>
 
         <!-- 構成の指定（手でも直せる） -->
         <details class="wz-card wz-spec" open>

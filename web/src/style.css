@@ -188,28 +188,6 @@ pre.code {
 .manual-ops { margin-top: 24px; font-size: 13px; color: var(--muted); }
 .manual-ops summary { cursor: pointer; }
 
-/* ---- タブ ---- */
-.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 18px; flex-wrap: wrap; }
-.tabs button {
-  border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none;
-  margin-bottom: -1px; padding: 9px 16px; color: var(--muted); font-weight: 600;
-}
-.tabs button:hover { background: transparent; color: var(--text); }
-.tabs button.active { border-bottom-color: var(--primary); color: var(--primary-dark); }
-
-/* ---- 検収画面の2ペイン（SC-04） ---- */
-.review-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
-@media (max-width: 1000px) { .review-layout { grid-template-columns: 1fr; } }
-
-/* ---- シートビューア ---- */
-.sheet-viewer { overflow: auto; max-height: 560px; border: 1px solid var(--border); border-radius: var(--r); }
-.sheet-viewer td.formula { background: #fff7d6; }
-.sheet-viewer td.highlight { outline: 2px solid var(--primary); }
-
-/* ---- 照合結果グリッド（SC-06） ---- */
-td.cell-match { background: var(--ok-bg); }
-td.cell-mismatch { background: var(--ng-bg); cursor: pointer; }
-
 .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
 .error-box {
   background: var(--ng-bg); color: var(--ng); padding: 11px 14px; border-radius: var(--r-sm);
@@ -217,19 +195,43 @@ td.cell-mismatch { background: var(--ng-bg); cursor: pointer; }
 }
 
 /* ============================================================
-   新UI（5ステップのウィザード）。従来UI（タブ）と同じトークンを使い、
-   見た目の言語は揃えたまま「1画面に1つの決めごと」の並びにする。
+   プロジェクト画面（4ステップ）。「1画面に1つの決めごと」の並びにする。
    ============================================================ */
 
-/* UI 切り替えバー */
-.ui-switch { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
-.ui-switch-btns { display: inline-flex; gap: 2px; background: #f2f4f6; border-radius: 999px; padding: 3px; }
-.ui-switch-btns button {
+/* ステップの中の切り替え（構造把握の掘り下げ先） */
+.wz-subtabs { display: inline-flex; gap: 2px; background: #f2f4f6; border-radius: 999px; padding: 3px; margin-bottom: 14px; }
+.wz-subtabs button {
   border-radius: 999px; background: transparent; color: var(--muted);
   padding: 6px 15px; font-size: 13px; font-weight: 600;
 }
-.ui-switch-btns button:hover { background: rgba(255, 255, 255, 0.7); color: var(--text); }
-.ui-switch-btns button.on { background: #fff; color: var(--text); box-shadow: var(--sh-sm); }
+.wz-subtabs button:hover { background: rgba(255, 255, 255, 0.7); color: var(--text); }
+.wz-subtabs button.on { background: #fff; color: var(--text); box-shadow: var(--sh-sm); }
+
+/* カードの中の入れ子ブロック（資料の受け口・スクリプト登録） */
+.wz-sub { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); }
+.wz-sub > summary { cursor: pointer; font-weight: 600; }
+
+/* ファイル選択をボタンに見せる（既定の input[type=file] は押せる場所が分かりにくい） */
+.wz-filebtn { display: inline-block; }
+.wz-filebtn input { display: none; }
+.wz-filebtn span {
+  display: inline-block; border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 7px 14px; font-size: 13px; font-weight: 600; cursor: pointer; background: #fff;
+}
+.wz-filebtn span:hover { background: var(--primary-soft); color: var(--primary-dark); }
+
+/* 資料の本文プレビュー。読み取り違いはここで気づけるようにする */
+.wz-doctext { margin-top: 12px; }
+.wz-doctext pre {
+  max-height: 320px; overflow: auto; background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--r-sm); padding: 10px 12px; font-size: 12px; white-space: pre-wrap;
+}
+
+/* 2列（呼び名 + 説明）の編集行 */
+.wz-pair { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.wz-pair input, .wz-pair select { font-size: 13px; }
+.wz-pair input:first-child, .wz-pair select { flex: 0 0 30%; min-width: 0; }
+.wz-pair input:nth-child(2) { flex: 1; min-width: 0; }
 
 /* ステップ表示 */
 .wz-head h1 { margin-bottom: 2px; }
@@ -333,7 +335,8 @@ button.link.danger { color: var(--ng); }
 .wz-chat-input { margin-top: 12px; }
 .wz-chat-input textarea { width: 100%; font-size: 13px; }
 .wz-spec .wz-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
-.wz-spec .wz-field input { font-size: 13px; }
+.wz-spec .wz-field input, .wz-spec .wz-field textarea { font-size: 13px; }
+.wz-spec .wz-field textarea { resize: vertical; }
 .wz-check { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; padding: 3px 0; cursor: pointer; }
 .wz-check em { font-style: normal; margin-left: 4px; }
 .wz-fixed-note { margin-top: 14px; background: var(--bg); border-radius: var(--r-sm); padding: 10px 12px; font-size: 12px; color: var(--muted); }

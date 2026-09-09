@@ -124,6 +124,25 @@ const MIME_XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.s
 const MIME_CSV = 'text/csv';
 const MIME_FOLDER = 'application/vnd.google-apps.folder';
 
+// 業務資料（要件定義シート・手順書）として取り込める MIME。
+// 実運用では手順書の txt やロジックのメモが、データと同じ案件フォルダに一緒に置かれている。
+// データの取り込みと同じフォルダを、資料の受け口としても辿れるようにする。
+const MIME_GDOC = 'application/vnd.google-apps.document';
+const MIME_DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const MIME_PDF = 'application/pdf';
+const MIME_TEXT = 'text/plain';
+const MIME_MD = 'text/markdown';
+const DOC_MIMES = [MIME_GDOC, MIME_DOCX, MIME_PDF, MIME_TEXT, MIME_MD];
+
+/** ブラウズ対象の種別。データ（表）と業務資料（文書）で受け口を分ける */
+export type DriveBrowseKind = 'sheets' | 'docs';
+
+/**
+ * 資料は MIME が当てにならない（Drive へ上げた .txt が application/octet-stream になる等）。
+ * MIME 一致に加えて拡張子でも拾う。
+ */
+const DOC_EXTS = ['.txt', '.md', '.markdown', '.json', '.yaml', '.yml', '.log', '.docx', '.pdf'];
+
 export interface DriveSheet { id: string; name: string; modifiedTime?: string; mimeType?: string }
 export interface DriveFolder { id: string; name: string }
 
@@ -167,14 +186,20 @@ export function clearFolderCache(): void {
   folderCache.clear();
 }
 
-export async function listFolderChildren(folderId?: string): Promise<{ folders: DriveFolder[]; files: DriveSheet[] }> {
-  const cacheKey = folderId && folderId.trim() ? folderId.trim() : '__root__';
+export async function listFolderChildren(
+  folderId?: string, kind: DriveBrowseKind = 'sheets',
+): Promise<{ folders: DriveFolder[]; files: DriveSheet[] }> {
+  const cacheKey = `${kind}:${folderId && folderId.trim() ? folderId.trim() : '__root__'}`;
   const now = Date.now();
   const hit = folderCache.get(cacheKey);
   if (hit && now - hit.at < FOLDER_CACHE_TTL_MS) return hit.data;
 
   const drive = google.drive({ version: 'v3', auth: authClient() });
-  const typeFilter = `(mimeType='${MIME_FOLDER}' or mimeType='${MIME_NATIVE}' or mimeType='${MIME_XLSX}' or mimeType='${MIME_CSV}')`;
+  const typeFilter = kind === 'docs'
+    // 資料は MIME が当てにならないので拡張子でも拾う（Drive 上の .txt が octet-stream になる等）
+    ? `(mimeType='${MIME_FOLDER}' or ${DOC_MIMES.map(m => `mimeType='${m}'`).join(' or ')}`
+      + ` or ${DOC_EXTS.map(e => `name contains '${e}'`).join(' or ')})`
+    : `(mimeType='${MIME_FOLDER}' or mimeType='${MIME_NATIVE}' or mimeType='${MIME_XLSX}' or mimeType='${MIME_CSV}')`;
   // ルート（フォルダ未指定）では「マイドライブ直下」に加え「自分に共有されたトップ項目」も見せる。
   // 実運用では対象データが共有フォルダ（例: ForAI / 各社実績データ）に置かれ、マイドライブ直下が空なことが多いため。
   // 特定フォルダ配下は通常どおり親 ID で辿る（共有フォルダの中も読み取り権限があれば辿れる）。
@@ -244,6 +269,53 @@ export async function fetchDriveFile(urlOrId: string): Promise<{ filename: strin
     throw new Error('ネイティブ Google シートは原本バイトを持ちません（fetchDriveArtifact を使ってください）');
   }
   return downloadRawFile(id, name, mimeType);
+}
+
+/**
+ * ドライブのファイルを「業務資料」として取得する。
+ *
+ * 手順書やロジックのメモは、案件のデータと同じフォルダに置かれていることが多い。
+ * ドキュメント（ネイティブ Google ドキュメント）はテキストへ書き出し、
+ * それ以外（txt / md / docx / pdf）は原本のまま渡して projectDocs 側で本文を抽出させる。
+ * 表（スプレッドシート）はここでは受けない — データとして取り込むべきもので、
+ * 資料へ混ぜるとシート役割の判定を汚す。
+ */
+export async function fetchDriveDoc(urlOrId: string): Promise<{ filename: string; buffer: Buffer }> {
+  const id = extractSpreadsheetId(urlOrId);
+  if (!id) throw new Error('Google ドライブの URL または ID を認識できませんでした');
+  const { name, mimeType } = await driveMeta(id);
+  if (mimeType === MIME_NATIVE || mimeType === MIME_XLSX) {
+    throw new Error('表ファイルは業務資料として取り込めません。データとして取り込んでください');
+  }
+  if (mimeType === MIME_GDOC) {
+    const drive = google.drive({ version: 'v3', auth: authClient() });
+    try {
+      // Google ドキュメントは原本バイトを持たないため、テキストへ書き出して受ける
+      const res = await drive.files.export(
+        { fileId: id, mimeType: MIME_TEXT }, { responseType: 'arraybuffer' },
+      );
+      return {
+        filename: /\.txt$/i.test(name) ? name : `${name}.txt`,
+        buffer: Buffer.from(res.data as ArrayBuffer),
+      };
+    } catch (e) {
+      throw new Error(`Google ドキュメントの書き出しに失敗: ${gErr(e)}`);
+    }
+  }
+
+  const drive = google.drive({ version: 'v3', auth: authClient() });
+  try {
+    const res = await drive.files.get(
+      { fileId: id, alt: 'media', supportsAllDrives: true }, { responseType: 'arraybuffer' },
+    );
+    // 拡張子が無いと projectDocs 側の形式判定が効かないため、MIME から補う
+    const extOf = (m: string): string =>
+      m === MIME_PDF ? '.pdf' : m === MIME_DOCX ? '.docx' : m === MIME_MD ? '.md' : '.txt';
+    const filename = DOC_EXTS.some(e => name.toLowerCase().endsWith(e)) ? name : `${name}${extOf(mimeType)}`;
+    return { filename, buffer: Buffer.from(res.data as ArrayBuffer) };
+  } catch (e) {
+    throw new Error(`Google ドライブ取得に失敗: ${gErr(e)}`);
+  }
 }
 
 // ============================================================
