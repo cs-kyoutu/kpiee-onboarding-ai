@@ -251,10 +251,11 @@ onMounted(async () => {
       </ul>
     </div>
 
-    <!-- ローカル取り込み。畳んでいた頃、要件定義書の入り口がここだと誤解されたため、
-         常に開いた状態で「これはデータ用」だと明示する（要件定義書は下の業務資料カードへ） -->
-    <div class="wz-card">
-      <h3 class="wz-h">ローカルの Excel / CSV（データ）を取り込む</h3>
+    <!-- ローカル取り込み（データ用）。普段はドライブから取り込むので畳んでおく。
+         見出しに「（データ）」を明記し、要件定義書の入り口だと誤解されないようにする
+         （要件定義書は下の業務資料カードが常時開いている） -->
+    <details class="wz-more">
+      <summary>ローカルの Excel / CSV（データ）を取り込む</summary>
       <p class="muted">
         ドライブに置いていない<b>データファイル</b>はここから。取り込み方はドライブと同じです。
         <b>要件定義書・手順書はここではなく、下の「要件定義書・手順書の取り込み」へ</b>入れてください。
@@ -263,6 +264,6 @@ onMounted(async () => {
         <input type="file" multiple accept=".xlsx,.xlsm,.csv" :disabled="importing" @change="onLocalFile">
         <span>＋ Excel / CSV を追加</span>
       </label>
-    </div>
+    </details>
   </div>
 </template>
