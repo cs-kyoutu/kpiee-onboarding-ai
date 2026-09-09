@@ -159,22 +159,37 @@ onMounted(async () => {
 
 <template>
   <div class="wz-card">
-    <h3 class="wz-h">業務資料（要件定義書・手順書）</h3>
+    <h3 class="wz-h">要件定義書・手順書の取り込み（業務資料）</h3>
     <p class="muted">
-      <b>データではなく、データの作り方を書いた文書</b>を入れてください。
+      <b>要件定義書はここで入れます。</b>データ（Excel / CSV）ではなく、
+      <b>データの作り方を書いた文書</b>の受け口です。
       「何がアウトプットか」「どのファイルから何を付与するか」「配賦の例外」は数式には残らないため、
       これが唯一の根拠になります。入れると <b>AI 解読</b>と、次のステップの
       <b>分類の当て込み・レポートの前提</b>に効きます。
     </p>
+
+    <p v-if="error" class="error-box">{{ error }}</p>
+
+    <!-- ① 手元から。一番使う入り口なので先頭に置く -->
+    <div class="wz-actions">
+      <label class="wz-filebtn">
+        <input
+          type="file" multiple
+          accept=".txt,.md,.markdown,.csv,.tsv,.json,.yaml,.yml,.log,.docx,.pdf"
+          @change="pick"
+        >
+        <span>＋ 要件定義書・手順書を追加</span>
+      </label>
+      <span v-if="busy" class="muted">{{ busy }} を取り込み中…</span>
+      <span v-else-if="!loading" class="muted">登録済み {{ docs.length }} 件</span>
+    </div>
     <p class="muted">
       対応形式: txt / md / csv / json / yaml / docx / pdf / Google ドキュメント。
       Excel の要件定義シートは<b>テキストに書き出してから</b>入れてください
       （xlsx のまま入れるとデータとして解析され、分類を汚します）。
     </p>
 
-    <p v-if="error" class="error-box">{{ error }}</p>
-
-    <!-- ① ドライブから: 手順書・ロジックのメモはデータと同じフォルダにあることが多い -->
+    <!-- ② ドライブから: 手順書・ロジックのメモはデータと同じフォルダにあることが多い -->
     <div v-if="conn.connected" class="wz-sub">
       <div class="wz-drive-bar">
         <div class="wz-crumbs">
@@ -206,20 +221,6 @@ onMounted(async () => {
           このフォルダに資料（txt / md / docx / pdf / ドキュメント）はありません。
         </p>
       </div>
-    </div>
-
-    <!-- ② 手元から -->
-    <div class="wz-actions">
-      <label class="wz-filebtn">
-        <input
-          type="file" multiple
-          accept=".txt,.md,.markdown,.csv,.tsv,.json,.yaml,.yml,.log,.docx,.pdf"
-          @change="pick"
-        >
-        <span>＋ 手元の資料を追加</span>
-      </label>
-      <span v-if="busy" class="muted">{{ busy }} を取り込み中…</span>
-      <span v-else-if="!loading" class="muted">登録済み {{ docs.length }} 件</span>
     </div>
 
     <p v-if="loading" class="muted">読み込み中…</p>

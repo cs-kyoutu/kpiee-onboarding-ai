@@ -26,7 +26,6 @@ const importing = ref(false)
 const progress = ref<{ done: number; total: number } | null>(null)
 const selected = ref<string[]>([])
 const error = ref('')
-const showLocal = ref(false)
 
 // 取り込みは常に自動分類（kind=auto）。役割は次のステップでまとめて確認・修正する
 const IMPORT_KIND = 'auto'
@@ -128,18 +127,21 @@ async function importSelected() {
 
 async function onLocalFile(e: Event) {
   const input = e.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file) return
+  const picked = [...(input.files ?? [])]
+  input.value = '' // 同じファイルを選び直せるように毎回クリアする
+  if (picked.length === 0) return
   error.value = ''
   importing.value = true
   try {
-    await uploadFile<Artifact>(`/projects/${props.projectId}/artifacts`, file, IMPORT_KIND)
-    emit('changed')
+    // 1件ずつ順に送る（並列にすると解析でサーバーを取り合うだけ）
+    for (const file of picked) {
+      await uploadFile<Artifact>(`/projects/${props.projectId}/artifacts`, file, IMPORT_KIND)
+      emit('changed')
+    }
   } catch (err) {
     error.value = String(err)
   } finally {
     importing.value = false
-    input.value = ''
   }
 }
 
@@ -249,10 +251,18 @@ onMounted(async () => {
       </ul>
     </div>
 
-    <details class="wz-more" :open="showLocal">
-      <summary>ローカルの Excel / CSV を取り込む</summary>
-      <p class="muted">ドライブに置いていないファイルはここから。取り込み方は同じです。</p>
-      <input type="file" accept=".xlsx,.xlsm,.csv" :disabled="importing" @change="onLocalFile">
-    </details>
+    <!-- ローカル取り込み。畳んでいた頃、要件定義書の入り口がここだと誤解されたため、
+         常に開いた状態で「これはデータ用」だと明示する（要件定義書は下の業務資料カードへ） -->
+    <div class="wz-card">
+      <h3 class="wz-h">ローカルの Excel / CSV（データ）を取り込む</h3>
+      <p class="muted">
+        ドライブに置いていない<b>データファイル</b>はここから。取り込み方はドライブと同じです。
+        <b>要件定義書・手順書はここではなく、下の「要件定義書・手順書の取り込み」へ</b>入れてください。
+      </p>
+      <label class="wz-filebtn">
+        <input type="file" multiple accept=".xlsx,.xlsm,.csv" :disabled="importing" @change="onLocalFile">
+        <span>＋ Excel / CSV を追加</span>
+      </label>
+    </div>
   </div>
 </template>
