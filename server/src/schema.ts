@@ -133,6 +133,8 @@ CREATE TABLE IF NOT EXISTS project_docs (
   id ${pk},
   project_id INTEGER NOT NULL REFERENCES projects(id),
   filename TEXT NOT NULL,
+  -- 種別。doc=要件定義書・手順書（解読プロンプトに入る）／sql-columns=Redash の物理カラム一覧（SQL構築だけが読む）
+  kind TEXT NOT NULL DEFAULT 'doc',
   -- 抽出した本文。抽出できない形式は空になり、その旨を extract_error に残す
   content TEXT NOT NULL DEFAULT '',
   extract_error TEXT,
@@ -203,6 +205,46 @@ CREATE TABLE IF NOT EXISTS report_chat_messages (
   spec_patch TEXT,
   created_at ${ts}
 );
+
+-- SQL構築の会話。目的が別の履歴（Q&A・レポート相談）とは表を分ける（上と同じ理由）。
+-- tool_trace には run_sql / save_sql 等の呼び出しと結果の要約を残す。
+-- 画面が「AI がどの SQL を流してどんな結果を見たか」を会話に沿って出すために使う。
+CREATE TABLE IF NOT EXISTS sql_chat_messages (
+  id ${pk},
+  project_id INTEGER NOT NULL REFERENCES projects(id),
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  tool_trace TEXT,
+  created_at ${ts}
+);
+
+-- 物理カラムの対応（SQL構築 ステップ1で人が確定したもの）。
+-- Redash クエリ145 の書き出しから初期案を起こし、人が論理名を直して確定する。
+-- 確定した対応だけが SQL構築チャットの前提（物理名の根拠）になる。
+-- table_name は physical_column の先頭（IMPORT_30016_STRING_1 → IMPORT_30016）だが、
+-- 突き合わせ・表示のたびに切り出すのは無駄なので列で持つ。
+CREATE TABLE IF NOT EXISTS sql_column_maps (
+  id ${pk},
+  project_id INTEGER NOT NULL REFERENCES projects(id),
+  table_name TEXT NOT NULL DEFAULT '',
+  physical_column TEXT NOT NULL,
+  logical_name TEXT NOT NULL DEFAULT '',
+  asset_name TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT ''
+);
+
+-- 構築した SQLジョブ（1案件に複数本。協和は STEP1〜4 ＋ 統合の5本）。
+-- output_spec は出力仕様（順番 → 別名 → 予測物理名 → 原本の列 → 下流での用途）。
+-- ジョブ登録で別名は物理名に変わるため、これが無いと下流の担当者が参照名を辿れない。
+CREATE TABLE IF NOT EXISTS sql_jobs (
+  id ${pk},
+  project_id INTEGER NOT NULL REFERENCES projects(id),
+  name TEXT NOT NULL,
+  sql TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  output_spec TEXT NOT NULL DEFAULT '',
+  updated_at ${ts}
+);
 `);
 
   // 既存 DB への列追加。CREATE TABLE IF NOT EXISTS は既存テーブルには効かないため、
@@ -211,6 +253,12 @@ CREATE TABLE IF NOT EXISTS report_chat_messages (
     ['step', 'INTEGER'],
     ['step_title', "TEXT NOT NULL DEFAULT ''"],
     ['adds', "TEXT NOT NULL DEFAULT ''"],
+  ]);
+  // 業務資料の種別。doc=要件定義書・手順書（decode 等の <reference_docs> に入る）／
+  // sql-columns=Redash の物理カラム一覧（クエリ145/147 の書き出し。SQL構築チャットだけが読む）。
+  // 分けるのは、数百行の物理名 CSV を解読プロンプトへ混ぜても判定を汚すだけのため。
+  await addColumns(db, 'project_docs', [
+    ['kind', "TEXT NOT NULL DEFAULT 'doc'"],
   ]);
 }
 

@@ -11,9 +11,19 @@
 import JSZip from 'jszip';
 import { db } from './db.js';
 
+/**
+ * 資料の種別。
+ *   doc         … 要件定義書・手順書・引継ぎメモ。解読（decode/generate）の <reference_docs> に入る
+ *   sql-columns … Redash の物理カラム一覧（クエリ145/147 の書き出し CSV）。SQL構築チャットだけが読む。
+ *                 数百行の物理名を解読プロンプトへ混ぜても判定を汚すだけなので、種別で流し先を分ける
+ */
+export type ProjectDocKind = 'doc' | 'sql-columns';
+export const PROJECT_DOC_KINDS: ProjectDocKind[] = ['doc', 'sql-columns'];
+
 export interface ProjectDoc {
   id: number;
   filename: string;
+  kind: ProjectDocKind;
   content: string;
   extract_error: string | null;
   byte_size: number;
@@ -82,21 +92,22 @@ export async function extractDocText(
 }
 
 export async function addProjectDoc(
-  projectId: number, filename: string, buffer: Buffer,
+  projectId: number, filename: string, buffer: Buffer, kind: ProjectDocKind = 'doc',
 ): Promise<number> {
   const { content, error } = await extractDocText(filename, buffer);
   const row = await db.prepare(
-    `INSERT INTO project_docs (project_id, filename, content, extract_error, byte_size)
-     VALUES (?, ?, ?, ?, ?) RETURNING id`,
-  ).get(projectId, filename, content, error, buffer.length) as { id: number };
+    `INSERT INTO project_docs (project_id, filename, kind, content, extract_error, byte_size)
+     VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
+  ).get(projectId, filename, kind, content, error, buffer.length) as { id: number };
   return row.id;
 }
 
-export async function listProjectDocs(projectId: number): Promise<ProjectDoc[]> {
-  return await db.prepare(
-    `SELECT id, filename, content, extract_error, byte_size, created_at
+export async function listProjectDocs(projectId: number, kind?: ProjectDocKind): Promise<ProjectDoc[]> {
+  const rows = await db.prepare(
+    `SELECT id, filename, kind, content, extract_error, byte_size, created_at
        FROM project_docs WHERE project_id = ? ORDER BY id`,
   ).all(projectId) as ProjectDoc[];
+  return kind ? rows.filter(r => r.kind === kind) : rows;
 }
 
 export async function deleteProjectDoc(id: number): Promise<void> {
@@ -108,7 +119,8 @@ export async function deleteProjectDoc(id: number): Promise<void> {
  * 「数式からは読み取れない前提」を解読の材料として渡す。資料が無ければ空文字。
  */
 export async function docsBlock(projectId: number): Promise<string> {
-  const docs = (await listProjectDocs(projectId)).filter(d => d.content.trim() !== '');
+  // 物理カラム一覧（sql-columns）は入れない — 解読の前提ではなく SQL構築専用の対応表のため
+  const docs = (await listProjectDocs(projectId, 'doc')).filter(d => d.content.trim() !== '');
   if (docs.length === 0) return '';
   const body = docs.map(d => `<doc name="${d.filename}">\n${d.content}\n</doc>`).join('\n');
   return `\n\n<reference_docs>\n`

@@ -27,6 +27,9 @@ onMounted(async () => {
     </span>
   </header>
   <main class="app-main">
-    <router-view />
+    <!-- パスが変わったら作り直す。案件を行き来したときに前の案件の状態が残らないようにする -->
+    <router-view v-slot="{ Component, route }">
+      <component :is="Component" :key="route.fullPath.split('?')[0]" />
+    </router-view>
   </main>
 </template>

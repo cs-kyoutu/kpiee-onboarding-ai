@@ -2,6 +2,7 @@
 // Apps Script（GAS）等、xlsx に保存されない変換ロジックの登録。
 // 例: シートを生成する .gs 関数。登録すると decode/generate 時に AI へ渡され、
 // 「数式ゼロなのに値だけあるシート」の出所・ロジックが解読に反映される。
+// 業務資料と同じ「数式に残らない前提」なので、ステップ1の資料の受け口の中に置く。
 import { onMounted, ref } from 'vue'
 import { getScripts, addScript, deleteScript, type ProjectScript } from '../api'
 
@@ -42,8 +43,7 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="panel">
-    <h2>変換スクリプト（Apps Script / GAS）</h2>
+  <div class="wz-sub">
     <p class="muted">
       Excel/スプレッドシートに<strong>保存されない</strong>変換ロジック（Apps Script の .gs 関数・マクロ等）をここに貼り付けてください。
       「数式が無いのに値だけあるシート」は、こうしたスクリプトが生成している場合があります。

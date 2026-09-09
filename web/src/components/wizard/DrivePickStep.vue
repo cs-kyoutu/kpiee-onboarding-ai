@@ -11,7 +11,9 @@ import {
 } from '../../api'
 
 const props = defineProps<{ projectId: number; artifacts: Artifact[] }>()
-const emit = defineEmits<{ changed: [] }>()
+// folder: 今開いているフォルダ。業務資料（手順書 txt 等）は同じフォルダに置かれていることが
+// 多いため、資料の受け口の初期表示に使わせる。
+const emit = defineEmits<{ changed: []; folder: [{ id?: string; name: string }] }>()
 
 const conn = ref<GoogleStatus>({ clientConfigured: false, connected: false })
 const mode = ref<'browse' | 'search'>('browse')
@@ -55,6 +57,8 @@ async function loadFolder(id?: string) {
     const data = await fetchFolder(id)
     folders.value = data.folders
     files.value = data.files
+    // 資料の受け口へ「今どのフォルダを見ているか」を伝える
+    emit('folder', { id, name: crumbs.value[crumbs.value.length - 1]?.name ?? 'マイドライブ' })
     // 次に開きそうなサブフォルダを裏で温めておく（Drive API の往復が体感遅延の主因）
     for (const f of data.folders.slice(0, 30)) if (!cache.has(f.id)) fetchFolder(f.id).catch(() => {})
   } catch (e) {

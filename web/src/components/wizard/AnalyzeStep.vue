@@ -1,14 +1,36 @@
 <script setup lang="ts">
-// 新UI ステップ3: 構造解析の実行と結果確認。
+// ステップ3: 構造把握。解析結果の確認と、掘り下げの入口。
 //
 // 関係解析（数式・値一致からの関係グラフ）は取り込み時に済んでいるため、ここでは結果を見せる。
 // AI 解読（decode）は任意。関係図とレポートは AI 無しでも出るので、必須にはしない
 // （待ち時間と費用が要る処理を通過条件にすると、レポートまで辿り着けない案件が出る）。
+//
+// 掘り下げは中で切り替える:
+//   シート関係 … 表どうしの関係グラフ（クリックで掘り下げ）
+//   ブック関係 … ファイル間の受け渡しの登録。Excel の数式はファイルを跨げないため、
+//                ここで登録した業務知識だけが顧客レポートの全体関係図の根拠になる
+//   要確認     … 判断がつかなかった点の内訳
+// どれも重い処理（関係グラフの読み込み）を伴うので、開いたときに初めて描く
+// （タブを1枚めくるたびに全部読み込むと、目録の表示まで待たされる）。
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { get, post, getProjectRelations, type AnalysisRun, type RelationGraph } from '../../api'
+import {
+  get, post, getProjectRelations, type AnalysisRun, type Artifact, type RelationGraph,
+} from '../../api'
+import RelationsPanel from '../RelationsPanel.vue'
+import FileRelationsPanel from '../FileRelationsPanel.vue'
+import AttentionPanel from '../AttentionPanel.vue'
 
-const props = defineProps<{ projectId: number; runs: AnalysisRun[] }>()
+const props = defineProps<{ projectId: number; artifacts: Artifact[]; runs: AnalysisRun[] }>()
 const emit = defineEmits<{ changed: [] }>()
+
+type View = 'summary' | 'sheets' | 'books' | 'attention'
+const view = ref<View>('summary')
+const VIEWS: { key: View; label: string; hint: string }[] = [
+  { key: 'summary', label: '概要', hint: '解析できた件数と AI 解読' },
+  { key: 'sheets', label: 'シート関係', hint: '表どうしの関係を掘り下げる' },
+  { key: 'books', label: 'ブック関係', hint: 'ファイル間の受け渡しを登録する（レポートの全体関係図の根拠）' },
+  { key: 'attention', label: '要確認', hint: '判断がつかなかった点' },
+]
 
 const graph = ref<RelationGraph | null>(null)
 const attention = ref<{ total: number; kinds: { kind: string; count: number }[] } | null>(null)
@@ -66,8 +88,28 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
     <p class="wz-lede">
       取り込んだファイルの数式・値の一致から、表どうしの関係を解析しました。
       内容を確認して次のステップへ進んでください。
+      <b>ブック関係</b>だけは自動では出せないため（Excel の数式はファイルを跨げません）、
+      伺った受け渡しをそこで登録してください。
     </p>
 
+    <div class="wz-subtabs">
+      <button
+        v-for="v in VIEWS" :key="v.key" :class="{ on: view === v.key }" :title="v.hint"
+        @click="view = v.key"
+      >{{ v.label }}</button>
+    </div>
+
+    <!-- 掘り下げ（開いたときに初めて描く。関係グラフの読み込みが重いため） -->
+    <RelationsPanel
+      v-if="view === 'sheets'" :project-id="props.projectId" :artifacts="props.artifacts"
+      @open-attention="view = 'attention'"
+    />
+    <FileRelationsPanel
+      v-else-if="view === 'books'" :project-id="props.projectId" @changed="emit('changed')"
+    />
+    <AttentionPanel v-else-if="view === 'attention'" :project-id="props.projectId" />
+
+    <template v-else>
     <p v-if="error" class="error-box">{{ error }}</p>
     <p v-if="loading" class="muted">解析結果を読み込み中…</p>
 
@@ -118,8 +160,12 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
         <ul class="wz-list">
           <li v-for="k in attention.kinds" :key="k.kind">{{ k.kind }}: {{ k.count }} 件</li>
         </ul>
-        <p class="muted">これらは次のレポートで「ご確認いただきたい点」として顧客に問いかける材料になります。</p>
+        <p class="muted">
+          これらは次のレポートで「ご確認いただきたい点」として顧客に問いかける材料になります。
+          <button class="link" @click="view = 'attention'">1件ずつ見る</button>
+        </p>
       </div>
+    </template>
     </template>
   </div>
 </template>

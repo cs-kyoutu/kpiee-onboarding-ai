@@ -208,6 +208,37 @@ const JOIN_KEYS_CAP = 6;
 /** 主キーと認めるための充填率。「ほぼ全行に値がある」列でなければ行を決められない */
 const KEY_COVERAGE_RATIO = 0.9;
 
+/**
+ * 表の縦軸・横軸に実際に並んでいるもの。
+ *
+ * 実務の帳票は「見出しは上端に1回だけ書き、その下に帯を積む」形が多い。帯だけを見ると
+ * 見出しが無く、レポートでは「①サマリー F42:BJ43」のようにセル番地しか出せなかった。
+ * 番地は Excel で開く手がかりにはなるが、それが何の表なのかは伝わらない。
+ * 表の外側（左の見出し列・上の見出し行）まで見て、縦横に何が並ぶ表なのかを言えるようにする。
+ */
+export interface RegionAxes {
+  /** 縦に並ぶもの（行ラベル）。例: 前年実績・本予算・実績 */
+  rowLabels?: string[];
+  /** 行ラベルが入っている列。表の外側にあることもある（例: A列） */
+  rowLabelCol?: string;
+  /** 行ラベルの総数（rowLabels は先頭のみ保持するため、「ほか N 件」を出すのに使う） */
+  rowLabelTotal?: number;
+  /** 横に並ぶもの（列見出しの上段）。例: 全社・DF計・東京 */
+  colGroups?: string[];
+  /** 上段の総数 */
+  colGroupTotal?: number;
+  /** 列見出しの繰り返し単位（下段）。例: 売上・営業利益・経常利益 */
+  colUnits?: string[];
+  /** 横軸の各まとまりが占める列範囲。合計の関係を読むのに使う */
+  colGroupSpans?: { name: string; c0: number; c1: number }[];
+  /** 合計の関係。例: DF計 は 東京・神奈川… の合計（数式で確認できたものだけ） */
+  colTotals?: { name: string; parts: string[]; partTotal: number }[];
+  /** 見出しを借りた表の範囲（見出しの無い続きの帯のとき）。例: F1:BJ13 */
+  headerFrom?: string;
+  /** 帯の区分。例: 【単月】【累計】（参考） */
+  section?: string;
+}
+
 export interface Region {
   id: string; file: string; sheet: string;
   r0: number; r1: number; c0: number; c1: number;
@@ -215,6 +246,7 @@ export interface Region {
   columns: RegionColumn[];
   dataRowCount: number;
   keys?: RegionKeys;  // キー・軸の推定（構造的根拠 + 数式からのキー利用根拠を融合）
+  axes?: RegionAxes;  // 縦横に何が並ぶ表なのか（セル番地の代わりに使う説明）
 }
 
 /** 1グリッドを空行/空列の run で矩形分割し、表領域を返す（縦積み・横並びの複数表に対応） */
@@ -370,7 +402,330 @@ export function detectRegions(g: RawGrid): Region[] {
       regions.push({ id: `${g.file}／${g.name}#${++idx}`, file: g.file, sheet: g.name, r0, r1, c0, c1, headerRow, columns, dataRowCount, keys });
     }
   }
+  attachRegionAxes(regions, byRow);
   return regions;
+}
+
+/** 行ラベルらしい文字列か（数値・記号だけのセルは行の名前にならない） */
+const looksRowLabel = (v: string | number | null): v is string =>
+  typeof v === 'string' && v.trim() !== '' && !looksNumeric(v) && !/^[-–—ー・=＝#]+$/.test(v.trim());
+
+/** 見出しとして意味のある列名か（`A列` のような位置表記・単位書きは名前として使えない） */
+const usableColName = (name: string): boolean =>
+  !/^[A-Z]{1,2}列$/.test(name) && !/^[（(]?(単位|千円|円|百万円)/.test(name.trim());
+
+const LABEL_SCAN_COLS = 8;   // 行ラベル列を左へ何列まで探すか
+const AXIS_LABEL_CAP = 4;    // ラベルは先頭いくつまで保持するか（残りは「ほか N」）
+const COL_UNIT_CAP = 6;      // 「繰り返し単位」と認める種類数（売上・営業利益・経常利益 など）
+
+const TOTAL_SCAN_ROWS = 6;   // 合計の数式を探す本体行の数
+const TOTAL_CAP = 3;         // 1つの表について出す合計の関係の数
+
+// 「SUM(F3,BO3,…)」だけ、または「F3+BO3+…」だけの数式。関数が混ざるものは合計と言い切れない
+const SUM_ONLY = /^SUM\(([^()]*)\)$/i;
+const PLUS_ONLY = /^\$?[A-Z]{1,3}\$?\d+(\s*\+\s*\$?[A-Z]{1,3}\$?\d+)+$/;
+
+/** 列記号（A・BJ）を列番号へ */
+function colIndexOf(letters: string): number {
+  let n = 0;
+  for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64);
+  return n;
+}
+
+/**
+ * 同じ行を横に足しているだけの数式なら、足された列がどのまとまりに属するかを返す。
+ * ほかのシートを参照しているもの・関数が入れ子のものは、合計と言い切れないので採らない。
+ */
+function sumParts(formula: string, row: number, own: string, groupAt: Map<number, string>): string[] {
+  const f = formula.trim();
+  if (f.includes('!')) return [];
+  const body = SUM_ONLY.exec(f)?.[1] ?? (PLUS_ONLY.test(f) ? f : null);
+  if (body === null) return [];
+  const names: string[] = [];
+  for (const m of body.matchAll(/\$?([A-Z]{1,3})\$?(\d+)/g)) {
+    if (Number(m[2]) !== row) return [];  // 縦の合計は「別のまとまり」の話にならない
+    const g = groupAt.get(colIndexOf(m[1]));
+    if (g !== undefined && g !== own && !names.includes(g)) names.push(g);
+  }
+  return names;
+}
+
+// 帯の区分の書き方。【】は帳票では区分にしか使われないので、それだけで区分とみなす。
+// 丸括弧は行ラベルにも普通に出る（（外注・委託売上）など）ので、その行に他の値が無いときだけ。
+const BAND_HEAVY = /^【.{1,12}】$/;
+const BAND_SOFT = /^[（(].{1,10}[）)]$/;
+
+/** 見出し行の1つ上の段（拠点名などのまとめ見出し）の読み取り結果 */
+interface UpperTier {
+  /** 結合セルの連続を1つに畳んだ並び。例: 全社・DF計・東京 */
+  groups: string[];
+  /** それぞれのまとまりが占める列範囲（「DF計 は 東京・神奈川… の合計」を読むのに使う） */
+  spans: { name: string; c0: number; c1: number }[];
+  /** 対象列がすべて埋まっているか（1種類しか無いときの、表題との区別に使う） */
+  full: boolean;
+  /** 見た列数と、そのうち値のあった数（上の表の端が残っているだけの行を落とすのに使う） */
+  cols: number;
+  filled: number;
+}
+
+/**
+ * 各表の縦軸・横軸を、表の外側まで見て補う。
+ *
+ * pass 1 では表それぞれが自分の中身だけで読む。縦軸は「同じ行に並ぶ、左側の文字列の列」で、
+ * 表がその列を含んでいればそれを使い、含んでいなければ左へ最大 LABEL_SCAN_COLS 列だけ探す
+ * （帳票では見出し列とデータの間に空列が入る）。横軸は自分の見出し行と、その1つ上の段。
+ *
+ * pass 2 では空いたところを兄弟の表から借りる。帳票は「上端の帯だけが見出しを持ち、下に続く
+ * 帯は見出しを持たない」「左端の帯だけが行ラベルを持ち、右へ続く帯は持たない」という並びに
+ * なるため、行範囲が同じ表から縦軸を、列範囲を含む上の表から横軸を持ってくると埋まる。
+ */
+function attachRegionAxes(regions: Region[], byRow: Map<number, RawCell[]>): void {
+  // 行→(列→値) の索引。行ごとに線形探索すると、表の数だけ横長シートを走査してしまう
+  const rowIndex = new Map<number, Map<number, string | number | null>>();
+  const rowAt = (r: number): Map<number, string | number | null> => {
+    let m = rowIndex.get(r);
+    if (!m) {
+      m = new Map();
+      for (const x of byRow.get(r) ?? []) m.set(x.c, x.value);
+      rowIndex.set(r, m);
+    }
+    return m;
+  };
+  const rangeOf = (r: Region): string =>
+    colLetter(r.c0) + String(r.r0) + ':' + colLetter(r.c1) + String(r.r1);
+  /** 帯の区分の見出しか。丸括弧のものは、その行に他の値が無い＝独立した見出し行のときだけ */
+  const isBandTitle = (r: number, v: string): boolean => {
+    const t = v.trim();
+    return BAND_HEAVY.test(t) || (BAND_SOFT.test(t) && (byRow.get(r) ?? []).length === 1);
+  };
+  // セル内改行はそのまま出すと軸の説明が途中で折れるので、1行に畳む
+  const clean = (v: string): string => v.replace(/\s+/g, ' ').trim();
+  /** 同じ名前が何度も出る帳票（月ごとに同じ小計行が続く等）は、種類だけを軸として出す */
+  const uniqOrder = (xs: string[]): string[] => [...new Set(xs.map(clean))].filter(v => v !== '');
+
+  /** 見出し行 hr の [c0,c1] を読む。skip は行ラベル列（横軸に混ぜてはいけない） */
+  const readNames = (hr: number, c0: number, c1: number, skip: number | null): string[] => {
+    const head = rowAt(hr);
+    const names: string[] = [];
+    for (let c = c0; c <= c1; c++) {
+      if (c === skip) continue;
+      const v = head.get(c) ?? null;
+      if (looksRowLabel(v) && usableColName(v)) names.push(clean(v));
+    }
+    return names.filter(v => v !== '');
+  };
+
+  /** 見出しの1つ上の段を読む。結合セルは先頭にしか値が無いので、同じ値の連続は1つに畳む */
+  const readUpper = (ur: number, c0: number, c1: number, skip: number | null): UpperTier => {
+    const upper = rowAt(ur);
+    const spans: { name: string; c0: number; c1: number }[] = [];
+    let cols = 0, filled = 0;
+    for (let c = c0; c <= c1; c++) {
+      if (c === skip) continue;
+      cols++;
+      const v = upper.get(c) ?? null;
+      if (!looksRowLabel(v)) continue;
+      filled++;
+      const name = clean(v);
+      const prev = spans[spans.length - 1];
+      // 結合セルは先頭にしか値が無い。同じ名前が続くあいだは1つのまとまりとして範囲を伸ばす
+      if (prev && prev.name === name && prev.c1 === c - 1) prev.c1 = c;
+      else spans.push({ name, c0: c, c1: c });
+    }
+    return {
+      groups: uniqOrder(spans.map(s => s.name)), spans,
+      full: cols > 0 && filled === cols, cols, filled,
+    };
+  };
+
+  // 上段として採る条件。表の列の半分以上を覆っていることが前提（1〜2列だけ値が入っている行は、
+  // まとめ見出しではなく、上の表の端が残っているだけ）。1種類のときは全列を覆っていること
+  const takeUpper = (u: UpperTier): boolean =>
+    u.filled * 2 >= u.cols && (u.groups.length >= 2 || (u.groups.length === 1 && u.full));
+
+  /** 名前の並びを軸へ入れる。同じ名前が周期的に繰り返す帳票は、繰り返し単位だけを出す */
+  const putNames = (axes: RegionAxes, names: string[]): boolean => {
+    const uniq = [...new Set(names)];
+    if (uniq.length === 0) return false;
+    if (uniq.length <= COL_UNIT_CAP && names.length > uniq.length) {
+      axes.colUnits = uniq;
+    } else {
+      axes.colGroups = uniq.slice(0, AXIS_LABEL_CAP);
+      axes.colGroupTotal = uniq.length;
+    }
+    return true;
+  };
+
+  /** 上段が見つかったときは、それまでの横軸を「繰り返し単位」へ落として上段を横軸にする */
+  const putUpper = (axes: RegionAxes, u: UpperTier): void => {
+    if (axes.colGroups && !axes.colUnits) axes.colUnits = axes.colGroups;
+    axes.colGroups = u.groups.slice(0, AXIS_LABEL_CAP);
+    axes.colGroupTotal = u.groups.length;
+    axes.colGroupSpans = u.spans;
+  };
+
+  // ---- pass 1: 表それぞれが、自分の中身だけで軸を読む ----
+  const state = new Map<string, { labelCol: number | null; hasUpper: boolean }>();
+  for (const reg of regions) {
+    const axes: RegionAxes = {};
+
+    // 縦軸: 行ラベルの列を探す（表の中の左端 → 左隣へ）。
+    // 見出し行より上の行は帯のタイトル（【単月】等）なので本体行に入れない
+    const bodyRows: number[] = [];
+    for (let r = reg.headerRow !== null ? reg.headerRow + 1 : reg.r0; r <= reg.r1; r++) bodyRows.push(r);
+    let labelCol: number | null = null;
+    const candidates = [reg.c0];
+    for (let c = reg.c0 - 1; c >= Math.max(1, reg.c0 - LABEL_SCAN_COLS); c--) candidates.push(c);
+    for (const c of candidates) {
+      const found: { r: number; v: string }[] = [];
+      for (const r of bodyRows) {
+        const v = rowAt(r).get(c) ?? null;
+        if (looksRowLabel(v)) found.push({ r, v });
+      }
+      // 半分以上の行に文字列がある列を見出し列とみなす（小計行だけ空、等は許す）
+      if (found.length < 2 || found.length * 2 < bodyRows.length) continue;
+      labelCol = c;
+      // 帯のタイトルが先頭行に居ることがある。それは行ラベルではなく区分なので外す
+      const labels = uniqOrder(found.filter(x => !isBandTitle(x.r, x.v)).map(x => x.v));
+      // 何行あっても中身が1種類（結合セルの見出しが縦に伸びている等）なら、縦軸として意味を成さない
+      if (labels.length === 1 && found.length >= 3) break;
+      if (labels.length > 0) {
+        axes.rowLabels = labels.slice(0, AXIS_LABEL_CAP);
+        axes.rowLabelTotal = labels.length;
+        axes.rowLabelCol = colLetter(c) + '列';
+      }
+      break;
+    }
+
+    // 横軸: 自分の見出し行と、その1つ上の段
+    let hasUpper = false;
+    if (reg.headerRow !== null) {
+      putNames(axes, readNames(reg.headerRow, reg.c0, reg.c1, labelCol));
+      if (reg.headerRow > 1) {
+        const u = readUpper(reg.headerRow - 1, reg.c0, reg.c1, labelCol);
+        if (takeUpper(u)) { putUpper(axes, u); hasUpper = true; }
+      }
+    }
+
+    state.set(reg.id, { labelCol, hasUpper });
+    if (Object.keys(axes).length > 0) reg.axes = axes;
+  }
+
+  // ---- pass 2: 空いたところを兄弟の表から借りる ----
+  // 行範囲が同じで行ラベルを持つ表（左端の帯）。縦軸の貸し手
+  const rowDonor = new Map<string, Region>();
+  for (const r of regions) {
+    if (!r.axes?.rowLabels) continue;
+    const k = r.r0 + ':' + r.r1;
+    const cur = rowDonor.get(k);
+    if (!cur || r.c0 < cur.c0) rowDonor.set(k, r);
+  }
+  // 自分の列範囲を含み、自分より上にある見出し付きの表（帳票の一番上の見出し）。横軸の貸し手
+  const headerDonorOf = (reg: Region): Region | null => {
+    let best: Region | null = null;
+    for (const d of regions) {
+      if (d === reg || d.headerRow === null) continue;
+      if (d.c0 > reg.c0 || d.c1 < reg.c1 || d.r0 >= reg.r0) continue;
+      if (!best || d.r0 < best.r0) best = d;
+    }
+    return best;
+  };
+
+  for (const reg of regions) {
+    const st = state.get(reg.id)!;
+    const axes: RegionAxes = reg.axes ?? {};
+
+    // 縦軸: 行ラベル列が遠すぎて見つからなかった帯は、同じ行範囲の表から借りる
+    if (!axes.rowLabels) {
+      const d = rowDonor.get(reg.r0 + ':' + reg.r1);
+      if (d && d !== reg && d.axes?.rowLabels) {
+        axes.rowLabels = d.axes.rowLabels;
+        axes.rowLabelTotal = d.axes.rowLabelTotal;
+        axes.rowLabelCol = d.axes.rowLabelCol;
+      }
+    }
+
+    // 横軸: 見出しを持たない帯、上段が欠けている帯（拠点名の行が飛んでいる等）を上の表から借りる。
+    // 貸し手の列名をそのまま使うのではなく、貸し手の見出し行を「自分の列範囲で」読み直す
+    const needNames = reg.headerRow === null && !axes.colUnits && !axes.colGroups;
+    if (needNames || !st.hasUpper) {
+      const d = headerDonorOf(reg);
+      if (d && d.headerRow !== null) {
+        let used = false;
+        if (needNames) used = putNames(axes, readNames(d.headerRow, reg.c0, reg.c1, st.labelCol));
+        if (!st.hasUpper && d.headerRow > 1) {
+          const u = readUpper(d.headerRow - 1, reg.c0, reg.c1, st.labelCol);
+          if (takeUpper(u)) { putUpper(axes, u); used = true; }
+        }
+        if (used) axes.headerFrom = rangeOf(d);
+      }
+    }
+
+    // 上段が1つだけで、しかもそれが行ラベルにも出ているときは、まとめ見出しではなく表の題。
+    // 「縦に ７：売上法人別…、横に ７：売上法人別」と同じ言葉が並ぶので落とす
+    if (axes.colGroups?.length === 1 && (axes.rowLabels ?? []).includes(axes.colGroups[0])) {
+      delete axes.colGroups;
+      delete axes.colGroupTotal;
+      delete axes.colGroupSpans;
+    }
+    if (axes.colUnits?.length === 1 && (axes.rowLabels ?? []).includes(axes.colUnits[0])) {
+      delete axes.colUnits;
+    }
+
+    if (Object.keys(axes).length > 0) reg.axes = axes;
+  }
+
+  // ---- 合計の関係: 「DF計 は 東京・神奈川… の合計」を数式から読む ----
+  // 帳票の横軸は「合計の列と、その内訳の列」で組まれていることが多い。どれが合計なのかは
+  // 見出しからは分からないが、横に足しているだけの数式なら、足された先のまとまりで言い直せる。
+  const groupAt = new Map<number, string>();
+  for (const reg of [...regions].sort((a, b) => a.r0 - b.r0)) {
+    for (const s of reg.axes?.colGroupSpans ?? []) {
+      for (let c = s.c0; c <= s.c1; c++) if (!groupAt.has(c)) groupAt.set(c, s.name);
+    }
+  }
+  if (new Set(groupAt.values()).size >= 2) {
+    for (const reg of regions) {
+      if (!reg.axes?.colGroupSpans) continue;
+      const found = new Map<string, string[]>();
+      const start = reg.headerRow !== null ? reg.headerRow + 1 : reg.r0;
+      for (let r = start; r <= Math.min(reg.r1, start + TOTAL_SCAN_ROWS); r++) {
+        for (const cell of byRow.get(r) ?? []) {
+          if (!cell.formula || cell.c < reg.c0 || cell.c > reg.c1) continue;
+          const own = groupAt.get(cell.c);
+          if (own === undefined || found.has(own)) continue;
+          const parts = sumParts(cell.formula, cell.r, own, groupAt);
+          if (parts.length >= 2) found.set(own, parts);
+        }
+      }
+      if (found.size > 0) {
+        reg.axes.colTotals = [...found].slice(0, TOTAL_CAP).map(([name, parts]) => ({
+          name, parts: parts.slice(0, AXIS_LABEL_CAP), partTotal: parts.length,
+        }));
+      }
+    }
+  }
+
+  // ---- 帯の区分: 行ラベル列に置かれた【単月】【累計】（参考）を拾い、その下の表へ配る ----
+  const labelCols = new Set<number>();
+  for (const st of state.values()) if (st.labelCol !== null) labelCols.add(st.labelCol);
+  const bands: { row: number; title: string }[] = [];
+  for (const r of [...byRow.keys()].sort((a, b) => a - b)) {
+    for (const c of labelCols) {
+      const v = rowAt(r).get(c) ?? null;
+      if (typeof v === 'string' && isBandTitle(r, v)) { bands.push({ row: r, title: v.trim() }); break; }
+    }
+  }
+  if (bands.length > 0) {
+    for (const reg of regions) {
+      let hit: string | null = null;
+      for (const b of bands) { if (b.row > reg.r0) break; hit = b.title; }
+      if (hit === null) continue;
+      const axes: RegionAxes = reg.axes ?? {};
+      axes.section = hit;
+      reg.axes = axes;
+    }
+  }
 }
 
 // ============================================================

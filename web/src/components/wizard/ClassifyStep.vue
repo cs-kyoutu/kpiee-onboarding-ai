@@ -10,7 +10,7 @@
 // 気づかず書き換わるのを防ぐ。直したいときは「確定を解除」で明示的に開けてもらう。
 import { computed, ref, watch } from 'vue'
 import {
-  patch, setProjectFlag, clearProjectFlag,
+  patch, setProjectFlag, clearProjectFlag, extractRequirements,
   type Artifact, type SheetClassification,
 } from '../../api'
 
@@ -78,6 +78,50 @@ function buildBooks() {
   })
 }
 
+/**
+ * 業務資料（要件定義書）の指定をこの画面へ当て込む。
+ *
+ * 「どれが最終アウトプットか」「どのタブか」は要件定義シートに書かれている指定で、
+ * 構造からは決められない。資料を貰っているのに人が選び直すのは二度手間なので、
+ * 資料から読み取って選択状態へ当てる。保存はしない（確定はいつもどおり人が押す）。
+ */
+const hintBusy = ref(false)
+const hintMsg = ref('')
+const hintNotes = ref<string[]>([])
+
+async function applyDocHints() {
+  hintBusy.value = true
+  hintMsg.value = ''
+  hintNotes.value = []
+  error.value = ''
+  try {
+    const r = await extractRequirements(props.projectId)
+    let applied = 0
+    const skipped: string[] = []
+    for (const h of r.roleHints) {
+      const book = books.value.find(b => b.artifactId === h.artifactId)
+      const row = book?.rows.find(x => x.sheet === h.sheet)
+      if (!book || !row || !h.sheetFound) {
+        skipped.push(`${h.file}${h.sheet ? `!${h.sheet}` : ''}`)
+        continue
+      }
+      row.role = h.role
+      row.reason = `資料の指定: ${h.reason}`
+      applied++
+    }
+    saved.value = false
+    hintMsg.value = applied === 0
+      ? `業務資料 ${r.docCount} 件からシートの指定は読み取れませんでした。`
+      : `業務資料 ${r.docCount} 件から ${applied} シートの役割を当てました。内容を確かめて「この分類で確定する」を押してください。`
+    if (skipped.length > 0) hintNotes.value.push(`当てられなかった指定: ${skipped.join('、')}（シート名の言い換えか未受領の可能性）`)
+    if (r.unresolved.length > 0) hintNotes.value.push(`受領ファイルに見当たらない名前: ${r.unresolved.join('、')}`)
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    hintBusy.value = false
+  }
+}
+
 /** 1ファイルの全シートを同じ役割にする（部門別ブックのように役割が揃っている場合の近道） */
 function applyAll(book: Book, role: string) {
   for (const r of book.rows) r.role = role
@@ -140,6 +184,22 @@ watch(() => targets.value.map(a => a.id + ':' + (a.sheet_roles ?? '').length).jo
 
     <p v-if="error" class="error-box">{{ error }}</p>
     <p v-if="targets.length === 0" class="muted">解析済みのファイルがありません。前のステップで取り込んでください。</p>
+
+    <!-- 資料の指定を当て込む。自動判定では言い当てられない「最終アウトプット」「マスタ」が主目的 -->
+    <div v-if="targets.length > 0 && !locked" class="wz-card">
+      <div class="wz-actions">
+        <button :disabled="hintBusy || saving" @click="applyDocHints">
+          {{ hintBusy ? '読み取り中…' : '業務資料の指定を当てる' }}
+        </button>
+        <span class="muted">
+          ステップ1で入れた<b>要件定義書</b>から、対象タブ・マスタの指定を読み取って下の表へ当てます（保存はしません）。
+        </span>
+      </div>
+      <p v-if="hintMsg" class="muted">{{ hintMsg }}</p>
+      <ul v-if="hintNotes.length > 0" class="wz-list">
+        <li v-for="(n, i) in hintNotes" :key="i" class="muted">{{ n }}</li>
+      </ul>
+    </div>
 
     <!-- 確定/編集中の状態。今どちらなのかが一目で分かるようにする -->
     <div v-if="props.confirmed || unlocked" class="wz-lockbar" :class="locked ? 'is-locked' : 'is-open'">

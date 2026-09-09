@@ -38,7 +38,7 @@ export const GROUP_META: Record<Group, { label: string; color: string; cls: stri
   ref:  { label: '参照・照合', color: '#1F5FAE', cls: 'lookup', dashed: false },
   agg:  { label: '集計',   color: '#1E9E6A', cls: 'agg',    dashed: false },
   move: { label: '転記・計算', color: '#7B5EA7', cls: 'move',   dashed: false },
-  copy: { label: '手作業コピーの疑い',   color: '#B96A00', cls: 'copy',   dashed: true },
+  copy: { label: '手修正の可能性',       color: '#B96A00', cls: 'copy',   dashed: true },
 };
 export const GROUP_ORDER: Group[] = ['ref', 'agg', 'move', 'copy'];
 
@@ -51,7 +51,7 @@ export interface PairAgg {
   best: Partial<Record<Group, Edge>>;       // 各分類の代表辺（確信度最大）
   total: number;
   /**
-   * 数式でも値でも検出できていないが、別の根拠（うかがった内容・列名の一致）で結んだ対。
+   * 数式でも値でも検出できていないが、別の根拠（伺った内容・列名の一致）で結んだ対。
    * counts は空・total は 0。値貼り付けのシートを受領ファイルへ結び直すときに使う
    * （FilePair.declaredOnly と同じ考え方を表領域のレベルへ下ろしたもの）。
    */
