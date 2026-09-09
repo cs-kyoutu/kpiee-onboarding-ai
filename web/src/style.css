@@ -242,6 +242,10 @@ pre.code {
 .wz-sqlresult th { position: sticky; top: 0; background: var(--bg); text-align: left; padding: 4px 8px; white-space: nowrap; }
 .wz-sqlresult td { padding: 3px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 
+/* ナレッジ ON/OFF。チェック1つだが、今どちらの運転かが読めるように説明ごと1行にする */
+.wz-knowledge { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
+.wz-knowledge em { font-style: normal; }
+
 /* 保存済み SQL 成果物 */
 .wz-sqljob { padding: 10px 0; border-top: 1px dashed var(--border); }
 .wz-sqljob:first-of-type { border-top: none; }

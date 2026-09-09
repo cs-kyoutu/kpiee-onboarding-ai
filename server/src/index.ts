@@ -32,7 +32,7 @@ import {
   startReportChat, REPORT_CHAT_KICKOFF, type ProjectFacts,
 } from './reportChat.js';
 import { REPORT_ITEM_LABELS, REPORT_SECTION_LABELS } from './reportSpec.js';
-import { sqlChatHistory, isSqlChatPending, startSqlChat, listSqlJobs, deleteSqlJob } from './sqlChat.js';
+import { sqlChatHistory, isSqlChatPending, startSqlChat, listSqlJobs, deleteSqlJob, isKnowledgeOn, SQL_KNOWLEDGE_FLAG } from './sqlChat.js';
 import { invalidateBooks } from './qa/tools.js';
 import { aiAvailable, callStructured, MODEL, estimateCostUsd } from './ai/client.js';
 import { STEP_FLOW_SCHEMA, REQUIREMENTS_SCHEMA } from './ai/schemas.js';
@@ -106,7 +106,8 @@ async function clearProjectFlag(projectId: number, flag: string): Promise<void> 
   await db.prepare(`DELETE FROM project_flags WHERE project_id = ? AND flag = ?`).run(projectId, flag);
 }
 
-const VALID_FLAGS = ['roles_confirmed'];
+// roles_confirmed=分類を人が確定した印 / sql_knowledge=SQL構築でナレッジ全文をプロンプトへ常時入れる（既定 OFF）
+const VALID_FLAGS = ['roles_confirmed', SQL_KNOWLEDGE_FLAG];
 
 app.post('/api/projects/:id/flags/:flag', async (req, res) => {
   const flag = req.params.flag;
@@ -999,6 +1000,8 @@ app.get('/api/projects/:id/sql-chat', async (req, res) => {
       messages: await sqlChatHistory(projectId),
       pending: isSqlChatPending(projectId),
       jobs: await listSqlJobs(projectId),
+      // ナレッジ全文をプロンプトへ常時入れるか（既定 OFF。OFF でも read_reference では読める）
+      knowledgeOn: await isKnowledgeOn(projectId),
     });
   } catch (e) {
     res.status(500).json({ error: String(e) });

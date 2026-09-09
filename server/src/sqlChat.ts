@@ -198,7 +198,48 @@ function shapeColumnFile(doc: ProjectDoc, search?: string): { filename: string; 
 
 // ---- システムプロンプト ----
 
-async function buildSystemText(projectId: number, tables: SqlSandbox['tables']): Promise<string> {
+/** ナレッジ（SKILL＋workflow）をプロンプトへ常時入れるか。project_flags の印で持つ（既定 OFF） */
+export const SQL_KNOWLEDGE_FLAG = 'sql_knowledge';
+
+export async function isKnowledgeOn(projectId: number): Promise<boolean> {
+  const hit = await db.prepare(`SELECT flag FROM project_flags WHERE project_id = ? AND flag = ?`)
+    .get(projectId, SQL_KNOWLEDGE_FLAG);
+  return !!hit;
+}
+
+/**
+ * 大前提。ナレッジの ON/OFF に関係なく常に入る。
+ *
+ * 顧客データの実数値を AI の文章・SQL へ出さない。この会話は画面共有や引き継ぎで
+ * 顧客・他メンバーの目に触れる前提で、レポート（原本のセル値は載せない）・検収ビューアの
+ * マスキングと同じ線を SQL構築でも守る。実額の確認は実行結果グリッド（画面側）に任せる。
+ */
+const GUARD_BLOCK = [
+  '## 大前提（設定に関係なく、常に守ること）',
+  '- 顧客データの実数値（セルの値・金額・合計・構成比など、データから読んだ数字）を、',
+  '  **回答本文・SQL本文・SQLコメントへ絶対に書かない**。列名・シート名・テーブル名・数式の構造は書いてよい。',
+  '  行数・列数・件数などデータの規模は書いてよい（中身の数字ではないため）。',
+  '- 検算・検証の結果は「一致 / 不一致（桁が違う・符号が逆 など差の性質）」で伝える。実額は書かない。',
+  '  実額を見たいユーザーは、画面の実行結果グリッドを自分で開ける。',
+  '- SQL に、データから読んだ値をリテラルとして埋め込まない（WHERE の金額しきい値など）。',
+  '  掛け目・税率・分岐条件の値は、ユーザーが明示したものだけを使い、出所をコメントに書く。',
+].join('\n');
+
+/** OFF（既定）で入れる最小限の契約。SKILL.md §4-1 と別名規則の要点だけを写した縮約版 */
+const CONTRACT_BLOCK = [
+  '## kpiee SQLジョブの契約（違反すると登録時に弾かれる）',
+  '- 1本の SELECT または WITH のみ。セミコロン区切りの複数文・DML/DDL/USE は不可',
+  '- @stage 参照・schema.func() 修飾呼び出し・メタデータ関数（CURRENT_USER 等）は不可',
+  '- FROM/JOIN で参照できるのは登録済みアセット（テーブル）だけ',
+  '- 別名は中間CTEが ASCII snake_case、最終SELECTが日本語（kpiee のカラムラベルになり顧客画面に出る）',
+  '- 物理カラムの型を信用しない: 金額は TRY_TO_DECIMAL(x, 18, 2)、率は TRY_TO_DECIMAL(x, 12, 6)、',
+  '  日付は書式明示の TRY_TO_DATE(x, \'YYYY/MM/DD\')（1引数版は使わない）',
+  '- 分類キーの空白は COALESCE(NULLIF(TRIM(x, \' 　\'), \'\'), \'不明\') で「不明」に寄せる',
+].join('\n');
+
+async function buildSystemText(
+  projectId: number, tables: SqlSandbox['tables'], knowledgeOn: boolean,
+): Promise<string> {
   const ov = await db.prepare(`SELECT content FROM project_overviews WHERE project_id = ?`)
     .get(projectId) as { content: string } | undefined;
   const overview: StructureOverview | null = ov ? JSON.parse(ov.content) : null;
@@ -212,16 +253,11 @@ async function buildSystemText(projectId: number, tables: SqlSandbox['tables']):
     ? columnFiles.map(d => `- ${d.filename}（${d.content.length.toLocaleString()} 字）`).join('\n')
     : '（未添付。物理名が要る局面になったら、Redash クエリ145/147 の書き出し CSV の添付を依頼する）';
 
-  return [
-    'あなたは kpiee 導入支援の担当者と一緒に、SQLジョブ（Snowflake の SELECT 文）を組み立てるアシスタントです。',
-    '進め方はナレッジ（下の SKILL / workflow）が正。記憶や一般論で進めず、そこに書かれた4ターンの型に従ってください。',
-    '',
-    '## この環境がナレッジの前提と違うところ（重要）',
-    '- レポートHTMLの添付は無い。代わりにこの案件の解析結果（下の構造サマリ）と、',
-    '  取込済みの実データそのものがある。復唱（ターン1）は構造サマリとテーブル一覧を根拠に行う。',
+  const envBlock = [
+    '## この環境',
     '- Redash には接続していない。物理カラム名（IMPORT_xxxxx）の根拠は、ユーザーが添付した',
     '  クエリ145/147 の書き出しファイル（下の一覧）だけ。read_column_file で読む。',
-    '  添付が無いのに物理名が要る局面では、添付を依頼するか貼ってもらう。**物理名を捏造しない**のはナレッジと同じ。',
+    '  添付が無いのに物理名が要る局面では、添付を依頼するか貼ってもらう。**物理名を捏造しない。**',
     '- SQL はあなた自身が run_sql でローカル実行できる。実行環境は DuckDB で、',
     '  TRY_TO_DECIMAL / TRY_TO_NUMBER / TRY_TO_DATE(2引数) / IFF / NVL / ZEROIFNULL / DIV0 は',
     '  ポリフィル済み。それ以外の Snowflake 専用関数が要るときは、ローカル検証では等価な形に',
@@ -229,15 +265,42 @@ async function buildSystemText(projectId: number, tables: SqlSandbox['tables']):
     '- FROM に書けるのはローカルのテーブル名（下の一覧）。納品形では IMPORT_xxxxx に置き換わるため、',
     '  出力仕様に対応表を必ず残す。',
     '- 検証・検算はユーザーに頼まず自分で run_sql で流す。ただし**検算の正解値**（合計がいくつになるべきか）',
-    '  だけは実データから作れないので、ナレッジどおりユーザーに確認する。',
+    '  だけは実データから作れないので、ユーザーに確認する。',
     '- ユーザーへの説明は日本語で簡潔に。装飾記号（** や #）の多用は避ける。',
-    '  1回答＝1区分（1工程）。SQL全文は run_sql / save_sql に渡し、本文には要点だけ書く。',
-    '',
-    '## ナレッジ: SKILL.md（全文）',
-    readKnowledge('SKILL.md'),
-    '',
-    '## ナレッジ: workflow.md（全文）',
-    readKnowledge('references/workflow.md'),
+    '  SQL全文は run_sql / save_sql に渡し、本文には要点だけ書く。',
+  ].join('\n');
+
+  // ON: ナレッジ全文（4ターンの型で進行）。OFF（既定）: 大前提＋契約＋環境だけの軽量運転。
+  // OFF でも read_reference で必要な局面だけナレッジを読める（常時入れないだけで、無くすわけではない）。
+  const knowledgeBlocks = knowledgeOn
+    ? [
+        '進め方はナレッジ（下の SKILL / workflow）が正。記憶や一般論で進めず、そこに書かれた4ターンの型に従ってください。',
+        '復唱（ターン1）は、レポートHTMLの代わりにこの案件の解析結果（下の構造サマリ）とテーブル一覧を根拠に行う。',
+        '',
+        GUARD_BLOCK,
+        '',
+        envBlock,
+        '',
+        '## ナレッジ: SKILL.md（全文）',
+        readKnowledge('SKILL.md'),
+        '',
+        '## ナレッジ: workflow.md（全文）',
+        readKnowledge('references/workflow.md'),
+      ]
+    : [
+        'ユーザーの依頼に沿って SQL を書き、run_sql で検証してから渡してください。',
+        '配賦・検算・出力仕様など、型が必要な局面に入ったら read_reference で該当ナレッジを読んでから書くこと。',
+        '',
+        GUARD_BLOCK,
+        '',
+        CONTRACT_BLOCK,
+        '',
+        envBlock,
+      ];
+
+  return [
+    'あなたは kpiee 導入支援の担当者と一緒に、SQLジョブ（Snowflake の SELECT 文）を組み立てるアシスタントです。',
+    ...knowledgeBlocks,
     '',
     '## この案件のローカルテーブル（FROM に書ける名前）',
     tableList || '（取込データがまだありません。まずデータの取り込みを案内してください）',
@@ -287,7 +350,7 @@ export async function startSqlChat(projectId: number, message: string): Promise<
 
       const result = await callWithTools(
         projectId,
-        await buildSystemText(projectId, sandbox.tables),
+        await buildSystemText(projectId, sandbox.tables, await isKnowledgeOn(projectId)),
         history,
         TOOL_DEFS as unknown as Parameters<typeof callWithTools>[3],
         async call => {

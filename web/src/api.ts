@@ -366,6 +366,8 @@ export interface SqlChatState {
   messages: SqlChatMessage[]
   pending: boolean
   jobs: SqlJob[]
+  /** 構築ナレッジ全文をプロンプトへ常時入れるか。既定 OFF（大前提＋契約だけの軽量運転） */
+  knowledgeOn: boolean
 }
 
 export function getSqlChat(projectId: number): Promise<SqlChatState> {

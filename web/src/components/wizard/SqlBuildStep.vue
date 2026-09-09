@@ -12,6 +12,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   getSqlChat, sendSqlChat, deleteSqlJob,
   getProjectDocs, uploadProjectDoc, deleteProjectDoc,
+  setProjectFlag, clearProjectFlag,
   type ProjectDoc, type SqlChatMessage, type SqlJob, type SqlToolTrace,
 } from '../../api'
 
@@ -87,12 +88,34 @@ async function removeColumnFile(d: ProjectDoc) {
   }
 }
 
+// ---- 構築ナレッジの ON/OFF（既定 OFF）----
+// OFF: 大前提（実数値を出さない）＋ SQLジョブ契約＋環境だけの軽量運転。
+// ON: kpiee-sql-builder のナレッジ全文（4ターンの型）で進行する。トークンを多く使う。
+// OFF でも AI は read_reference で必要な局面だけナレッジを読める。
+const knowledgeOn = ref(false)
+const knowledgeSaving = ref(false)
+
+async function toggleKnowledge() {
+  knowledgeSaving.value = true
+  error.value = ''
+  try {
+    if (knowledgeOn.value) await clearProjectFlag(props.projectId, 'sql_knowledge')
+    else await setProjectFlag(props.projectId, 'sql_knowledge')
+    knowledgeOn.value = !knowledgeOn.value
+  } catch (e) {
+    error.value = String(e)
+  } finally {
+    knowledgeSaving.value = false
+  }
+}
+
 async function load() {
   try {
     const d = await getSqlChat(props.projectId)
     messages.value = d.messages
     pending.value = d.pending
     jobs.value = d.jobs
+    knowledgeOn.value = d.knowledgeOn
     if (echo.value && d.messages.some(m => m.role === 'user' && m.content === echo.value)) echo.value = ''
   } catch (e) {
     error.value = String(e)
@@ -169,10 +192,26 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
 <template>
   <div class="wz-body">
     <p class="wz-lede">
-      kpiee に貼る <b>SQLジョブ</b>を、構築ナレッジ（kpiee-sql-builder）の型で組み立てます。
+      kpiee に貼る <b>SQLジョブ</b>を対話で組み立てます。
       検証クエリ・本体・検算は <b>AI が取込済みの実データでその場で実行</b>します。
-      決めるのはあなたです — 特に<b>検算の正解値</b>（合計がいくつになるべきか）は顧客帳票から拾って伝えてください。
+      大前提として、<b>AI はデータの実数値を文章・SQL に書きません</b>（列名・構造は書きます）。
+      実額は実行結果グリッドを自分で開いて確かめてください。
     </p>
+
+    <!-- 構築ナレッジの ON/OFF。既定 OFF（軽量運転）。ON は4ターンの型で進む分トークンを使う -->
+    <div class="wz-actions">
+      <label class="wz-check wz-knowledge">
+        <input type="checkbox" :checked="knowledgeOn" :disabled="knowledgeSaving || busy" @change="toggleKnowledge">
+        <span>
+          <b>構築ナレッジをフルで使う</b>
+          <em class="muted">
+            {{ knowledgeOn
+              ? ' ON: kpiee-sql-builder の4ターン運用（復唱→ロジック→検証＋SQL＋検算→突き合わせ）で進めます'
+              : ' OFF（既定）: 大前提と SQLジョブ契約だけで軽く回します。必要な局面ではAIが自分でナレッジを引きます' }}
+          </em>
+        </span>
+      </label>
+    </div>
 
     <p v-if="error" class="error-box">{{ error }}</p>
 
