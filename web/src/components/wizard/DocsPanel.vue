@@ -175,7 +175,7 @@ onMounted(async () => {
       <label class="wz-filebtn">
         <input
           type="file" multiple
-          accept=".txt,.md,.markdown,.csv,.tsv,.json,.yaml,.yml,.log,.docx,.pdf"
+          accept=".txt,.md,.markdown,.csv,.tsv,.json,.yaml,.yml,.log,.docx,.pdf,.xlsx,.xlsm"
           @change="pick"
         >
         <span>＋ 要件定義書・手順書を追加</span>
@@ -184,9 +184,9 @@ onMounted(async () => {
       <span v-else-if="!loading" class="muted">登録済み {{ docs.length }} 件</span>
     </div>
     <p class="muted">
-      対応形式: txt / md / csv / json / yaml / docx / pdf / Google ドキュメント。
-      Excel の要件定義シートは<b>テキストに書き出してから</b>入れてください
-      （xlsx のまま入れるとデータとして解析され、分類を汚します）。
+      対応形式: xlsx（要件定義シートはそのままで OK。本文をテキストに抜き出します）/
+      txt / md / csv / docx / pdf / Google ドキュメント。
+      取り込んだら「本文を見る」で、中身が読み取れているか確かめられます。
     </p>
 
     <!-- ② ドライブから: 手順書・ロジックのメモはデータと同じフォルダにあることが多い -->

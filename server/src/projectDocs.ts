@@ -9,6 +9,7 @@
 // 抽出できない形式は、失敗として保存して画面に出す。黙って空で保存すると
 // 「資料を入れたのに何も変わらない」という分からない状態になる。
 import JSZip from 'jszip';
+import * as XLSX from 'xlsx';
 import { db } from './db.js';
 
 /**
@@ -55,6 +56,29 @@ async function extractDocx(buffer: Buffer): Promise<string> {
   return out;
 }
 
+/**
+ * xlsx（要件定義シート等）からテキストを抜く。
+ *
+ * 要件定義シートは実務では Excel で来る（協和・ママスクエアとも xlsx だった）。
+ * 「テキストに書き出してから入れて」は現場で最初に躓く指定だったのでやめる。
+ * ここは業務資料の置き場で artifacts とは別なので、シート役割の判定を汚す心配はない。
+ * SheetJS を使うのは、顧客システム出力の非標準 xlsx に exceljs より寛容なため
+ * （データ側 parse.ts のフォールバックと同じ判断）。
+ */
+function extractXlsx(buffer: Buffer): string {
+  const wb = XLSX.read(buffer, { type: 'buffer' });
+  let out = '';
+  for (const name of wb.SheetNames) {
+    const ws = wb.Sheets[name];
+    if (!ws) continue;
+    // CSV にすると空行・区切りが素直に残り、AI が表として読める
+    const csv = XLSX.utils.sheet_to_csv(ws, { blankrows: false });
+    if (csv.trim() === '') continue;
+    out += `【シート: ${name}】\n${csv}\n\n`;
+  }
+  return out;
+}
+
 /** pdf からテキストを抜く。pdf-parse v2 は PDFParse クラス経由 */
 async function extractPdf(buffer: Buffer): Promise<string> {
   const { PDFParse } = await import('pdf-parse');
@@ -81,9 +105,10 @@ export async function extractDocText(
     if (TEXT_EXT.test(filename)) return { content: tidy(asUtf8(buffer)), error: null };
     if (/\.docx$/i.test(filename)) return { content: tidy(await extractDocx(buffer)), error: null };
     if (/\.pdf$/i.test(filename)) return { content: tidy(await extractPdf(buffer)), error: null };
+    if (/\.(xlsx|xlsm)$/i.test(filename)) return { content: tidy(extractXlsx(buffer)), error: null };
     return {
       content: '',
-      error: `本文を取り出せない形式です（対応: txt / md / csv / json / yaml / docx / pdf）。`
+      error: `本文を取り出せない形式です（対応: txt / md / csv / json / yaml / docx / pdf / xlsx）。`
         + `テキストに変換してから入れてください。`,
     };
   } catch (e) {
