@@ -46,7 +46,8 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    docs.value = await getProjectDocs(props.projectId)
+    // Redash の物理カラム一覧（sql-columns）はステップ5の添付欄で扱う。ここは業務資料だけ
+    docs.value = (await getProjectDocs(props.projectId)).filter(d => d.kind === 'doc')
   } catch (e) {
     error.value = String(e)
   } finally {

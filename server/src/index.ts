@@ -21,7 +21,7 @@ import { runDecode, runGenerate, runMatch, tableNameOf } from './pipeline/orches
 import { buildKpieePreview, buildImplReport } from './match/kpieePreview.js';
 import { gatherSummary, buildSummaryDocx, buildSummaryMarkdown } from './summaryDoc.js';
 import { buildRelationsReportHtml, summarizeReportQuestions } from './relationsReport.js';
-import { addProjectDoc, listProjectDocs, deleteProjectDoc } from './projectDocs.js';
+import { addProjectDoc, listProjectDocs, deleteProjectDoc, PROJECT_DOC_KINDS, type ProjectDocKind } from './projectDocs.js';
 import {
   applyDeclaredFileRelations, proposeFileRelations, FILE_REL_TYPES, FILE_REL_LABELS,
   type DeclaredFileRel, type FileRelType,
@@ -870,7 +870,8 @@ app.post('/api/projects/:id/requirements/extract', async (req, res) => {
     }
     const arts = await relationArtifacts(projectId);
     if (arts.length === 0) return res.status(400).json({ error: '受領ファイルがまだありません' });
-    const docs = (await listProjectDocs(projectId)).filter(d => d.content.trim() !== '');
+    // Redash の物理カラム一覧（sql-columns）は要件の資料ではないので混ぜない
+    const docs = (await listProjectDocs(projectId, 'doc')).filter(d => d.content.trim() !== '');
     if (docs.length === 0) {
       return res.status(400).json({
         error: '業務資料が登録されていません。要件定義シート・手順書（txt / md / docx / pdf）を先にアップロードしてください',
@@ -1140,7 +1141,8 @@ app.post('/api/projects/:id/file-relations/from-docs', async (req, res) => {
     }
     const arts = await relationArtifacts(projectId);
     if (arts.length === 0) return res.status(400).json({ error: '関係を登録できるファイルがまだありません' });
-    const docs = (await listProjectDocs(projectId)).filter(d => d.content.trim() !== '');
+    // Redash の物理カラム一覧（sql-columns）は手順書ではないので混ぜない
+    const docs = (await listProjectDocs(projectId, 'doc')).filter(d => d.content.trim() !== '');
     if (docs.length === 0) {
       return res.status(400).json({ error: '業務資料が登録されていません。手順書（txt / docx / md）を先にアップロードしてください' });
     }
@@ -1290,7 +1292,7 @@ app.get('/api/projects/:id/docs', async (req, res) => {
   const docs = await listProjectDocs(Number(req.params.id));
   // 一覧では本文を返さない（数十万字になりうるため）。長さだけ添えて「効いているか」を示す
   res.json(docs.map(d => ({
-    id: d.id, filename: d.filename, byte_size: d.byte_size,
+    id: d.id, filename: d.filename, kind: d.kind, byte_size: d.byte_size,
     text_length: d.content.length, extract_error: d.extract_error, created_at: d.created_at,
   })));
 });
@@ -1299,11 +1301,16 @@ app.post('/api/projects/:id/docs', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'file は必須です' });
   const projectId = Number(req.params.id);
   const filename = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
+  // kind 未指定は業務資料。sql-columns は Redash の物理カラム一覧（SQL構築だけが読む）
+  const kind = (req.body?.kind as string) || 'doc';
+  if (!(PROJECT_DOC_KINDS as string[]).includes(kind)) {
+    return res.status(400).json({ error: `kind は ${PROJECT_DOC_KINDS.join(' / ')} のいずれかです` });
+  }
   try {
-    const id = await addProjectDoc(projectId, filename, req.file.buffer);
+    const id = await addProjectDoc(projectId, filename, req.file.buffer, kind as ProjectDocKind);
     const doc = (await listProjectDocs(projectId)).find(d => d.id === id)!;
     res.status(201).json({
-      id: doc.id, filename: doc.filename, byte_size: doc.byte_size,
+      id: doc.id, filename: doc.filename, kind: doc.kind, byte_size: doc.byte_size,
       text_length: doc.content.length, extract_error: doc.extract_error, created_at: doc.created_at,
     });
   } catch (e) {
@@ -1322,15 +1329,19 @@ app.post('/api/projects/:id/docs', upload.single('file'), async (req, res) => {
  */
 app.post('/api/projects/:id/docs/from-drive', async (req, res) => {
   const projectId = Number(req.params.id);
-  const { url } = req.body as { url?: string };
+  const { url, kind: rawKind } = req.body as { url?: string; kind?: string };
   if (!url) return res.status(400).json({ error: 'url（ドライブの URL または ID）は必須です' });
   if (!googleConfigured()) return res.status(400).json({ error: 'Google 連携が未設定です' });
+  const kind = rawKind || 'doc';
+  if (!(PROJECT_DOC_KINDS as string[]).includes(kind)) {
+    return res.status(400).json({ error: `kind は ${PROJECT_DOC_KINDS.join(' / ')} のいずれかです` });
+  }
   try {
     const { filename, buffer } = await fetchDriveDoc(url);
-    const id = await addProjectDoc(projectId, filename, buffer);
+    const id = await addProjectDoc(projectId, filename, buffer, kind as ProjectDocKind);
     const doc = (await listProjectDocs(projectId)).find(d => d.id === id)!;
     res.status(201).json({
-      id: doc.id, filename: doc.filename, byte_size: doc.byte_size,
+      id: doc.id, filename: doc.filename, kind: doc.kind, byte_size: doc.byte_size,
       text_length: doc.content.length, extract_error: doc.extract_error, created_at: doc.created_at,
     });
   } catch (e) {

@@ -11,7 +11,8 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   getSqlChat, sendSqlChat, deleteSqlJob,
-  type SqlChatMessage, type SqlJob, type SqlToolTrace,
+  getProjectDocs, uploadProjectDoc, deleteProjectDoc,
+  type ProjectDoc, type SqlChatMessage, type SqlJob, type SqlToolTrace,
 } from '../../api'
 
 const props = defineProps<{ projectId: number }>()
@@ -45,7 +46,45 @@ function traceTitle(t: SqlToolTrace): string {
   if (t.tool === 'run_sql') return `▶ 実行: ${t.label}`
   if (t.tool === 'save_sql') return `💾 保存: ${t.label}`
   if (t.tool === 'read_reference') return `📖 ナレッジ: ${t.label}`
+  if (t.tool === 'read_column_file') return `🗂 物理カラム: ${t.label}`
   return t.tool
+}
+
+// ---- 物理カラム一覧の添付（Redash クエリ145/147 の書き出し）----
+// 納品形の SQL で物理名（IMPORT_xxxxx）を当てる唯一の根拠。チャットへ貼らずファイルで渡せるようにする
+const columnFiles = ref<ProjectDoc[]>([])
+const colBusy = ref('')
+
+async function loadColumnFiles() {
+  try {
+    columnFiles.value = (await getProjectDocs(props.projectId)).filter(d => d.kind === 'sql-columns')
+  } catch { /* 一覧が取れなくてもチャットは使える */ }
+}
+
+async function pickColumnFile(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const picked = [...(input.files ?? [])]
+  input.value = ''
+  for (const f of picked) {
+    colBusy.value = f.name
+    try {
+      await uploadProjectDoc(props.projectId, f, 'sql-columns')
+    } catch (e) {
+      error.value = `${f.name}: ${String(e)}`
+    }
+  }
+  colBusy.value = ''
+  await loadColumnFiles()
+}
+
+async function removeColumnFile(d: ProjectDoc) {
+  if (!window.confirm(`物理カラム一覧「${d.filename}」を削除します。よろしいですか？`)) return
+  try {
+    await deleteProjectDoc(d.id)
+    await loadColumnFiles()
+  } catch (e) {
+    error.value = String(e)
+  }
 }
 
 async function load() {
@@ -117,6 +156,7 @@ watch([messages, echo, pending], async () => {
 let timer: ReturnType<typeof setInterval> | null = null
 onMounted(async () => {
   await load()
+  void loadColumnFiles()
   timer = setInterval(async () => {
     if (!pending.value) return
     await load()
@@ -195,8 +235,32 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
         </div>
       </div>
 
-      <!-- 保存済みの SQL 成果物 -->
+      <!-- 保存済みの SQL 成果物 + 物理カラム一覧の添付 -->
       <div class="wz-studio-side">
+        <div class="wz-card">
+          <h3 class="wz-h">物理カラム一覧（Redash）</h3>
+          <p class="muted">
+            納品形の SQL で物理名（IMPORT_xxxxx）を当てる根拠です。
+            kpiee Redash の<b>クエリ145（全物理カラム）／147（アセット一覧）</b>を CSV で書き出して添付してください。
+            無くてもローカル検証は進められます（物理名の当てはめだけが後回しになります）。
+          </p>
+          <div class="wz-actions">
+            <label class="wz-filebtn">
+              <input type="file" multiple accept=".csv,.tsv,.txt,.json" @change="pickColumnFile">
+              <span>＋ CSV を添付</span>
+            </label>
+            <span v-if="colBusy" class="muted">{{ colBusy }} を取り込み中…</span>
+          </div>
+          <ul v-if="columnFiles.length > 0" class="wz-list">
+            <li v-for="d in columnFiles" :key="d.id">
+              {{ d.filename }}
+              <span v-if="d.text_length > 0" class="muted">（{{ d.text_length.toLocaleString() }} 字）</span>
+              <span v-else class="badge ng">読み取れませんでした</span>
+              <button class="link danger" @click="removeColumnFile(d)">削除</button>
+            </li>
+          </ul>
+        </div>
+
         <div class="wz-card">
           <h3 class="wz-h">SQL 成果物（{{ jobs.length }} 本）</h3>
           <p v-if="jobs.length === 0" class="muted">

@@ -133,6 +133,8 @@ CREATE TABLE IF NOT EXISTS project_docs (
   id ${pk},
   project_id INTEGER NOT NULL REFERENCES projects(id),
   filename TEXT NOT NULL,
+  -- 種別。doc=要件定義書・手順書（解読プロンプトに入る）／sql-columns=Redash の物理カラム一覧（SQL構築だけが読む）
+  kind TEXT NOT NULL DEFAULT 'doc',
   -- 抽出した本文。抽出できない形式は空になり、その旨を extract_error に残す
   content TEXT NOT NULL DEFAULT '',
   extract_error TEXT,
@@ -236,6 +238,12 @@ CREATE TABLE IF NOT EXISTS sql_jobs (
     ['step', 'INTEGER'],
     ['step_title', "TEXT NOT NULL DEFAULT ''"],
     ['adds', "TEXT NOT NULL DEFAULT ''"],
+  ]);
+  // 業務資料の種別。doc=要件定義書・手順書（decode 等の <reference_docs> に入る）／
+  // sql-columns=Redash の物理カラム一覧（クエリ145/147 の書き出し。SQL構築チャットだけが読む）。
+  // 分けるのは、数百行の物理名 CSV を解読プロンプトへ混ぜても判定を汚すだけのため。
+  await addColumns(db, 'project_docs', [
+    ['kind', "TEXT NOT NULL DEFAULT 'doc'"],
   ]);
 }
 

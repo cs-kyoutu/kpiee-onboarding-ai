@@ -23,7 +23,7 @@ import { aiAvailable, callWithTools } from './ai/client.js';
 import { collectByRole } from './pipeline/orchestrator.js';
 import { SqlSandbox } from './match/simulate.js';
 import { scanQuery } from './validator/queryScanner.js';
-import { docsBlock } from './projectDocs.js';
+import { docsBlock, listProjectDocs, type ProjectDoc } from './projectDocs.js';
 import type { StructureOverview } from './ai/schemas.js';
 
 const KNOWLEDGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../knowledge/kpiee-sql');
@@ -101,6 +101,20 @@ const TOOL_DEFS = [
     },
   },
   {
+    name: 'read_column_file',
+    description: '添付された Redash の物理カラム一覧（クエリ145/147 の書き出し CSV）を読む。'
+      + '納品形の SQL で物理カラム名（IMPORT_xxxxx）を当てるときの唯一の根拠。捏造しない。'
+      + 'ファイルが大きいときは search で絞る（ヘッダー行＋一致行だけが返る）。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: '読むファイル名。省略時は最初の1件' },
+        search: { type: 'string', description: '絞り込み語（アセット名・論理名・シート名など）。省略時は全文（上限あり）' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'read_reference',
     description: 'ナレッジ（kpiee-sql-builder の references）を読む。配賦の骨格・検算の型・クレンジング等、'
       + '作業の局面に入ったら該当のファイルを読んでから書くこと。',
@@ -162,6 +176,26 @@ export interface SqlToolTrace {
   error?: string;
 }
 
+/**
+ * 物理カラム一覧の読み出し。全文は数百行 × 数列で数十KBになり得るため、
+ * search があればヘッダー行（1行目）＋一致行だけ返す。無ければ上限まで返す。
+ */
+function shapeColumnFile(doc: ProjectDoc, search?: string): { filename: string; content: string; truncated: boolean } {
+  const MAX_CHARS = 40_000;
+  const lines = doc.content.split('\n');
+  let picked: string[];
+  if (search && search.trim()) {
+    const s = search.trim().toLowerCase();
+    picked = [lines[0] ?? '', ...lines.slice(1).filter(l => l.toLowerCase().includes(s))];
+  } else {
+    picked = lines;
+  }
+  let out = picked.join('\n');
+  const truncated = out.length > MAX_CHARS;
+  if (truncated) out = `${out.slice(0, MAX_CHARS)}\n…（続きは search で絞ってください）`;
+  return { filename: doc.filename, content: out, truncated };
+}
+
 // ---- システムプロンプト ----
 
 async function buildSystemText(projectId: number, tables: SqlSandbox['tables']): Promise<string> {
@@ -173,6 +207,11 @@ async function buildSystemText(projectId: number, tables: SqlSandbox['tables']):
     `- ${t.name}（${t.rowCount.toLocaleString()}行）: ${t.columns.slice(0, 40).join(', ')}${t.columns.length > 40 ? ' …' : ''}`,
   ).join('\n');
 
+  const columnFiles = (await listProjectDocs(projectId, 'sql-columns')).filter(d => d.content.trim() !== '');
+  const columnFileList = columnFiles.length > 0
+    ? columnFiles.map(d => `- ${d.filename}（${d.content.length.toLocaleString()} 字）`).join('\n')
+    : '（未添付。物理名が要る局面になったら、Redash クエリ145/147 の書き出し CSV の添付を依頼する）';
+
   return [
     'あなたは kpiee 導入支援の担当者と一緒に、SQLジョブ（Snowflake の SELECT 文）を組み立てるアシスタントです。',
     '進め方はナレッジ（下の SKILL / workflow）が正。記憶や一般論で進めず、そこに書かれた4ターンの型に従ってください。',
@@ -180,8 +219,9 @@ async function buildSystemText(projectId: number, tables: SqlSandbox['tables']):
     '## この環境がナレッジの前提と違うところ（重要）',
     '- レポートHTMLの添付は無い。代わりにこの案件の解析結果（下の構造サマリ）と、',
     '  取込済みの実データそのものがある。復唱（ターン1）は構造サマリとテーブル一覧を根拠に行う。',
-    '- Redash には接続していない。物理カラム名（IMPORT_xxxxx）が要る局面では、ユーザーに',
-    '  クエリ145/147 の結果を貼ってもらう。**物理名を捏造しない**のはナレッジと同じ。',
+    '- Redash には接続していない。物理カラム名（IMPORT_xxxxx）の根拠は、ユーザーが添付した',
+    '  クエリ145/147 の書き出しファイル（下の一覧）だけ。read_column_file で読む。',
+    '  添付が無いのに物理名が要る局面では、添付を依頼するか貼ってもらう。**物理名を捏造しない**のはナレッジと同じ。',
     '- SQL はあなた自身が run_sql でローカル実行できる。実行環境は DuckDB で、',
     '  TRY_TO_DECIMAL / TRY_TO_NUMBER / TRY_TO_DATE(2引数) / IFF / NVL / ZEROIFNULL / DIV0 は',
     '  ポリフィル済み。それ以外の Snowflake 専用関数が要るときは、ローカル検証では等価な形に',
@@ -201,6 +241,9 @@ async function buildSystemText(projectId: number, tables: SqlSandbox['tables']):
     '',
     '## この案件のローカルテーブル（FROM に書ける名前）',
     tableList || '（取込データがまだありません。まずデータの取り込みを案内してください）',
+    '',
+    '## 添付済みの物理カラム一覧（read_column_file で読める）',
+    columnFileList,
     '',
     '## この案件の構造サマリ（解読済みのもの）',
     overview ? JSON.stringify(overview, null, 2) : '（AI 解読が未実行。構造把握のステップで実行できます）',
@@ -270,6 +313,19 @@ export async function startSqlChat(projectId: number, message: string): Promise<
                 trace.error = e instanceof Error ? e.message : String(e);
                 return { error: trace.error };
               }
+            }
+
+            case 'read_column_file': {
+              const files = (await listProjectDocs(projectId, 'sql-columns')).filter(d => d.content.trim() !== '');
+              if (files.length === 0) {
+                return { error: '物理カラム一覧が添付されていません。Redash クエリ145/147 の書き出し CSV を「物理カラム一覧」として添付してもらってください' };
+              }
+              const doc = input.name ? files.find(f => f.filename === input.name) : files[0];
+              if (!doc) {
+                return { error: `そのファイルはありません。添付済み: ${files.map(f => f.filename).join(' / ')}` };
+              }
+              traces.push({ tool: 'read_column_file', label: `${doc.filename}${input.search ? `（絞り込み: ${input.search}）` : ''}` });
+              return shapeColumnFile(doc, input.search);
             }
 
             case 'read_reference': {

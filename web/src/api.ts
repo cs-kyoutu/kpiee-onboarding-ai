@@ -257,9 +257,16 @@ export function deleteScript(scriptId: number): Promise<{ ok: boolean }> {
 // ---- 業務資料（要件定義シート・手順書・引継ぎメモ）----
 // データ（xlsx/csv）とは置き場所を分ける。資料は「データがどう作られるか」を書いた文書で、
 // 関係分析やシート役割判定へ混ぜると判定を汚すだけ。一方で中身は AI の解読・要件の読み取りに効かせる。
+/**
+ * 資料の種別。doc=要件定義書・手順書（解読プロンプトに入る）／
+ * sql-columns=Redash の物理カラム一覧（クエリ145/147 の書き出し。SQL構築チャットだけが読む）
+ */
+export type ProjectDocKind = 'doc' | 'sql-columns'
+
 export interface ProjectDoc {
   id: number
   filename: string
+  kind: ProjectDocKind
   byte_size: number
   /** 抽出できた本文の文字数。0 なら「入れたのに効いていない」ので画面で警告する */
   text_length: number
@@ -271,9 +278,8 @@ export function getProjectDocs(projectId: number): Promise<ProjectDoc[]> {
   return get<ProjectDoc[]>(`/projects/${projectId}/docs`)
 }
 
-/** 資料をアップロードする。kind は使わないが uploadFile の形に合わせる */
-export function uploadProjectDoc(projectId: number, file: File): Promise<ProjectDoc> {
-  return uploadFile<ProjectDoc>(`/projects/${projectId}/docs`, file, 'doc')
+export function uploadProjectDoc(projectId: number, file: File, kind: ProjectDocKind = 'doc'): Promise<ProjectDoc> {
+  return uploadFile<ProjectDoc>(`/projects/${projectId}/docs`, file, kind)
 }
 
 /** ドライブにある資料（手順書 txt・ロジックのメモ等）をそのまま取り込む */
