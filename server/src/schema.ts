@@ -218,6 +218,21 @@ CREATE TABLE IF NOT EXISTS sql_chat_messages (
   created_at ${ts}
 );
 
+-- 物理カラムの対応（SQL構築 ステップ1で人が確定したもの）。
+-- Redash クエリ145 の書き出しから初期案を起こし、人が論理名を直して確定する。
+-- 確定した対応だけが SQL構築チャットの前提（物理名の根拠）になる。
+-- table_name は physical_column の先頭（IMPORT_30016_STRING_1 → IMPORT_30016）だが、
+-- 突き合わせ・表示のたびに切り出すのは無駄なので列で持つ。
+CREATE TABLE IF NOT EXISTS sql_column_maps (
+  id ${pk},
+  project_id INTEGER NOT NULL REFERENCES projects(id),
+  table_name TEXT NOT NULL DEFAULT '',
+  physical_column TEXT NOT NULL,
+  logical_name TEXT NOT NULL DEFAULT '',
+  asset_name TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT ''
+);
+
 -- 構築した SQLジョブ（1案件に複数本。協和は STEP1〜4 ＋ 統合の5本）。
 -- output_spec は出力仕様（順番 → 別名 → 予測物理名 → 原本の列 → 下流での用途）。
 -- ジョブ登録で別名は物理名に変わるため、これが無いと下流の担当者が参照名を辿れない。

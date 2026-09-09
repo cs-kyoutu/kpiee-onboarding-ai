@@ -374,6 +374,34 @@ export function getSqlChat(projectId: number): Promise<SqlChatState> {
   return get<SqlChatState>(`/projects/${projectId}/sql-chat`)
 }
 
+/** 物理カラムの対応1行（SQL構築 ステップ1で人が確定するもの） */
+export interface SqlColumnRow {
+  id?: number
+  table_name: string
+  physical_column: string
+  logical_name: string
+  asset_name: string
+  note: string
+}
+
+/** 添付済みの Redash 書き出しから初期案を起こす（保存はしない。確定は人） */
+export function parseSqlColumns(projectId: number): Promise<{ rows: SqlColumnRow[]; notes: string[] }> {
+  return post<{ rows: SqlColumnRow[]; notes: string[] }>(`/projects/${projectId}/sql-columns/parse`)
+}
+
+export function getSqlColumns(projectId: number): Promise<{ rows: SqlColumnRow[]; confirmed: boolean }> {
+  return get<{ rows: SqlColumnRow[]; confirmed: boolean }>(`/projects/${projectId}/sql-columns`)
+}
+
+/** 対応表を確定する（丸ごと置き換え）。rows 空でも確定できる＝物理名なしで進む（取込前） */
+export function saveSqlColumns(projectId: number, rows: SqlColumnRow[]): Promise<{ rows: SqlColumnRow[]; confirmed: boolean }> {
+  return fetch(`${BASE}/projects/${projectId}/sql-columns`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows }),
+  }).then(res => handle<{ rows: SqlColumnRow[]; confirmed: boolean }>(res))
+}
+
 export function sendSqlChat(projectId: number, message: string): Promise<{ pending: boolean }> {
   return post<{ pending: boolean }>(`/projects/${projectId}/sql-chat`, { message })
 }

@@ -242,6 +242,19 @@ pre.code {
 .wz-sqlresult th { position: sticky; top: 0; background: var(--bg); text-align: left; padding: 4px 8px; white-space: nowrap; }
 .wz-sqlresult td { padding: 3px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 
+/* ステップの中の2段階（物理カラムの確認 → SQL構築）。全体のステップ帯より一回り小さく */
+.wz-substeps { margin: 4px 0 14px; }
+.wz-substeps li { padding: 6px 12px; }
+.wz-substeps .no { width: 22px; height: 22px; font-size: 12px; }
+
+/* 物理カラム対応表。行が多いのでスクロールし、入力はセル幅いっぱいに */
+.wz-colfilter { margin-left: auto; font-size: 12.5px; width: 260px; }
+.wz-coltable { max-height: 480px; overflow: auto; border: 1px solid var(--border); border-radius: var(--r-sm); }
+.wz-coltable th { position: sticky; top: 0; z-index: 1; }
+.wz-coltable input { width: 100%; box-sizing: border-box; font-size: 12.5px; padding: 3px 6px; border: 1px solid transparent; background: transparent; }
+.wz-coltable input:hover:not(:disabled) { border-color: var(--border); background: #fff; }
+.wz-coltable input:focus { border-color: var(--primary); background: #fff; }
+
 /* ナレッジ ON/OFF。チェック1つだが、今どちらの運転かが読めるように説明ごと1行にする */
 .wz-knowledge { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
 .wz-knowledge em { font-style: normal; }

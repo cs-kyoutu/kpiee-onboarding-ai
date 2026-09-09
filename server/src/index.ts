@@ -32,7 +32,11 @@ import {
   startReportChat, REPORT_CHAT_KICKOFF, type ProjectFacts,
 } from './reportChat.js';
 import { REPORT_ITEM_LABELS, REPORT_SECTION_LABELS } from './reportSpec.js';
-import { sqlChatHistory, isSqlChatPending, startSqlChat, listSqlJobs, deleteSqlJob, isKnowledgeOn, SQL_KNOWLEDGE_FLAG } from './sqlChat.js';
+import {
+  sqlChatHistory, isSqlChatPending, startSqlChat, listSqlJobs, deleteSqlJob,
+  isKnowledgeOn, SQL_KNOWLEDGE_FLAG, SQL_COLUMNS_FLAG,
+  listColumnMap, saveColumnMap, parseColumnFiles,
+} from './sqlChat.js';
 import { invalidateBooks } from './qa/tools.js';
 import { aiAvailable, callStructured, MODEL, estimateCostUsd } from './ai/client.js';
 import { STEP_FLOW_SCHEMA, REQUIREMENTS_SCHEMA } from './ai/schemas.js';
@@ -107,7 +111,8 @@ async function clearProjectFlag(projectId: number, flag: string): Promise<void> 
 }
 
 // roles_confirmed=分類を人が確定した印 / sql_knowledge=SQL構築でナレッジ全文をプロンプトへ常時入れる（既定 OFF）
-const VALID_FLAGS = ['roles_confirmed', SQL_KNOWLEDGE_FLAG];
+// sql_columns_confirmed=物理カラムの対応を人が確定した印（SQL構築 ステップ1）
+const VALID_FLAGS = ['roles_confirmed', SQL_KNOWLEDGE_FLAG, SQL_COLUMNS_FLAG];
 
 app.post('/api/projects/:id/flags/:flag', async (req, res) => {
   const flag = req.params.flag;
@@ -170,6 +175,7 @@ app.delete('/api/projects/:id', async (req, res) => {
     await t.prepare(`DELETE FROM report_chat_messages WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM sql_chat_messages WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM sql_jobs WHERE project_id = ?`).run(projectId);
+    await t.prepare(`DELETE FROM sql_column_maps WHERE project_id = ?`).run(projectId);
     // file_relations は artifacts を参照するので artifacts より先に消す
     await t.prepare(`DELETE FROM file_relations WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM artifacts WHERE project_id = ?`).run(projectId);
@@ -1016,6 +1022,48 @@ app.post('/api/projects/:id/sql-chat', async (req, res) => {
     res.status(202).json(await startSqlChat(projectId, message.trim()));
   } catch (e) {
     res.status(409).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ---- 物理カラムの対応（SQL構築 ステップ1）----
+// Redash クエリ145 の書き出し（sql-columns で添付済み）から初期案を起こし、人が直して確定する。
+// 確定した対応だけが SQL構築チャットの前提になる（初期案の読み取り違いをそのまま根拠にしない）。
+app.post('/api/projects/:id/sql-columns/parse', async (req, res) => {
+  const projectId = Number(req.params.id);
+  try {
+    const docs = (await listProjectDocs(projectId, 'sql-columns')).filter(d => d.content.trim() !== '');
+    if (docs.length === 0) {
+      return res.status(400).json({ error: '物理カラム一覧が添付されていません。Redash クエリ145/147 の書き出し CSV を先に添付してください' });
+    }
+    res.json(parseColumnFiles(docs));
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.get('/api/projects/:id/sql-columns', async (req, res) => {
+  const projectId = Number(req.params.id);
+  try {
+    res.json({
+      rows: await listColumnMap(projectId),
+      confirmed: (await projectFlags(projectId)).includes(SQL_COLUMNS_FLAG),
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+/** 対応表を確定する（丸ごと置き換え＋確定の印）。rows が空でも確定できる＝物理名なしで進む（取込前の案件） */
+app.put('/api/projects/:id/sql-columns', async (req, res) => {
+  const projectId = Number(req.params.id);
+  const { rows } = req.body as { rows?: unknown };
+  if (!Array.isArray(rows)) return res.status(400).json({ error: 'rows（配列）は必須です' });
+  try {
+    await saveColumnMap(projectId, rows as Parameters<typeof saveColumnMap>[1]);
+    await setProjectFlag(projectId, SQL_COLUMNS_FLAG);
+    res.json({ rows: await listColumnMap(projectId), confirmed: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
   }
 });
 

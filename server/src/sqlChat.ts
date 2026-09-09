@@ -61,6 +61,119 @@ export async function deleteSqlJob(id: number): Promise<void> {
   await db.prepare(`DELETE FROM sql_jobs WHERE id = ?`).run(id);
 }
 
+// ---- 物理カラムの対応（ステップ1で人が確定するもの）----
+
+export interface SqlColumnRow {
+  id?: number;
+  table_name: string;
+  physical_column: string;
+  logical_name: string;
+  asset_name: string;
+  note: string;
+}
+
+/** 物理カラム名からテーブル名を切り出す（IMPORT_30016_STRING_1 → IMPORT_30016） */
+const tableOfPhysical = (physical: string): string => {
+  const m = physical.match(/^([A-Za-z]+_\d+)_/);
+  return m ? m[1] : '';
+};
+
+export async function listColumnMap(projectId: number): Promise<SqlColumnRow[]> {
+  return await db.prepare(
+    `SELECT id, table_name, physical_column, logical_name, asset_name, note
+       FROM sql_column_maps WHERE project_id = ? ORDER BY id`,
+  ).all(projectId) as SqlColumnRow[];
+}
+
+/** 対応表を丸ごと置き換える（確定は上書き。部分更新にすると画面と DB の行がずれる） */
+export async function saveColumnMap(projectId: number, rows: SqlColumnRow[]): Promise<void> {
+  await db.tx(async t => {
+    await t.prepare(`DELETE FROM sql_column_maps WHERE project_id = ?`).run(projectId);
+    for (const r of rows) {
+      const physical = r.physical_column.trim();
+      if (!physical) continue;
+      await t.prepare(
+        `INSERT INTO sql_column_maps (project_id, table_name, physical_column, logical_name, asset_name, note)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(projectId, r.table_name.trim() || tableOfPhysical(physical), physical,
+        (r.logical_name ?? '').trim(), (r.asset_name ?? '').trim(), (r.note ?? '').trim());
+    }
+  });
+}
+
+/** 素朴な CSV/TSV の1行分解。引用符付きカンマだけ面倒を見る（Redash の書き出しが対象） */
+function splitCsvLine(line: string, sep: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQ) {
+      if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+      else if (ch === '"') inQ = false;
+      else cur += ch;
+    } else if (ch === '"') inQ = true;
+    else if (ch === sep) { out.push(cur); cur = ''; }
+    else cur += ch;
+  }
+  out.push(cur);
+  return out.map(s => s.trim());
+}
+
+/**
+ * 添付された Redash の書き出し（クエリ145 など）から対応表の初期案を起こす。
+ *
+ * 列の当たりの付け方: 物理カラム名の列は「IMPORT_数字_」パターンが最も多い列。
+ * 論理名・アセット名はヘッダー名で当て、当たらなければ物理列以外のテキスト列を順に使う。
+ * ここは初期案でしかない — 直すのは人（画面の表で編集して確定する）。
+ */
+export function parseColumnFiles(docs: { filename: string; content: string }[]): {
+  rows: SqlColumnRow[]; notes: string[];
+} {
+  const rows: SqlColumnRow[] = [];
+  const notes: string[] = [];
+  const isPhysical = (v: string) => /^[A-Za-z]+_\d+_[A-Za-z]+_\d+$/.test(v.trim());
+
+  for (const doc of docs) {
+    const lines = doc.content.split('\n').filter(l => l.trim() !== '');
+    if (lines.length < 2) { notes.push(`${doc.filename}: 行が少なく読み取れませんでした`); continue; }
+    const sep = (lines[0].match(/\t/g)?.length ?? 0) > (lines[0].match(/,/g)?.length ?? 0) ? '\t' : ',';
+    const header = splitCsvLine(lines[0], sep);
+    const data = lines.slice(1).map(l => splitCsvLine(l, sep));
+
+    // 物理カラム名の列: IMPORT_xxxxx_型_連番 パターンの出現が最多の列
+    const physIdx = header.map((_, c) => data.filter(r => isPhysical(r[c] ?? '')).length)
+      .reduce((best, n, c, arr) => (n > (arr[best] ?? -1) && n > 0 ? c : best), -1);
+    if (physIdx < 0) { notes.push(`${doc.filename}: 物理カラム名（IMPORT_…）の列が見つかりませんでした`); continue; }
+
+    const findBy = (patterns: RegExp[]): number =>
+      header.findIndex(h => patterns.some(p => p.test(h)));
+    let logiIdx = findBy([/論理|logical|カラム名|列名|label/i]);
+    const assetIdx = findBy([/アセット|asset|データファイル|テーブル名/i]);
+    if (logiIdx < 0) {
+      // ヘッダーで当たらなければ、物理列・アセット列以外の最初のテキスト列を論理名とみなす
+      logiIdx = header.findIndex((_, c) => c !== physIdx && c !== assetIdx
+        && data.some(r => (r[c] ?? '') !== '' && !isPhysical(r[c] ?? '')));
+    }
+
+    let added = 0;
+    for (const r of data) {
+      const physical = (r[physIdx] ?? '').trim();
+      if (!isPhysical(physical)) continue;
+      rows.push({
+        table_name: tableOfPhysical(physical),
+        physical_column: physical,
+        logical_name: logiIdx >= 0 ? (r[logiIdx] ?? '').trim() : '',
+        asset_name: assetIdx >= 0 ? (r[assetIdx] ?? '').trim() : '',
+        note: '',
+      });
+      added++;
+    }
+    notes.push(`${doc.filename}: ${added} 行を読み取りました（物理名の列: ${header[physIdx] || `列${physIdx + 1}`}）`);
+  }
+  return { rows, notes };
+}
+
 /** references の一覧（ファイル名 = 道具に渡す名前）。起動時に一度だけ読む */
 function referenceNames(): string[] {
   try {
@@ -200,6 +313,8 @@ function shapeColumnFile(doc: ProjectDoc, search?: string): { filename: string; 
 
 /** ナレッジ（SKILL＋workflow）をプロンプトへ常時入れるか。project_flags の印で持つ（既定 OFF） */
 export const SQL_KNOWLEDGE_FLAG = 'sql_knowledge';
+/** 物理カラムの対応を人が確定した印（SQL構築 ステップ1 の完了条件） */
+export const SQL_COLUMNS_FLAG = 'sql_columns_confirmed';
 
 export async function isKnowledgeOn(projectId: number): Promise<boolean> {
   const hit = await db.prepare(`SELECT flag FROM project_flags WHERE project_id = ? AND flag = ?`)
@@ -253,6 +368,20 @@ async function buildSystemText(
     ? columnFiles.map(d => `- ${d.filename}（${d.content.length.toLocaleString()} 字）`).join('\n')
     : '（未添付。物理名が要る局面になったら、Redash クエリ145/147 の書き出し CSV の添付を依頼する）';
 
+  // ステップ1で人が確定した対応表。これがあるときは物理名の一次根拠（原本ファイルより優先）。
+  // 500行を超える案件は上限で切り、続きは read_column_file で絞らせる（プロンプトの肥大防止）。
+  const confirmed = await listColumnMap(projectId);
+  const MAX_MAP_ROWS = 500;
+  const confirmedBlock = confirmed.length > 0
+    ? [
+        `人が確定した対応（${confirmed.length} 行）。物理名はここが一次根拠:`,
+        'テーブル名 | 物理カラム名 | カラム名（論理名） | アセット名',
+        ...confirmed.slice(0, MAX_MAP_ROWS).map(r =>
+          `${r.table_name} | ${r.physical_column} | ${r.logical_name} | ${r.asset_name}${r.note ? `（${r.note}）` : ''}`),
+        ...(confirmed.length > MAX_MAP_ROWS ? [`…残り ${confirmed.length - MAX_MAP_ROWS} 行は read_column_file で絞って参照`] : []),
+      ].join('\n')
+    : '（未確定。ステップ1（物理カラムの確認）が済んでいない案件では、物理名の当てはめを保留にして進める）';
+
   const envBlock = [
     '## この環境',
     '- Redash には接続していない。物理カラム名（IMPORT_xxxxx）の根拠は、ユーザーが添付した',
@@ -305,7 +434,10 @@ async function buildSystemText(
     '## この案件のローカルテーブル（FROM に書ける名前）',
     tableList || '（取込データがまだありません。まずデータの取り込みを案内してください）',
     '',
-    '## 添付済みの物理カラム一覧（read_column_file で読める）',
+    '## 物理カラムの対応（確定済み）',
+    confirmedBlock,
+    '',
+    '## 添付済みの物理カラム一覧（元ファイル。read_column_file で読める）',
     columnFileList,
     '',
     '## この案件の構造サマリ（解読済みのもの）',
