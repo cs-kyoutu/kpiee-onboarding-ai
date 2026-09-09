@@ -35,7 +35,7 @@ import { REPORT_ITEM_LABELS, REPORT_SECTION_LABELS } from './reportSpec.js';
 import {
   sqlChatHistory, isSqlChatPending, startSqlChat, listSqlJobs, deleteSqlJob,
   isKnowledgeOn, SQL_KNOWLEDGE_FLAG, SQL_COLUMNS_FLAG,
-  listColumnMap, saveColumnMap, parseColumnFiles,
+  listColumnMap, saveColumnMap, buildColumnDraft,
 } from './sqlChat.js';
 import { invalidateBooks } from './qa/tools.js';
 import { aiAvailable, callStructured, MODEL, estimateCostUsd } from './ai/client.js';
@@ -1035,7 +1035,9 @@ app.post('/api/projects/:id/sql-columns/parse', async (req, res) => {
     if (docs.length === 0) {
       return res.status(400).json({ error: '物理カラム一覧が添付されていません。Redash クエリ145/147 の書き出し CSV を先に添付してください' });
     }
-    res.json(parseColumnFiles(docs));
+    // 読み取りだけでなく、取込済みデータ（原本）の列との自動突き合わせまで済ませて返す。
+    // 人は当たっているかの確認と、外れた行の修正だけをする
+    res.json(await buildColumnDraft(projectId, docs));
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }

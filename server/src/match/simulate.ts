@@ -56,6 +56,14 @@ function uniquifyHeader(names: string[]): string[] {
   });
 }
 
+/**
+ * サンドボックスに載せたときの列名（ヘッダー正規化後）を返す。
+ * SQL構築の突き合わせで「AI が FROM で使う列名」と同じ名前を出すために公開する。
+ */
+export function tableHeaderOf(parsed: ParsedArtifact): string[] {
+  return toGrid(parsed).header;
+}
+
 /** 解析済みアーティファクトの先頭シートをヘッダー＋データ行列へ変換する */
 function toGrid(parsed: ParsedArtifact): { header: string[]; data: (string | number | null)[][] } {
   const sheet = parsed.sheets[0];

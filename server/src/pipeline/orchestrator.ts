@@ -87,8 +87,10 @@ function rolesOf(row: ArtifactRow, parsed: ParsedArtifact): Record<string, strin
 
 /** 役割別に整理したパイプライン入力。混在ワークブック（kind=mixed）はシート単位で振り分けられる */
 interface RoleCollections {
-  /** SQL/DuckDB のテーブルになるインプット（CSV はファイル名、xlsx シートはシート名がテーブル名） */
-  inputs: { tableName: string; parsed: ParsedArtifact }[];
+  /** SQL/DuckDB のテーブルになるインプット（CSV はファイル名、xlsx シートはシート名がテーブル名）。
+   *  filename は元のファイル名 — テーブル名がシート名（Export 等）のとき、外部の名前
+   *  （Redash のアセット名など）と突き合わせる唯一の手がかりになる */
+  inputs: { tableName: string; filename: string; parsed: ParsedArtifact }[];
   /** 解読対象の中間シート群 */
   working: ParsedArtifact[];
   /** 照合対象の最終帳票（最初に見つかった1シート） */
@@ -115,7 +117,10 @@ export async function collectByRole(projectId: number): Promise<RoleCollections>
       const tableName = a.parsed.fileType === 'csv'
         ? tableNameOf(a.row.original_filename)
         : tableNameOf(sheet.name);
-      inputs.push({ tableName, parsed: { fileType: a.parsed.fileType, sheets: [sheet] } });
+      inputs.push({
+        tableName, filename: a.row.original_filename,
+        parsed: { fileType: a.parsed.fileType, sheets: [sheet] },
+      });
     }
 
     const workingSheets = pick('working_sheet');

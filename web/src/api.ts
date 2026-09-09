@@ -381,12 +381,29 @@ export interface SqlColumnRow {
   physical_column: string
   logical_name: string
   asset_name: string
+  /** 原本側の対応（取込済みデータのローカルテーブル・列）。空 = 突き合わせできていない */
+  local_table: string
+  local_column: string
   note: string
 }
 
-/** 添付済みの Redash 書き出しから初期案を起こす（保存はしない。確定は人） */
-export function parseSqlColumns(projectId: number): Promise<{ rows: SqlColumnRow[]; notes: string[] }> {
-  return post<{ rows: SqlColumnRow[]; notes: string[] }>(`/projects/${projectId}/sql-columns/parse`)
+export interface SqlColumnDraft {
+  rows: SqlColumnRow[]
+  notes: string[]
+  /** 原本の列まで自動で当たった行数 */
+  matched: number
+  /** 原本にあって Redash 側に当たらなかった列（未取込か、論理名の言い換え） */
+  unmatchedLocal: string[]
+  /** 取込済みデータのテーブルと列（表の修正時の参照用） */
+  tables: { name: string; columns: string[] }[]
+}
+
+/**
+ * 添付済みの Redash 書き出しから初期案を起こす（保存はしない。確定は人）。
+ * 原本（取込済みデータ）の列との自動突き合わせまで済ませて返す
+ */
+export function parseSqlColumns(projectId: number): Promise<SqlColumnDraft> {
+  return post<SqlColumnDraft>(`/projects/${projectId}/sql-columns/parse`)
 }
 
 export function getSqlColumns(projectId: number): Promise<{ rows: SqlColumnRow[]; confirmed: boolean }> {

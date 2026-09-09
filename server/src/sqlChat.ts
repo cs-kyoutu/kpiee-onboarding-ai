@@ -21,7 +21,7 @@ import path from 'node:path';
 import { db } from './db.js';
 import { aiAvailable, callWithTools } from './ai/client.js';
 import { collectByRole } from './pipeline/orchestrator.js';
-import { SqlSandbox } from './match/simulate.js';
+import { SqlSandbox, tableHeaderOf } from './match/simulate.js';
 import { scanQuery } from './validator/queryScanner.js';
 import { docsBlock, listProjectDocs, type ProjectDoc } from './projectDocs.js';
 import type { StructureOverview } from './ai/schemas.js';
@@ -69,6 +69,9 @@ export interface SqlColumnRow {
   physical_column: string;
   logical_name: string;
   asset_name: string;
+  /** 原本側の対応（取込済みデータのローカルテーブル・列）。空 = 突き合わせできていない */
+  local_table: string;
+  local_column: string;
   note: string;
 }
 
@@ -80,7 +83,7 @@ const tableOfPhysical = (physical: string): string => {
 
 export async function listColumnMap(projectId: number): Promise<SqlColumnRow[]> {
   return await db.prepare(
-    `SELECT id, table_name, physical_column, logical_name, asset_name, note
+    `SELECT id, table_name, physical_column, logical_name, asset_name, local_table, local_column, note
        FROM sql_column_maps WHERE project_id = ? ORDER BY id`,
   ).all(projectId) as SqlColumnRow[];
 }
@@ -93,10 +96,11 @@ export async function saveColumnMap(projectId: number, rows: SqlColumnRow[]): Pr
       const physical = r.physical_column.trim();
       if (!physical) continue;
       await t.prepare(
-        `INSERT INTO sql_column_maps (project_id, table_name, physical_column, logical_name, asset_name, note)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO sql_column_maps (project_id, table_name, physical_column, logical_name, asset_name, local_table, local_column, note)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(projectId, r.table_name.trim() || tableOfPhysical(physical), physical,
-        (r.logical_name ?? '').trim(), (r.asset_name ?? '').trim(), (r.note ?? '').trim());
+        (r.logical_name ?? '').trim(), (r.asset_name ?? '').trim(),
+        (r.local_table ?? '').trim(), (r.local_column ?? '').trim(), (r.note ?? '').trim());
     }
   });
 }
@@ -165,6 +169,8 @@ export function parseColumnFiles(docs: { filename: string; content: string }[]):
         physical_column: physical,
         logical_name: logiIdx >= 0 ? (r[logiIdx] ?? '').trim() : '',
         asset_name: assetIdx >= 0 ? (r[assetIdx] ?? '').trim() : '',
+        local_table: '',
+        local_column: '',
         note: '',
       });
       added++;
@@ -172,6 +178,81 @@ export function parseColumnFiles(docs: { filename: string; content: string }[]):
     notes.push(`${doc.filename}: ${added} 行を読み取りました（物理名の列: ${header[physIdx] || `列${physIdx + 1}`}）`);
   }
   return { rows, notes };
+}
+
+/**
+ * Redash から起こした行を、取込済みデータ（原本）の列と突き合わせる。
+ *
+ * 手で376行を対応付けるのは現実的でない。kpiee 取込の性質を使って自動で当てる:
+ *   - クエリ145 の論理名は、取込時の原本ヘッダーがそのまま入る → 列名で当たる
+ *   - アセット名は原本ファイル名に番号・種別タグ（「3-1. [raw] 〜」）を足した形 → 名前を均して当たる
+ * 当たらなかった行は空のまま残し、人が表で直す（自動突き合わせは初期案でしかない）。
+ */
+export function matchColumnsToLocal(
+  rows: SqlColumnRow[],
+  tables: { name: string; filename: string; columns: string[] }[],
+): { rows: SqlColumnRow[]; matched: number; unmatchedLocal: string[] } {
+  const norm = (s: string) => s.normalize('NFKC').replace(/[\s　_\-./／・()（）\[\]【】]/g, '').toLowerCase();
+  // アセット名から番号・種別タグを落とす（「3-1. [raw] SPD収支管理表」→「SPD収支管理表」）
+  const assetCore = (s: string) => norm(s.replace(/\[[^\]]*\]|【[^】]*】|（[^）]*）|\([^)]*\)/g, '').replace(/^[\d\s\-.．]+/, ''));
+
+  // テーブル名だけでなく元ファイル名でも当てる。xlsx のテーブル名はシート名（Export 等）で、
+  // アセット名（原本ファイル由来）とは一致しないことが多い（協和は全ファイル Export だった）
+  const tableByNorm = tables.map(t => ({
+    t, names: [norm(t.name), norm(t.filename.replace(/\.[^.]+$/, ''))].filter(Boolean),
+  }));
+  const findTable = (asset: string): { name: string; columns: string[] } | null => {
+    const a = assetCore(asset);
+    if (!a) return null;
+    // 双方向の包含で当てる（原本側が「①68期集計得意先別実績」のように接頭記号を持つことがある。
+    // NFKC で ③→3 に均されるため、丸数字とアセット番号もかみ合う）
+    const hit = tableByNorm.find(x => x.names.some(n => n.includes(a) || a.includes(n)));
+    return hit ? hit.t : null;
+  };
+
+  let matched = 0;
+  const usedLocal = new Set<string>();
+  const out = rows.map(r => {
+    if (r.local_table && r.local_column) return r; // 既に人が当てた行は触らない
+    const table = findTable(r.asset_name);
+    if (!table) return r;
+    const ln = norm(r.logical_name);
+    const col = ln === '' ? undefined : table.columns.find(c => norm(c) === ln)
+      ?? table.columns.find(c => norm(c).includes(ln) || ln.includes(norm(c)));
+    if (!col) return { ...r, local_table: table.name };
+    matched++;
+    usedLocal.add(`${table.name}!${col}`);
+    return { ...r, local_table: table.name, local_column: col };
+  });
+
+  // 原本にあって Redash 側に当たらなかった列（未取込か、論理名の言い換え）。画面の注記に出す
+  const unmatchedLocal = tables.flatMap(t =>
+    t.columns.filter(c => !usedLocal.has(`${t.name}!${c}`)).map(c => `${t.name} の ${c}`));
+  return { rows: out, matched, unmatchedLocal };
+}
+
+/**
+ * 対応表の初期案を丸ごと組み立てる（ステップ1「読み取る」の本体）。
+ * 添付ファイルの読み取り → 原本（取込済みデータ）との自動突き合わせまで行い、
+ * 人は表で確認・修正して確定するだけにする。
+ */
+export async function buildColumnDraft(projectId: number, docs: { filename: string; content: string }[]): Promise<{
+  rows: SqlColumnRow[];
+  notes: string[];
+  matched: number;
+  unmatchedLocal: string[];
+  tables: { name: string; columns: string[] }[];
+}> {
+  const parsed = parseColumnFiles(docs);
+  const collections = await collectByRole(projectId);
+  const tables = collections.inputs.map(i => ({
+    name: i.tableName, filename: i.filename, columns: tableHeaderOf(i.parsed),
+  }));
+  const m = matchColumnsToLocal(parsed.rows, tables);
+  return {
+    rows: m.rows, notes: parsed.notes, matched: m.matched, unmatchedLocal: m.unmatchedLocal,
+    tables: tables.map(t => ({ name: t.name, columns: t.columns })),
+  };
 }
 
 /** references の一覧（ファイル名 = 道具に渡す名前）。起動時に一度だけ読む */
@@ -374,10 +455,12 @@ async function buildSystemText(
   const MAX_MAP_ROWS = 500;
   const confirmedBlock = confirmed.length > 0
     ? [
-        `人が確定した対応（${confirmed.length} 行）。物理名はここが一次根拠:`,
-        'テーブル名 | 物理カラム名 | カラム名（論理名） | アセット名',
+        `人が確定した対応（${confirmed.length} 行）。物理名はここが一次根拠。`,
+        '「原本の列」はローカルテーブルの実列名で、ローカル検証（run_sql）ではこれを使い、',
+        '納品形（save_sql）では同じ行の物理カラム名に置き換える。出力仕様もこの対応から書く:',
+        '原本（ローカルテーブル.列） | 物理カラム名 | カラム名（論理名） | アセット名',
         ...confirmed.slice(0, MAX_MAP_ROWS).map(r =>
-          `${r.table_name} | ${r.physical_column} | ${r.logical_name} | ${r.asset_name}${r.note ? `（${r.note}）` : ''}`),
+          `${r.local_table && r.local_column ? `${r.local_table}.${r.local_column}` : '（原本未対応）'} | ${r.physical_column} | ${r.logical_name} | ${r.asset_name}${r.note ? `（${r.note}）` : ''}`),
         ...(confirmed.length > MAX_MAP_ROWS ? [`…残り ${confirmed.length - MAX_MAP_ROWS} 行は read_column_file で絞って参照`] : []),
       ].join('\n')
     : '（未確定。ステップ1（物理カラムの確認）が済んでいない案件では、物理名の当てはめを保留にして進める）';

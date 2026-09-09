@@ -230,6 +230,10 @@ CREATE TABLE IF NOT EXISTS sql_column_maps (
   physical_column TEXT NOT NULL,
   logical_name TEXT NOT NULL DEFAULT '',
   asset_name TEXT NOT NULL DEFAULT '',
+  -- 原本側の対応（取込済みデータのローカルテーブル・列）。突き合わせの結果を人が確認・修正して持つ。
+  -- これが埋まっている行だけ、SQL構築で「原本の列 ↔ 物理名」の橋になる
+  local_table TEXT NOT NULL DEFAULT '',
+  local_column TEXT NOT NULL DEFAULT '',
   note TEXT NOT NULL DEFAULT ''
 );
 
@@ -259,6 +263,11 @@ CREATE TABLE IF NOT EXISTS sql_jobs (
   // 分けるのは、数百行の物理名 CSV を解読プロンプトへ混ぜても判定を汚すだけのため。
   await addColumns(db, 'project_docs', [
     ['kind', "TEXT NOT NULL DEFAULT 'doc'"],
+  ]);
+  // 原本側の対応（ローカルテーブル・列）。後から足した列
+  await addColumns(db, 'sql_column_maps', [
+    ['local_table', "TEXT NOT NULL DEFAULT ''"],
+    ['local_column', "TEXT NOT NULL DEFAULT ''"],
   ]);
 }
 

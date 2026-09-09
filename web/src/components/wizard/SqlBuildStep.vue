@@ -39,6 +39,15 @@ const parsing = ref(false)
 const savingColumns = ref(false)
 /** 表が長いときの絞り込み（編集はフィルタ中も元の行に効く） */
 const filter = ref('')
+/** 原本にあって Redash 側に当たらなかった列（未取込か、論理名の言い換え） */
+const unmatchedLocal = ref<string[]>([])
+/** 取込済みデータのテーブルと列。修正時に datalist 候補として出す */
+const localTables = ref<{ name: string; columns: string[] }[]>([])
+
+/** 原本の列まで当たっている行数（確定前の見どころ。全行当たっている必要はない） */
+const matchedCount = computed(() => rows.value.filter(r => r.local_table && r.local_column).length)
+const localColumnOptions = computed(() =>
+  localTables.value.flatMap(t => t.columns.map(c => `${t.name}.${c}`)))
 
 const visibleRows = computed(() => {
   const f = filter.value.trim().toLowerCase()
@@ -98,11 +107,27 @@ async function readColumns() {
   try {
     const r = await parseSqlColumns(props.projectId)
     rows.value = r.rows
-    parseNotes.value = r.notes
+    localTables.value = r.tables
+    unmatchedLocal.value = r.unmatchedLocal
+    parseNotes.value = [
+      ...r.notes,
+      `原本の列と自動で突き合わせ: ${r.matched} / ${r.rows.length} 行が当たりました。外れた行（原本の列が空欄）を直してください。`,
+    ]
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
     parsing.value = false
+  }
+}
+
+/** 「テーブル.列」で選ばれた候補を2列へ割る（datalist の選択を1入力で受けるため） */
+function applyLocalPick(r: SqlColumnRow, v: string) {
+  const i = v.indexOf('.')
+  if (i > 0) {
+    r.local_table = v.slice(0, i)
+    r.local_column = v.slice(i + 1)
+  } else {
+    r.local_column = v
   }
 }
 
@@ -141,7 +166,10 @@ function removeRow(r: SqlColumnRow) {
 }
 
 function addRow() {
-  rows.value.push({ table_name: '', physical_column: '', logical_name: '', asset_name: '', note: '' })
+  rows.value.push({
+    table_name: '', physical_column: '', logical_name: '', asset_name: '',
+    local_table: '', local_column: '', note: '',
+  })
 }
 
 // ---- 段階2: SQL構築の対話 ----
@@ -294,9 +322,11 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
     <!-- ============ 段階1: 物理カラムの確認 ============ -->
     <template v-if="phase === 1">
       <p class="wz-lede">
-        kpiee 取込後の<b>物理カラム名（IMPORT_xxxxx）</b>と<b>カラム名（論理名）</b>の対応を確定します。
+        <b>原本（取り込んだデータ）の列</b>と <b>kpiee の物理カラム名（IMPORT_xxxxx）</b>の突き合わせ表を作ります。
+        Redash の書き出しを添付して「読み取る」を押すと<b>自動で突き合わせた表</b>が出るので、
+        当たっているかを確認し、外れた行だけ直して確定してください。
         納品 SQL はこの対応だけを根拠に物理名を書きます（AI は物理名を推測しません）。
-        まだ取込前の案件は、空のまま「確定」して進めます（物理名の当てはめが後回しになるだけです）。
+        まだ kpiee 取込前の案件は、空のまま「確定」して進めます。
       </p>
 
       <!-- 確定/編集中の状態（分類確認と同じ型） -->
@@ -342,21 +372,33 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
 
       <div class="wz-card">
         <div class="wz-book-head">
-          <h3 class="wz-h">物理カラムとカラム名の対応（{{ rows.length.toLocaleString() }} 行）</h3>
+          <h3 class="wz-h">原本の列 ↔ 物理カラムの対応（{{ rows.length.toLocaleString() }} 行）</h3>
+          <span v-if="rows.length > 0" class="badge" :class="matchedCount === rows.length ? 'ok' : 'warn'">
+            原本と当たった行 {{ matchedCount.toLocaleString() }} / {{ rows.length.toLocaleString() }}
+          </span>
           <input v-model="filter" class="wz-colfilter" placeholder="絞り込み（表示だけ。編集は元の行に効きます）">
         </div>
         <p v-if="rows.length === 0" class="muted">
-          まだありません。上の「読み取る」で起こすか、「＋ 行を足す」で手入力してください。
+          まだありません。上の「読み取る」で自動突き合わせ表を起こすか、「＋ 行を足す」で手入力してください。
           取込前の案件は空のまま確定して構いません。
         </p>
         <div v-else class="wz-coltable">
           <table class="wz-table">
             <thead>
-              <tr><th>テーブル名</th><th>物理カラム名</th><th>カラム名（論理名）</th><th>アセット名</th><th>備考</th><th></th></tr>
+              <tr>
+                <th>原本の列（取込データ）</th><th>物理カラム名</th><th>カラム名（論理名）</th>
+                <th>アセット名</th><th>備考</th><th></th>
+              </tr>
             </thead>
             <tbody>
-              <tr v-for="(r, i) in visibleRows" :key="r.id ?? `n${i}`">
-                <td><input v-model="r.table_name" :disabled="locked" placeholder="IMPORT_30016"></td>
+              <tr v-for="(r, i) in visibleRows" :key="r.id ?? `n${i}`" :class="{ warn: !(r.local_table && r.local_column) }">
+                <td>
+                  <input
+                    :value="r.local_table && r.local_column ? `${r.local_table}.${r.local_column}` : ''"
+                    :disabled="locked" list="wz-local-cols" placeholder="（当たっていません。候補から選ぶ）"
+                    @change="applyLocalPick(r, ($event.target as HTMLInputElement).value)"
+                  >
+                </td>
                 <td><input v-model="r.physical_column" :disabled="locked" placeholder="IMPORT_30016_STRING_1"></td>
                 <td><input v-model="r.logical_name" :disabled="locked" placeholder="集計得意先コード"></td>
                 <td><input v-model="r.asset_name" :disabled="locked"></td>
@@ -365,7 +407,17 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
               </tr>
             </tbody>
           </table>
+          <datalist id="wz-local-cols">
+            <option v-for="o in localColumnOptions" :key="o" :value="o"></option>
+          </datalist>
         </div>
+        <details v-if="unmatchedLocal.length > 0" class="wz-more">
+          <summary>原本にあって Redash 側に無かった列（{{ unmatchedLocal.length.toLocaleString() }} 件）</summary>
+          <p class="muted">kpiee へ未取込か、論理名の言い換えの可能性があります。必要な列だけ確かめてください。</p>
+          <ul class="wz-list">
+            <li v-for="(u, i) in unmatchedLocal" :key="i" class="muted">{{ u }}</li>
+          </ul>
+        </details>
         <div class="wz-actions">
           <button class="link" :disabled="locked" @click="addRow">＋ 行を足す</button>
           <button v-if="!locked" class="primary" :disabled="savingColumns" @click="confirmColumns">
