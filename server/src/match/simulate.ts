@@ -152,7 +152,13 @@ export class SqlSandbox {
           const values = data.map(r =>
             `(${r.map((v, i) => {
               if (v === null || v === '') return 'NULL';
-              return types[i] === 'DOUBLE' ? String(Number(v)) : q(String(v));
+              if (types[i] !== 'DOUBLE') return q(String(v));
+              // DOUBLE 列に混ざった非数値（「—」「小計」「1,234」など）。型は過半で決めているので
+              // 少数派の非数値は必ず残る。素の String(Number(v)) だと `NaN` が識別子として
+              // INSERT に載り、Binder Error: Referenced column "NaN" … でサンドボックス構築ごと落ちる。
+              // 値を落とすのではなく NULL に寄せる（数えない値として扱う）。
+              const n = toNumber(v);
+              return n === null || !Number.isFinite(n) ? 'NULL' : String(n);
             }).join(', ')})`,
           ).join(',\n');
           await conn.run(`INSERT INTO "${input.tableName}" VALUES ${values}`);

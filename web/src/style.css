@@ -388,6 +388,21 @@ button.link.danger { color: var(--ng); }
 .wz-msg .who { font-size: 11px; font-weight: 700; color: var(--muted); display: block; margin-bottom: 4px; }
 .wz-chat-input { margin-top: 12px; }
 .wz-chat-input textarea { width: 100%; font-size: 13px; }
+
+/* カードの見出し行（見出し ＋ 右端に全画面ボタン） */
+.wz-h-row { display: flex; align-items: baseline; gap: 10px; }
+.wz-h-row .wz-h { flex: 1; }
+
+/* 全画面表示。SQL構築の会話・成果物は縦に長く、2カラムのままだと読みにくいので広げられるようにする。
+   背幕クリック / Esc / ボタンで戻る。body へ teleport しているので祖先の overflow・sticky に縛られない。 */
+.wz-fullback { position: fixed; inset: 0; background: rgba(15, 23, 42, .45); z-index: 60; }
+.wz-card.is-full {
+  position: fixed; inset: 16px; z-index: 61; margin: 0; overflow: auto;
+  display: flex; flex-direction: column; box-shadow: 0 18px 48px rgba(15, 23, 42, .28);
+}
+/* 全画面では高さの上限を外し、縦をぜんぶ使う（畳んだ SQL・結果グリッドもそのまま伸ばす） */
+.wz-card.is-full .wz-chat-log { max-height: none; }
+.wz-card.is-full .wz-sql { max-height: none; }
 .wz-spec .wz-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
 .wz-spec .wz-field input, .wz-spec .wz-field textarea { font-size: 13px; }
 .wz-spec .wz-field textarea { resize: vertical; }

@@ -33,7 +33,7 @@ import {
 } from './reportChat.js';
 import { REPORT_ITEM_LABELS, REPORT_SECTION_LABELS } from './reportSpec.js';
 import {
-  sqlChatHistory, isSqlChatPending, startSqlChat, listSqlJobs, deleteSqlJob,
+  sqlChatHistory, isSqlChatPending, sqlChatProgress, startSqlChat, listSqlJobs, deleteSqlJob,
   isKnowledgeOn, SQL_KNOWLEDGE_FLAG, SQL_COLUMNS_FLAG,
   listColumnMap, saveColumnMap, buildColumnDraft,
 } from './sqlChat.js';
@@ -1005,6 +1005,8 @@ app.get('/api/projects/:id/sql-chat', async (req, res) => {
     res.json({
       messages: await sqlChatHistory(projectId),
       pending: isSqlChatPending(projectId),
+      // 処理中の途中経過（いま流している SQL とその結果）。完了すると空になる
+      progress: sqlChatProgress(projectId),
       jobs: await listSqlJobs(projectId),
       // ナレッジ全文をプロンプトへ常時入れるか（既定 OFF。OFF でも read_reference では読める）
       knowledgeOn: await isKnowledgeOn(projectId),

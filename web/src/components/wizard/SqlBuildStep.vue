@@ -17,6 +17,7 @@ import {
   setProjectFlag, clearProjectFlag,
   type ProjectDoc, type SqlChatMessage, type SqlColumnRow, type SqlJob, type SqlToolTrace,
 } from '../../api'
+import SqlTraceList from './SqlTraceList.vue'
 
 const props = defineProps<{ projectId: number }>()
 
@@ -182,8 +183,31 @@ const echo = ref('')
 const notice = ref('')
 const logEl = ref<HTMLElement | null>(null)
 const openedJob = ref<number | null>(null)
+/** 処理中の途中経過（いま流している SQL とその結果）。完了すると空になり、会話側へ移る */
+const progress = ref<SqlToolTrace[]>([])
 
 const busy = computed(() => sending.value || pending.value)
+
+// ---- 全画面（会話・成果物は縦に長い。狭い2カラムのまま読むのはつらいので広げられるようにする）----
+type Panel = 'chat' | 'jobs'
+const expanded = ref<Panel | null>(null)
+
+function toggleExpand(p: Panel) {
+  expanded.value = expanded.value === p ? null : p
+}
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && expanded.value) expanded.value = null
+}
+
+// 全画面の裏がスクロールしないように止める（閉じたら戻す）
+watch(expanded, async v => {
+  document.body.style.overflow = v ? 'hidden' : ''
+  if (v === 'chat') {
+    await nextTick()
+    if (logEl.value) logEl.value.scrollTop = logEl.value.scrollHeight
+  }
+})
 
 const KICKOFF = 'この案件のSQL構築を始めてください。まず取込データと確定済みの物理カラム対応を復唱して、突き合わせからお願いします。'
 
@@ -214,19 +238,12 @@ function traceOf(m: SqlChatMessage): SqlToolTrace[] {
   }
 }
 
-function traceTitle(t: SqlToolTrace): string {
-  if (t.tool === 'run_sql') return `▶ 実行: ${t.label}`
-  if (t.tool === 'save_sql') return `💾 保存: ${t.label}`
-  if (t.tool === 'read_reference') return `📖 ナレッジ: ${t.label}`
-  if (t.tool === 'read_column_file') return `🗂 物理カラム: ${t.label}`
-  return t.tool
-}
-
 async function load() {
   try {
     const d = await getSqlChat(props.projectId)
     messages.value = d.messages
     pending.value = d.pending
+    progress.value = d.progress ?? []
     jobs.value = d.jobs
     knowledgeOn.value = d.knowledgeOn
     if (echo.value && d.messages.some(m => m.role === 'user' && m.content === echo.value)) echo.value = ''
@@ -284,13 +301,14 @@ async function copyJob(j: SqlJob) {
   }
 }
 
-watch([messages, echo, pending], async () => {
+watch([messages, echo, pending, progress], async () => {
   await nextTick()
   if (logEl.value) logEl.value.scrollTop = logEl.value.scrollHeight
 })
 
 let timer: ReturnType<typeof setInterval> | null = null
 onMounted(async () => {
+  window.addEventListener('keydown', onKeydown)
   await Promise.all([load(), loadColumns(), loadColumnFiles()])
   // 確定済みなら対話から。未確定なら物理カラムの確認から始める
   phase.value = columnsConfirmed.value ? 2 : 1
@@ -300,7 +318,11 @@ onMounted(async () => {
     if (!pending.value) notice.value = ''
   }, 3000)
 })
-onUnmounted(() => { if (timer) clearInterval(timer) })
+onUnmounted(() => {
+  if (timer) clearInterval(timer)
+  window.removeEventListener('keydown', onKeydown)
+  document.body.style.overflow = '' // 全画面のまま離脱してもスクロールを戻す
+})
 </script>
 
 <template>
@@ -445,7 +467,7 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
             <em class="muted">
               {{ knowledgeOn
                 ? ' ON: kpiee-sql-builder の4ターン運用（復唱→ロジック→検証＋SQL＋検算→突き合わせ）で進めます'
-                : ' OFF（既定）: 大前提と SQLジョブ契約だけで軽く回します。必要な局面ではAIが自分でナレッジを引きます' }}
+                : ' OFF（既定）: 大前提と SQLジョブ契約だけで軽く回します。ナレッジは AI 側からも参照しません（読む道具ごと外れます）' }}
             </em>
           </span>
         </label>
@@ -455,89 +477,97 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
         </span>
       </div>
 
+      <!-- 全画面のときだけ敷く背幕。クリックで戻す（Esc でも戻る） -->
+      <Teleport to="body">
+        <div v-if="expanded" class="wz-fullback" @click="expanded = null"></div>
+      </Teleport>
+
       <div class="wz-studio">
         <!-- 会話 -->
-        <div class="wz-card wz-chat wz-sqlchat">
-          <h3 class="wz-h">構築の会話</h3>
-          <div ref="logEl" class="wz-chat-log">
-            <p v-if="messages.length === 0 && !echo" class="muted">
-              「構築を始める」を押すと、AI が取込データと物理カラムの対応を復唱して、突き合わせから始めます。
-            </p>
-            <div v-for="m in messages" :key="m.id" class="wz-msg" :class="m.role">
-              <span class="who">{{ m.role === 'user' ? '担当者' : 'AI' }}</span>
-              <!-- AI が流した SQL と結果。会話の流れの中に畳んで置く -->
-              <details v-for="(t, i) in traceOf(m)" :key="i" class="wz-sqltrace" :class="{ err: t.error }">
-                <summary>{{ traceTitle(t) }}<span v-if="t.error" class="badge ng">エラー</span></summary>
-                <pre v-if="t.sql" class="wz-sql">{{ t.sql }}</pre>
-                <p v-if="t.error" class="error-box">{{ t.error }}</p>
-                <div v-else-if="t.result" class="wz-sqlresult">
-                  <table>
-                    <thead><tr><th v-for="c in t.result.columns" :key="c">{{ c }}</th></tr></thead>
-                    <tbody>
-                      <tr v-for="(r, ri) in t.result.rows" :key="ri">
-                        <td v-for="(v, ci) in r" :key="ci">{{ v }}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  <p class="muted">
-                    {{ t.result.totalRows.toLocaleString() }} 行{{ t.result.truncated ? '（先頭30行のみ表示）' : '' }}
-                  </p>
-                </div>
-              </details>
-              <p class="wz-pre">{{ m.content }}</p>
-            </div>
-            <div v-if="echo" class="wz-msg user sending">
-              <span class="who">担当者</span>
-              <p class="wz-pre">{{ echo }}</p>
-              <span class="badge info">{{ sending ? '送信中…' : '送信しました' }}</span>
-            </div>
-            <p v-if="pending" class="wz-thinking">
-              <span class="dots"><i></i><i></i><i></i></span>AI が SQL を流しています…
-            </p>
-          </div>
-          <div class="wz-chat-input">
-            <textarea
-              v-model="input" rows="2" :disabled="busy"
-              placeholder="決定・訂正・検算の正解値などを書く（Ctrl+Enter で送信）"
-              @keydown.ctrl.enter="send()"
-            ></textarea>
-            <div class="wz-actions">
-              <button
-                class="primary" :disabled="busy || (messages.length > 0 && !input.trim())"
-                @click="messages.length === 0 ? send(KICKOFF) : send()"
-              >
-                {{ sending ? '送信中…' : pending ? 'AI が実行中…' : messages.length === 0 ? '構築を始める' : '送る' }}
+        <Teleport to="body" :disabled="expanded !== 'chat'">
+          <div class="wz-card wz-chat wz-sqlchat" :class="{ 'is-full': expanded === 'chat' }">
+            <div class="wz-h-row">
+              <h3 class="wz-h">構築の会話</h3>
+              <button class="link" @click="toggleExpand('chat')">
+                {{ expanded === 'chat' ? '✕ 全画面を閉じる（Esc）' : '⛶ 全画面' }}
               </button>
-              <span v-if="notice" class="muted">{{ notice }}</span>
+            </div>
+            <div ref="logEl" class="wz-chat-log">
+              <p v-if="messages.length === 0 && !echo" class="muted">
+                「構築を始める」を押すと、AI が取込データと物理カラムの対応を復唱して、突き合わせから始めます。
+              </p>
+              <div v-for="m in messages" :key="m.id" class="wz-msg" :class="m.role">
+                <span class="who">{{ m.role === 'user' ? '担当者' : 'AI' }}</span>
+                <!-- AI が流した SQL と結果。会話の流れの中に畳んで置く -->
+                <SqlTraceList :traces="traceOf(m)" />
+                <p class="wz-pre">{{ m.content }}</p>
+              </div>
+              <div v-if="echo" class="wz-msg user sending">
+                <span class="who">担当者</span>
+                <p class="wz-pre">{{ echo }}</p>
+                <span class="badge info">{{ sending ? '送信中…' : '送信しました' }}</span>
+              </div>
+              <!-- 処理中の途中経過。1回の応答で検証〜検算まで何本も流すため、終わるまで無反応だと止まって見える -->
+              <div v-if="pending" class="wz-msg assistant">
+                <span class="who">AI</span>
+                <SqlTraceList :traces="progress" />
+                <p class="wz-thinking">
+                  <span class="dots"><i></i><i></i><i></i></span>
+                  {{ progress.length > 0 ? `SQL を流しています…（${progress.length} 本目）` : 'AI が考えています…' }}
+                </p>
+              </div>
+            </div>
+            <div class="wz-chat-input">
+              <textarea
+                v-model="input" rows="2" :disabled="busy"
+                placeholder="決定・訂正・検算の正解値などを書く（Ctrl+Enter で送信）"
+                @keydown.ctrl.enter="send()"
+              ></textarea>
+              <div class="wz-actions">
+                <button
+                  class="primary" :disabled="busy || (messages.length > 0 && !input.trim())"
+                  @click="messages.length === 0 ? send(KICKOFF) : send()"
+                >
+                  {{ sending ? '送信中…' : pending ? 'AI が実行中…' : messages.length === 0 ? '構築を始める' : '送る' }}
+                </button>
+                <span v-if="notice" class="muted">{{ notice }}</span>
+              </div>
             </div>
           </div>
-        </div>
+        </Teleport>
 
         <!-- 保存済みの SQL 成果物 -->
         <div class="wz-studio-side">
-          <div class="wz-card">
-            <h3 class="wz-h">SQL 成果物（{{ jobs.length }} 本）</h3>
-            <p v-if="jobs.length === 0" class="muted">
-              検算まで通って合意した SQL がここに並びます（協和は STEP1〜4 ＋ 統合の5本でした）。
-            </p>
-            <div v-for="j in jobs" :key="j.id" class="wz-sqljob">
-              <div class="wz-sqljob-head">
-                <b>{{ j.name }}</b>
-                <span class="muted">{{ j.updated_at?.slice(0, 16).replace('T', ' ') }}</span>
-                <button class="link" @click="copyJob(j)">SQL をコピー</button>
-                <button class="link" @click="openedJob = openedJob === j.id ? null : j.id">
-                  {{ openedJob === j.id ? '閉じる' : '開く' }}
+          <Teleport to="body" :disabled="expanded !== 'jobs'">
+            <div class="wz-card" :class="{ 'is-full': expanded === 'jobs' }">
+              <div class="wz-h-row">
+                <h3 class="wz-h">SQL 成果物（{{ jobs.length }} 本）</h3>
+                <button v-if="jobs.length > 0" class="link" @click="toggleExpand('jobs')">
+                  {{ expanded === 'jobs' ? '✕ 全画面を閉じる（Esc）' : '⛶ 全画面' }}
                 </button>
-                <button class="link danger" @click="removeJob(j)">削除</button>
               </div>
-              <p v-if="j.note" class="muted">{{ j.note }}</p>
-              <template v-if="openedJob === j.id">
-                <pre class="wz-sql">{{ j.sql }}</pre>
-                <h4 v-if="j.output_spec" class="wz-h4">出力仕様</h4>
-                <pre v-if="j.output_spec" class="wz-pre wz-spec-pre">{{ j.output_spec }}</pre>
-              </template>
+              <p v-if="jobs.length === 0" class="muted">
+                検算まで通って合意した SQL がここに並びます（協和は STEP1〜4 ＋ 統合の5本でした）。
+              </p>
+              <div v-for="j in jobs" :key="j.id" class="wz-sqljob">
+                <div class="wz-sqljob-head">
+                  <b>{{ j.name }}</b>
+                  <span class="muted">{{ j.updated_at?.slice(0, 16).replace('T', ' ') }}</span>
+                  <button class="link" @click="copyJob(j)">SQL をコピー</button>
+                  <button class="link" @click="openedJob = openedJob === j.id ? null : j.id">
+                    {{ openedJob === j.id ? '閉じる' : '開く' }}
+                  </button>
+                  <button class="link danger" @click="removeJob(j)">削除</button>
+                </div>
+                <p v-if="j.note" class="muted">{{ j.note }}</p>
+                <template v-if="openedJob === j.id">
+                  <pre class="wz-sql">{{ j.sql }}</pre>
+                  <h4 v-if="j.output_spec" class="wz-h4">出力仕様</h4>
+                  <pre v-if="j.output_spec" class="wz-pre wz-spec-pre">{{ j.output_spec }}</pre>
+                </template>
+              </div>
             </div>
-          </div>
+          </Teleport>
         </div>
       </div>
     </template>

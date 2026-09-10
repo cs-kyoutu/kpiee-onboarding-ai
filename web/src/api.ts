@@ -365,6 +365,8 @@ export interface SqlJob {
 export interface SqlChatState {
   messages: SqlChatMessage[]
   pending: boolean
+  /** 処理中の途中経過（いま流している SQL とその結果）。完了すると空になり、確定版は messages 側へ移る */
+  progress: SqlToolTrace[]
   jobs: SqlJob[]
   /** 構築ナレッジ全文をプロンプトへ常時入れるか。既定 OFF（大前提＋契約だけの軽量運転） */
   knowledgeOn: boolean

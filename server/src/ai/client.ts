@@ -230,6 +230,16 @@ export async function callWithTools(
       catch (e) { out = { error: e instanceof Error ? e.message : String(e) }; }
       results.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(out) });
     }
+    // ツールループは毎ターン会話全体を再送するため、ツール結果（物理カラム一覧は数万字、
+    // run_sql の結果グリッドも積み上がる）を素で回すと turn が進むほど入力の読み直しで遅くなる。
+    // 直近の tool_result にキャッシュ印を1つだけ置き、そこまでを前方一致で読ませる。
+    // 印は最大4個までなので、前ターンの印は外して持ち回る（外しても前方一致は効く）。
+    for (const m of messages) {
+      if (!Array.isArray(m.content)) continue;
+      for (const b of m.content) delete (b as { cache_control?: unknown }).cache_control;
+    }
+    const lastResult = results[results.length - 1];
+    if (lastResult) lastResult.cache_control = { type: 'ephemeral' };
     messages.push({ role: 'user', content: results });
   }
   return { text: '（ツール呼び出しが上限に達しました。質問を具体化して再度お試しください）', trace, inputTokens: inTok, outputTokens: outTok };

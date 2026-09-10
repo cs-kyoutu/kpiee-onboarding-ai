@@ -483,7 +483,8 @@ async function buildSystemText(
   ].join('\n');
 
   // ON: ナレッジ全文（4ターンの型で進行）。OFF（既定）: 大前提＋契約＋環境だけの軽量運転。
-  // OFF でも read_reference で必要な局面だけナレッジを読める（常時入れないだけで、無くすわけではない）。
+  // OFF は「常時入れない」ではなく「使わない」。read_reference の道具ごと外すので、
+  // AI が判断でナレッジを読みに行くこともない（startSqlChat 側で tools から落としている）。
   const knowledgeBlocks = knowledgeOn
     ? [
         '進め方はナレッジ（下の SKILL / workflow）が正。記憶や一般論で進めず、そこに書かれた4ターンの型に従ってください。',
@@ -501,7 +502,9 @@ async function buildSystemText(
       ]
     : [
         'ユーザーの依頼に沿って SQL を書き、run_sql で検証してから渡してください。',
-        '配賦・検算・出力仕様など、型が必要な局面に入ったら read_reference で該当ナレッジを読んでから書くこと。',
+        'この設定では構築ナレッジを参照しません（読む道具も渡していません）。下の大前提・契約・環境と、',
+        'ユーザーの指示・この案件の解析結果だけを根拠に進めてください。型が要る局面で判断に迷ったら、',
+        '推測で埋めずにユーザーへ聞くこと。',
         '',
         GUARD_BLOCK,
         '',
@@ -532,8 +535,20 @@ async function buildSystemText(
 // ---- 実行 ----
 
 const pendingProjects = new Set<number>();
+/**
+ * 処理中のツール実行記録。traces の実体をそのまま持つので、run_sql を1本流すたびに中身が増える。
+ * 1回の応答で検証〜検算まで何本も流すため、終わるまで画面が無反応だと「遅い」ではなく「止まった」に見える。
+ * ポーリングでこれを返して、いま何を流しているかを出す。
+ */
+const liveTraces = new Map<number, SqlToolTrace[]>();
+
 export function isSqlChatPending(projectId: number): boolean {
   return pendingProjects.has(projectId);
+}
+
+/** 処理中の途中経過。完了すると空になり、確定版は assistant メッセージの tool_trace に入る */
+export function sqlChatProgress(projectId: number): SqlToolTrace[] {
+  return liveTraces.get(projectId) ?? [];
 }
 
 export async function startSqlChat(projectId: number, message: string): Promise<{ pending: boolean }> {
@@ -553,6 +568,7 @@ export async function startSqlChat(projectId: number, message: string): Promise<
   void (async () => {
     let sandbox: SqlSandbox | null = null;
     const traces: SqlToolTrace[] = [];
+    liveTraces.set(projectId, traces); // 実体を共有する。以降 push するたび画面の途中経過が伸びる
     try {
       // 取込データを一度だけサンドボックスへ載せる（この質問処理の間だけ保持。C5: ターンをまたいで持たない）
       const collections = await collectByRole(projectId);
@@ -563,11 +579,16 @@ export async function startSqlChat(projectId: number, message: string): Promise<
         `SELECT role, content FROM sql_chat_messages WHERE project_id = ? ORDER BY id`,
       ).all(projectId) as { role: 'user' | 'assistant'; content: string }[];
 
+      // ナレッジ OFF は「プロンプトに入れない」だけでなく「読ませない」。道具ごと外して、
+      // AI の判断でナレッジを引くこともできなくする（OFF の意味を1つに絞る）。
+      const knowledgeOn = await isKnowledgeOn(projectId);
+      const tools = knowledgeOn ? [...TOOL_DEFS] : TOOL_DEFS.filter(t => t.name !== 'read_reference');
+
       const result = await callWithTools(
         projectId,
-        await buildSystemText(projectId, sandbox.tables, await isKnowledgeOn(projectId)),
+        await buildSystemText(projectId, sandbox.tables, knowledgeOn),
         history,
-        TOOL_DEFS as unknown as Parameters<typeof callWithTools>[3],
+        tools as unknown as Parameters<typeof callWithTools>[3],
         async call => {
           const input = call.input as Record<string, string>;
           switch (call.name) {
@@ -607,6 +628,8 @@ export async function startSqlChat(projectId: number, message: string): Promise<
             }
 
             case 'read_reference': {
+              // OFF では道具自体を渡していないので通常ここへは来ない（保険）
+              if (!knowledgeOn) return { error: 'この案件は構築ナレッジ OFF の設定です。ナレッジは参照できません' };
               traces.push({ tool: 'read_reference', label: input.name });
               try {
                 return readKnowledge(`references/${input.name.replace(/[^\w-]/g, '')}.md`);
@@ -656,6 +679,7 @@ export async function startSqlChat(projectId: number, message: string): Promise<
       ).run(projectId, `（処理中にエラーが発生しました: ${msg}。もう一度お試しください）`, JSON.stringify(traces)).catch(() => {});
     } finally {
       sandbox?.close();
+      liveTraces.delete(projectId);
       pendingProjects.delete(projectId);
     }
   })();
