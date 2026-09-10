@@ -1381,9 +1381,12 @@ async function ensureDocDraft(projectId: number): Promise<void> {
   const arts = await relationArtifacts(projectId);
   if (docs.length === 0 || arts.length === 0 || !aiAvailable()) return; // 材料が揃うまで何もしない
   const signature = await docDraftSignature(projectId);
-  const row = await db.prepare(`SELECT signature, status FROM doc_drafts WHERE project_id = ?`)
-    .get(projectId) as { signature: string; status: string } | undefined;
-  if (row && row.signature === signature && row.status !== 'failed') return; // 最新の下書きがある
+  const row = await db.prepare(`SELECT signature, status, requirements FROM doc_drafts WHERE project_id = ?`)
+    .get(projectId) as { signature: string; status: string; requirements: string | null } | undefined;
+  // 抽出の項目を後から足したとき（outputPlans など）、古い下書きにはその項目が無い。
+  // 署名が同じでも読み直して、既存の案件にも新しい項目が行き渡るようにする
+  const legacy = row?.requirements != null && !row.requirements.includes('"outputPlans"');
+  if (row && row.signature === signature && row.status !== 'failed' && !legacy) return; // 最新の下書きがある
 
   draftRunning.add(projectId);
   const upsert = async (patch: Record<string, unknown>) => {
@@ -1490,9 +1493,18 @@ async function autoApplyDocDraft(projectId: number): Promise<void> {
     }
   }
 
-  // ③ レポートの要件。一度でも保存された spec（人の判断が入ったもの）には入れない
-  if (req && !(await reportSpecConfigured(projectId))) {
-    await saveReportSpec(projectId, req.spec);
+  // ③ レポートの要件。一度でも保存された spec（人の判断が入ったもの）には入れない。
+  // ただし outputPlans は後から足した項目で、既存の案件では「人が消した」のではなく
+  // 「まだ一度も入ったことがない」だけ — 空のときに限り、その項目だけ補う
+  if (req) {
+    if (!(await reportSpecConfigured(projectId))) {
+      await saveReportSpec(projectId, req.spec);
+    } else {
+      const cur = await loadReportSpec(projectId);
+      if (cur.outputPlans.length === 0 && (req.spec.outputPlans?.length ?? 0) > 0) {
+        await saveReportSpec(projectId, { outputPlans: req.spec.outputPlans });
+      }
+    }
   }
 }
 
