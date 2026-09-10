@@ -967,6 +967,33 @@ async function runRequirementsExtract(projectId: number): Promise<RequirementsEx
       };
     });
 
+    // 資料が「対象タブ」を指定したブックでは、指定外の最終アウトプット候補を中間へ降ろす。
+    // 自動判定は「数式が無く値だけ」のシートを最終と誤りやすく（協和の kintone訪問率 が実例）、
+    // 資料が対象タブを名指ししている以上、それ以外のタブは再現対象ではない。
+    // ここで hint を合成しておくと、自動適用（autoApplyDocDraft）と画面の当て込みの両方に効く。
+    const rolesOfArt = new Map(arts.map(a => [a.id, parseSheetRoles(a.sheet_roles) ?? {}]));
+    const finalDeclared = new Map<number, Set<string>>();
+    for (const h of roleHints) {
+      if (h.artifactId === null || !h.sheetFound || h.role !== 'final_output') continue;
+      const set = finalDeclared.get(h.artifactId) ?? new Set<string>();
+      set.add(h.sheet);
+      finalDeclared.set(h.artifactId, set);
+    }
+    for (const [artifactId, declaredSheets] of finalDeclared) {
+      for (const [sheet, role] of Object.entries(rolesOfArt.get(artifactId) ?? {})) {
+        if (role !== 'final_output' || declaredSheets.has(sheet)) continue;
+        if (roleHints.some(h => h.artifactId === artifactId && h.sheet === sheet)) continue; // 資料が明示した指定を優先
+        roleHints.push({
+          file: nameOf.get(artifactId)!,
+          artifactId,
+          sheet,
+          sheetFound: true,
+          role: 'working_sheet',
+          reason: `資料は対象タブを「${[...declaredSheets].join('・')}」と指定しているため、指定外の最終候補は中間として扱う`,
+        });
+      }
+    }
+
     return {
       docCount: docs.length,
       docNames: docs.map(d => d.filename),
