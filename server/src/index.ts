@@ -1109,6 +1109,15 @@ app.post('/api/projects/:id/sql-chat', async (req, res) => {
 // ---- 物理カラムの対応（SQL構築 ステップ1）----
 // Redash クエリ145 の書き出し（sql-columns で添付済み）から初期案を起こし、人が直して確定する。
 // 確定した対応だけが SQL構築チャットの前提になる（初期案の読み取り違いをそのまま根拠にしない）。
+// 突き合わせは取込データの再パース（無保存モードでは Drive 再取得）を伴い、協和の実測で
+// 70秒超かかる。同期で返すとブラウザ・ALB のタイムアウトで「0行」に見えるため、
+// 非同期＋ポーリングにする（doc-draft と同じ方式）。結果はメモリ持ち — 押し直せば作り直せるもの
+const colDraftJobs = new Map<number, {
+  status: 'pending' | 'done' | 'failed';
+  result?: Awaited<ReturnType<typeof buildColumnDraft>>;
+  error?: string;
+}>();
+
 app.post('/api/projects/:id/sql-columns/parse', async (req, res) => {
   const projectId = Number(req.params.id);
   try {
@@ -1116,12 +1125,28 @@ app.post('/api/projects/:id/sql-columns/parse', async (req, res) => {
     if (docs.length === 0) {
       return res.status(400).json({ error: '物理カラム一覧が添付されていません。Redash クエリ145/147 の書き出し CSV を先に添付してください' });
     }
-    // 読み取りだけでなく、取込済みデータ（原本）の列との自動突き合わせまで済ませて返す。
-    // 人は当たっているかの確認と、外れた行の修正だけをする
-    res.json(await buildColumnDraft(projectId, docs));
+    if (colDraftJobs.get(projectId)?.status === 'pending') {
+      return res.status(202).json({ pending: true });
+    }
+    colDraftJobs.set(projectId, { status: 'pending' });
+    void (async () => {
+      try {
+        colDraftJobs.set(projectId, { status: 'done', result: await buildColumnDraft(projectId, docs) });
+      } catch (e) {
+        colDraftJobs.set(projectId, { status: 'failed', error: String(e) });
+      }
+    })();
+    res.status(202).json({ pending: true });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
+});
+
+/** 突き合わせの進み具合と結果。UI はこれをポーリングする */
+app.get('/api/projects/:id/sql-columns/parse', async (req, res) => {
+  const job = colDraftJobs.get(Number(req.params.id));
+  if (!job) return res.json({ status: 'none' });
+  res.json({ status: job.status, error: job.error, result: job.result });
 });
 
 app.get('/api/projects/:id/sql-columns', async (req, res) => {

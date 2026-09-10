@@ -2634,19 +2634,31 @@ function buildStepFlow(
 
   // 土台＝複数のステップで受け側になっているファイル（「①へ付与していく」の①）
   const asTarget = new Map<string, Set<number>>();
+  const asTargetOut = new Map<string, Set<number>>();
   for (const r of stepRels) {
-    if (outputs.has(r.toFile)) continue;
-    const s = asTarget.get(r.toFile) ?? new Set<number>();
+    const m = outputs.has(r.toFile) ? asTargetOut : asTarget;
+    const s = m.get(r.toFile) ?? new Set<number>();
     s.add(r.step!);
-    asTarget.set(r.toFile, s);
+    m.set(r.toFile, s);
   }
-  let backbone: string | null = null;
-  for (const [f, s] of asTarget) {
-    if (s.size < 2) continue;
-    if (!backbone || s.size > (asTarget.get(backbone)?.size ?? 0)) backbone = f;
+  const pickBackbone = (m: Map<string, Set<number>>): string | null => {
+    let best: string | null = null;
+    for (const [f, s] of m) {
+      if (s.size < 2) continue;
+      if (!best || s.size > (m.get(best)?.size ?? 0)) best = f;
+    }
+    return best;
+  };
+  let backbone = pickBackbone(asTarget);
+  let outLabel: string | null = [...outputs][0] ?? null;
+  if (!backbone) {
+    // 土台のファイル（協和の①68期のような「付与していく先」）が未受領で、
+    // 受け渡しが全部 最終アウトプットへ直接入る受領構成。最終アウトプット自身を土台にして
+    // 帯を描く。仕上げの段（土台 → 最終）は土台が終点そのものなので出さない。
+    backbone = pickBackbone(asTargetOut);
+    if (backbone) outLabel = null;
   }
   if (!backbone) return null;
-  const outLabel = [...outputs][0] ?? null;
 
   // ---- 帯を組む ----
   const bands: StepBand[] = [];
@@ -2699,8 +2711,9 @@ function buildStepFlow(
   const bandsBottom = y;
   // 最終アウトプットも「仕上げ」の段として同じ左→右の並びで置く。
   // 最後だけ下へ落とすと、そこで図の読み方が変わってしまう。
+  // 土台＝最終アウトプットの案件（outLabel が無い）は仕上げの段が無いぶん詰める。
   const finalMid = bandsBottom + SFL.BAND_PAD + 18;
-  const height = Math.round(finalMid + 104);
+  const height = Math.round(outLabel ? finalMid + 104 : bandsBottom + 28);
 
   const posOf = new Map<string, { x: number; y: number }>();
   for (const b of bands) {

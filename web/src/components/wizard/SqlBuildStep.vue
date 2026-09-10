@@ -13,9 +13,9 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   getSqlChat, sendSqlChat, deleteSqlJob,
   getProjectDocs, uploadProjectDoc, deleteProjectDoc,
-  parseSqlColumns, getSqlColumns, saveSqlColumns,
+  startParseSqlColumns, getParseSqlColumns, getSqlColumns, saveSqlColumns,
   setProjectFlag, clearProjectFlag,
-  type ProjectDoc, type SqlChatMessage, type SqlColumnRow, type SqlJob, type SqlToolTrace,
+  type ProjectDoc, type SqlChatMessage, type SqlColumnDraft, type SqlColumnRow, type SqlJob, type SqlToolTrace,
 } from '../../api'
 import SqlTraceList from './SqlTraceList.vue'
 
@@ -100,23 +100,48 @@ async function removeColumnFile(d: ProjectDoc) {
   }
 }
 
-/** 添付ファイルから対応表の初期案を起こす（保存はしない。表を直して「確定」で保存） */
+/**
+ * 添付ファイルから対応表の初期案を起こす（保存はしない。表を直して「確定」で保存）。
+ * 原本の再パース（無保存モードでは Drive 再取得）を伴い数分かかるため、
+ * 開始 → ポーリングの形にする。同期で待つとブラウザのタイムアウトで「0行」に見える。
+ */
+let parseTimer: ReturnType<typeof setInterval> | null = null
+
+function applyDraft(r: SqlColumnDraft) {
+  rows.value = r.rows
+  localTables.value = r.tables
+  unmatchedLocal.value = r.unmatchedLocal
+  parseNotes.value = [
+    ...r.notes,
+    `原本の列と自動で突き合わせ: ${r.matched} / ${r.rows.length} 行が当たりました。外れた行（原本の列が空欄）を直してください。`,
+  ]
+}
+
+/** 結果待ちのポーリング（開始済みのジョブに合流する） */
+function readColumnsResume() {
+  parseNotes.value = ['取込データを読み直して突き合わせています…（無保存モードでは数分かかります。このまま待ってください）']
+  if (parseTimer) clearInterval(parseTimer)
+  parseTimer = setInterval(async () => {
+    try {
+      const d = await getParseSqlColumns(props.projectId)
+      if (d.status === 'pending') return
+      if (parseTimer) { clearInterval(parseTimer); parseTimer = null }
+      parsing.value = false
+      if (d.status === 'done' && d.result) applyDraft(d.result)
+      else if (d.status === 'failed') { error.value = d.error ?? '読み取りに失敗しました'; parseNotes.value = [] }
+    } catch { /* 取れない間は次の周回で */ }
+  }, 4000)
+}
+
 async function readColumns() {
   parsing.value = true
   error.value = ''
-  parseNotes.value = []
   try {
-    const r = await parseSqlColumns(props.projectId)
-    rows.value = r.rows
-    localTables.value = r.tables
-    unmatchedLocal.value = r.unmatchedLocal
-    parseNotes.value = [
-      ...r.notes,
-      `原本の列と自動で突き合わせ: ${r.matched} / ${r.rows.length} 行が当たりました。外れた行（原本の列が空欄）を直してください。`,
-    ]
+    await startParseSqlColumns(props.projectId)
+    readColumnsResume()
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
-  } finally {
+    parseNotes.value = []
     parsing.value = false
   }
 }
@@ -312,6 +337,12 @@ onMounted(async () => {
   await Promise.all([load(), loadColumns(), loadColumnFiles()])
   // 確定済みなら対話から。未確定なら物理カラムの確認から始める
   phase.value = columnsConfirmed.value ? 2 : 1
+  // 画面を離れている間に突き合わせが走っていたら拾う（進行中なら待ち直す）
+  try {
+    const d = await getParseSqlColumns(props.projectId)
+    if (d.status === 'pending') { parsing.value = true; readColumnsResume() }
+    else if (d.status === 'done' && d.result && rows.value.length === 0 && !columnsConfirmed.value) applyDraft(d.result)
+  } catch { /* 無くても添付からやり直せる */ }
   timer = setInterval(async () => {
     if (!pending.value) return
     await load()
@@ -320,6 +351,7 @@ onMounted(async () => {
 })
 onUnmounted(() => {
   if (timer) clearInterval(timer)
+  if (parseTimer) clearInterval(parseTimer)
   window.removeEventListener('keydown', onKeydown)
   document.body.style.overflow = '' // 全画面のまま離脱してもスクロールを戻す
 })

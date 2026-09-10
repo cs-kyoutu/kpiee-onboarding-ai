@@ -421,10 +421,17 @@ export interface SqlColumnDraft {
 
 /**
  * 添付済みの Redash 書き出しから初期案を起こす（保存はしない。確定は人）。
- * 原本（取込済みデータ）の列との自動突き合わせまで済ませて返す
+ * 原本の再パースを伴い数分かかるため非同期 — 開始してからポーリングで結果を取る
  */
-export function parseSqlColumns(projectId: number): Promise<SqlColumnDraft> {
-  return post<SqlColumnDraft>(`/projects/${projectId}/sql-columns/parse`)
+export function startParseSqlColumns(projectId: number): Promise<{ pending: boolean }> {
+  return post<{ pending: boolean }>(`/projects/${projectId}/sql-columns/parse`)
+}
+
+export function getParseSqlColumns(projectId: number): Promise<{
+  status: 'none' | 'pending' | 'done' | 'failed'; error?: string; result?: SqlColumnDraft
+}> {
+  return get<{ status: 'none' | 'pending' | 'done' | 'failed'; error?: string; result?: SqlColumnDraft }>(
+    `/projects/${projectId}/sql-columns/parse`)
 }
 
 export function getSqlColumns(projectId: number): Promise<{ rows: SqlColumnRow[]; confirmed: boolean }> {
