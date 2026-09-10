@@ -270,6 +270,10 @@ onMounted(async () => {
       </span>
       <button v-if="draft.status !== 'pending'" class="link" @click="redoDraft">読み直す</button>
     </p>
+    <!-- 品質の自己点検。欠けを黙って通すと、資料しだいでレポートが静かに貧弱になる -->
+    <ul v-if="draft && (draft.warnings?.length ?? 0) > 0" class="wz-list">
+      <li v-for="(w, i) in draft.warnings" :key="i"><span class="badge warn">確認</span> {{ w }}</li>
+    </ul>
 
     <p v-if="loading" class="muted">読み込み中…</p>
 

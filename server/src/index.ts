@@ -1433,12 +1433,17 @@ async function ensureDocDraft(projectId: number, force = false): Promise<void> {
   const arts = await relationArtifacts(projectId);
   if (docs.length === 0 || arts.length === 0 || !aiAvailable()) return; // 材料が揃うまで何もしない
   const signature = await docDraftSignature(projectId);
-  const row = await db.prepare(`SELECT signature, status, requirements FROM doc_drafts WHERE project_id = ?`)
-    .get(projectId) as { signature: string; status: string; requirements: string | null } | undefined;
+  const row = await db.prepare(`SELECT signature, status, requirements, updated_at FROM doc_drafts WHERE project_id = ?`)
+    .get(projectId) as { signature: string; status: string; requirements: string | null; updated_at: string } | undefined;
   // 抽出の項目を後から足したとき（outputPlans など）、古い下書きにはその項目が無い。
   // 署名が同じでも読み直して、既存の案件にも新しい項目が行き渡るようにする
   const legacy = row?.requirements != null && !row.requirements.includes('"outputPlans"');
-  if (!force && row && row.signature === signature && row.status !== 'failed' && !legacy) return; // 最新の下書きがある
+  // pending のまま長時間動かない下書きは、ジョブが失われている（デプロイでタスクが入れ替わると
+  // 実行中のジョブごと消え、pending の行だけが残る — 実際に2回起きた）。読み直しを許す。
+  // SQLite の datetime('now') は「YYYY-MM-DD HH:MM:SS」（UTC・T なし）なので ISO へ直してから比べる
+  const updatedMs = row ? Date.parse(row.updated_at.includes('T') ? row.updated_at : `${row.updated_at.replace(' ', 'T')}Z`) : 0;
+  const stalePending = row?.status === 'pending' && Date.now() - updatedMs > 10 * 60 * 1000;
+  if (!force && row && row.signature === signature && row.status !== 'failed' && !legacy && !stalePending) return; // 最新の下書きがある
 
   draftRunning.add(projectId);
   const upsert = async (patch: Record<string, unknown>) => {
@@ -1469,6 +1474,23 @@ async function ensureDocDraft(projectId: number, force = false): Promise<void> {
       else errors.push(`手順: ${flowResult.reason instanceof Error ? flowResult.reason.message : String(flowResult.reason)}`);
       patch.status = errors.length === 2 ? 'failed' : 'done';
       patch.error = errors.length > 0 ? errors.join(' / ') : null;
+      // 品質の自己点検。欠けを黙って通すと「毎回の品質」が資料しだいで静かに落ちる
+      // （協和で手順書の入れ忘れが品質差の半分だった）。何が欠けたかを画面に出して直しに誘導する
+      if (reqResult.status === 'fulfilled') {
+        const spec = reqResult.value.spec;
+        const warnings: string[] = [];
+        const hasSteps = spec.outputPlans.some(p => p.blocks.some(b => (b as { kind?: string }).kind === 'steps'));
+        if (!hasSteps) {
+          warnings.push('作成手順のステップが読み取れませんでした。手順を書いた文書（試算手順のようなメモ）があれば追加して「読み直す」を押してください');
+        }
+        if (!spec.howMadeFigure) {
+          warnings.push('「作られ方（イメージ）」の図を起こせませんでした（手順の文書が無い案件では出ません）');
+        }
+        if (spec.reproduce.length === 0) {
+          warnings.push('再現するアウトプットを資料から特定できませんでした。要件定義書に対象の記載があるかご確認ください');
+        }
+        patch.warnings = warnings.length > 0 ? JSON.stringify(warnings) : null;
+      }
       await upsert(patch);
       // 読めたら、そのまま既定値として登録まで済ませる（案で止めない）
       await autoApplyDocDraft(projectId);
@@ -1592,10 +1614,10 @@ app.get('/api/projects/:id/doc-draft', async (req, res) => {
     // 適用がまだの下書き（この機能より前に読み終えたもの）はここで追い付かせる
     await autoApplyDocDraft(projectId).catch(e => console.error(`[doc-draft:apply] project=${projectId}`, e));
     const row = await db.prepare(
-      `SELECT signature, status, error, requirements, stepflow, updated_at FROM doc_drafts WHERE project_id = ?`,
+      `SELECT signature, status, error, requirements, stepflow, warnings, updated_at FROM doc_drafts WHERE project_id = ?`,
     ).get(projectId) as {
       signature: string; status: string; error: string | null;
-      requirements: string | null; stepflow: string | null; updated_at: string;
+      requirements: string | null; stepflow: string | null; warnings: string | null; updated_at: string;
     } | undefined;
     if (!row) {
       const docs = (await listProjectDocs(projectId, 'doc')).filter(d => d.content.trim() !== '');
@@ -1608,6 +1630,7 @@ app.get('/api/projects/:id/doc-draft', async (req, res) => {
       error: row.error,
       requirements: row.requirements ? JSON.parse(row.requirements) : null,
       stepflow: row.stepflow ? JSON.parse(row.stepflow) : null,
+      warnings: row.warnings ? JSON.parse(row.warnings) : [],
       updated_at: row.updated_at,
     });
   } catch (e) {

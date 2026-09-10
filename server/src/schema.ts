@@ -289,6 +289,9 @@ CREATE TABLE IF NOT EXISTS sql_jobs (
   ]);
   await addColumns(db, 'doc_drafts', [
     ['applied', 'INTEGER NOT NULL DEFAULT 0'],
+    // 品質の自己点検（steps が無い・図が無い等）。黙って貧弱なまま進むと
+    // 「生成の品質が落ちた」に見えるため、何が欠けているかを画面に出す
+    ['warnings', 'TEXT'],
   ]);
 }
 

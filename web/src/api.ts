@@ -345,6 +345,8 @@ export interface DocDraft {
   error?: string | null
   requirements?: RequirementsDraft | null
   stepflow?: { proposals: StepFlowProposal[]; unresolved: string[]; docCount: number } | null
+  /** 品質の自己点検（手順が読めない・図が起こせない等）。欠けを直しに誘導する */
+  warnings?: string[]
   updated_at?: string
 }
 
