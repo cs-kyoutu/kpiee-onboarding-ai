@@ -294,6 +294,8 @@ export async function startReportChat(
           return JSON.stringify({ ok: true, spec: saved });
         },
         6,
+        // 相談は「読み合わせ用の文面を編集判断で作る」仕事なので、上位モデル（modelOf が振り分ける）
+        { stage: 'report-chat' },
       );
       await db.prepare(
         `INSERT INTO report_chat_messages (project_id, role, content, spec_patch) VALUES (?, 'assistant', ?, ?)`,

@@ -14,6 +14,18 @@ import { KPIEE_CONSTRAINTS } from './prompts.js';
 
 export const MODEL = 'claude-sonnet-5';
 
+// 資料の読み取り（要件・手順・帳票の読み方）とレポート相談は、「長い文書を読んで
+// 編集判断で再構成する」仕事で、モデルの差がそのまま文面の質に出る（ステップの切り方が
+// 資料の丸写しになる等）。呼ばれるのは資料が変わったとき・相談のターンだけで頻度が低いので、
+// ここだけ上位モデルにする。decode / generate / SQL構築 / Q&A は従来どおり MODEL（コスト優先）。
+export const EXTRACT_MODEL = process.env.EXTRACT_MODEL || 'claude-opus-4-8';
+const MODEL_BY_STAGE: Record<string, string> = {
+  requirements: EXTRACT_MODEL,
+  'step-flow': EXTRACT_MODEL,
+  'report-chat': EXTRACT_MODEL,
+};
+export const modelOf = (stage: string): string => MODEL_BY_STAGE[stage] ?? MODEL;
+
 // claude-sonnet-5 の単価（per 1M tokens）: 入力 $3 / 出力 $15 / キャッシュ読取 ~$0.3
 // （2026-08-31 まで導入価格 $2/$10 だが、控えめに見積もるため標準価格で計上する。
 //   注意: /usage のコスト概算は現行 PRICING で全履歴を再計算するため、opus 時代の過去分は不正確になる）
@@ -113,7 +125,7 @@ export async function callStructured<T>(
   // タイムアウト・過負荷などの一時エラーはこの呼び出し単位で再試行する（固定部はキャッシュ読取で再課金軽微）
   const message = await withTransientRetry(stage, async () => {
     const stream = client.messages.stream({
-      model: MODEL,
+      model: modelOf(stage),
       max_tokens: 64000,
       thinking: { type: 'adaptive' },
       output_config: {
@@ -136,7 +148,7 @@ export async function callStructured<T>(
   await insertUsage.run(
     projectId,
     stage,
-    MODEL,
+    modelOf(stage),
     message.usage.input_tokens,
     message.usage.output_tokens,
     message.usage.cache_read_input_tokens ?? 0,
@@ -187,7 +199,10 @@ export async function callWithTools(
   tools: ToolDef[],
   runner: ToolRunner,
   maxTurns = 12,
+  // stage は使用量の記録名とモデルの振り分け（modelOf）に使う。未指定は従来どおり qa
+  opts?: { stage?: string },
 ): Promise<ToolLoopResult> {
+  const stage = opts?.stage ?? 'qa';
   if (!client) throw new Error('ANTHROPIC_API_KEY が未設定です（モックモードを使用してください）');
 
   const messages: Anthropic.MessageParam[] = history.map(h => ({ role: h.role, content: h.content }));
@@ -197,9 +212,9 @@ export async function callWithTools(
   for (let turn = 0; turn < maxTurns; turn++) {
     // 1 ターン単位で一時エラーを再試行する。ここで丸ごと投げ直すと、それまでのツール参照結果ごと
     // 会話が失われ「Request timed out.」がユーザーに露出していた（2026-07-15 の Q&A 頻発エラー）。
-    const msg = await withTransientRetry('qa', async () => {
+    const msg = await withTransientRetry(stage, async () => {
       const stream = client.messages.stream({
-        model: MODEL,
+        model: modelOf(stage),
         max_tokens: 16000,
         thinking: { type: 'adaptive' },
         system: [{ type: 'text', text: systemText, cache_control: { type: 'ephemeral' } }],
@@ -209,7 +224,7 @@ export async function callWithTools(
       return await stream.finalMessage();
     });
     inTok += msg.usage.input_tokens; outTok += msg.usage.output_tokens;
-    await insertUsage.run(projectId, 'qa', MODEL, msg.usage.input_tokens, msg.usage.output_tokens,
+    await insertUsage.run(projectId, stage, modelOf(stage), msg.usage.input_tokens, msg.usage.output_tokens,
       msg.usage.cache_read_input_tokens ?? 0, msg.usage.cache_creation_input_tokens ?? 0);
 
     if (msg.stop_reason === 'refusal') throw new Error('AI が安全上の理由で応答を拒否しました');
