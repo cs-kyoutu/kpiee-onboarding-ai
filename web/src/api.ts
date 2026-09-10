@@ -1,4 +1,4 @@
-// API クライアント。バックエンド（Express :8787）との通信ヘルパー。
+﻿// API クライアント。バックエンド（Express :8787）との通信ヘルパー。
 const BASE = '/api'
 
 async function handle<T>(res: Response): Promise<T> {
@@ -549,7 +549,7 @@ export interface FileRelation {
   toFile: string
   relType: FileRelType
   note: string
-  origin: 'auto' | 'manual'
+  origin: 'auto' | 'manual' | 'doc-auto'
   /** 作成手順の層（手順書がある案件だけ入る）。レポート 02 をステップの帯で描くのに使う */
   step?: number
   stepTitle?: string
@@ -605,7 +605,7 @@ export function getFileRelations(projectId: number): Promise<FileRelationsData> 
 
 export function addFileRelation(projectId: number, body: {
   fromArtifactId: number; toArtifactId: number; relType: FileRelType; note?: string
-  origin?: 'auto' | 'manual'; step?: number | null; stepTitle?: string; adds?: string
+  origin?: 'auto' | 'manual' | 'doc-auto'; step?: number | null; stepTitle?: string; adds?: string
 }): Promise<{ ok: boolean; id: number }> {
   return post(`/projects/${projectId}/file-relations`, body)
 }

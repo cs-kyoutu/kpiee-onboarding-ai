@@ -248,6 +248,10 @@ CREATE TABLE IF NOT EXISTS doc_drafts (
   error TEXT,
   requirements TEXT,
   stepflow TEXT,
+  -- 読み取り結果を既定値として登録まで済ませたか（0=未適用）。
+  -- ステップ3を開かず素通りしても同じレポートが出るように、案では止めず登録までやる。
+  -- 人が確定・編集済みのもの（分類の確定印・保存済みの spec・同じ向きの登録）は上書きしない。
+  applied INTEGER NOT NULL DEFAULT 0,
   updated_at ${ts}
 );
 
@@ -282,6 +286,9 @@ CREATE TABLE IF NOT EXISTS sql_jobs (
   await addColumns(db, 'sql_column_maps', [
     ['local_table', "TEXT NOT NULL DEFAULT ''"],
     ['local_column', "TEXT NOT NULL DEFAULT ''"],
+  ]);
+  await addColumns(db, 'doc_drafts', [
+    ['applied', 'INTEGER NOT NULL DEFAULT 0'],
   ]);
 }
 

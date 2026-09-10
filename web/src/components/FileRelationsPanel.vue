@@ -352,6 +352,7 @@ onMounted(load)
                 <td>
                   {{ fileNameOf(r.fromFile) }} <span class="frarrow">→</span> {{ fileNameOf(r.toFile) }}
                   <span v-if="r.origin === 'auto'" class="badge info">自動由来</span>
+              <span v-else-if="r.origin === 'doc-auto'" class="badge info">資料から自動登録</span>
                 </td>
                 <td>
                   <select

@@ -661,7 +661,9 @@ async function loadDeclaredFileRels(projectId: number): Promise<DeclaredFileRel[
     out.push({
       id: r.id, fromFile, toFile,
       relType: (FILE_REL_TYPES as string[]).includes(r.rel_type) ? r.rel_type as FileRelType : 'unknown',
-      note: r.note ?? '', origin: r.origin === 'auto' ? 'auto' : 'manual',
+      note: r.note ?? '',
+      // doc-auto = 資料から自動登録（画面で由来が分かるように保持する）
+      origin: r.origin === 'auto' || r.origin === 'doc-auto' ? r.origin : 'manual',
       // 0 や NaN は「未入力」と同じ扱いにする（レポート側はステップの有無で描き方を変える）
       step: Number(r.step) > 0 ? Number(r.step) : undefined,
       stepTitle: r.step_title?.trim() || undefined,
@@ -1313,7 +1315,8 @@ async function ensureDocDraft(projectId: number): Promise<void> {
       ).run(projectId, ...cols.map(c => patch[c]));
     }
   };
-  await upsert({ signature, status: 'pending', error: null });
+  // 読み直しなので、適用の印もリセットする（新しい読み取り結果を改めて既定値にする）
+  await upsert({ signature, status: 'pending', error: null, applied: 0 });
 
   void (async () => {
     try {
@@ -1330,6 +1333,8 @@ async function ensureDocDraft(projectId: number): Promise<void> {
       patch.status = errors.length === 2 ? 'failed' : 'done';
       patch.error = errors.length > 0 ? errors.join(' / ') : null;
       await upsert(patch);
+      // 読めたら、そのまま既定値として登録まで済ませる（案で止めない）
+      await autoApplyDocDraft(projectId);
     } catch (e) {
       await upsert({ status: 'failed', error: String(e) }).catch(() => {});
     } finally {
@@ -1338,11 +1343,84 @@ async function ensureDocDraft(projectId: number): Promise<void> {
   })();
 }
 
+/**
+ * 読み取り結果を既定値として登録まで済ませる。
+ *
+ * 「案を出して人が登録」だと、ステップ3を開かずに素通りした案件だけレポートから関係が消え、
+ * 同じ資料なのに違うアウトプットになる（協和の再現で実際に起きた）。既定で登録までやり、
+ * 人は「直す・消す」で関与する。人が確定・編集済みのものは上書きしない:
+ *   - 分類: roles_confirmed の印が立っていたら触らない
+ *   - ブック関係: 同じ向きの登録が既にあれば触らない（人の編集を守る）
+ *   - レポートの要件: spec を一度でも保存した案件（configured）には入れない
+ */
+async function autoApplyDocDraft(projectId: number): Promise<void> {
+  const row = await db.prepare(
+    `SELECT status, applied, requirements, stepflow FROM doc_drafts WHERE project_id = ?`,
+  ).get(projectId) as { status: string; applied: number; requirements: string | null; stepflow: string | null } | undefined;
+  if (!row || row.status !== 'done' || row.applied) return;
+  // 先に印を付ける（並行リクエストで二重適用しない）
+  await db.prepare(`UPDATE doc_drafts SET applied = 1 WHERE project_id = ?`).run(projectId);
+
+  // ① 分類（roleHints）。人が確定した案件は触らない
+  const req: RequirementsExtractResult | null = row.requirements ? JSON.parse(row.requirements) : null;
+  if (req && !(await projectFlags(projectId)).includes('roles_confirmed')) {
+    const byArtifact = new Map<number, { sheet: string; role: string; reason: string }[]>();
+    for (const h of req.roleHints) {
+      if (h.artifactId === null || !h.sheetFound) continue;
+      const list = byArtifact.get(h.artifactId) ?? [];
+      list.push({ sheet: h.sheet, role: h.role, reason: h.reason });
+      byArtifact.set(h.artifactId, list);
+    }
+    const valid = new Set(Object.keys(SHEET_ROLE_LABELS));
+    for (const [artifactId, hints] of byArtifact) {
+      const art = await db.prepare(`SELECT sheet_roles FROM artifacts WHERE id = ?`)
+        .get(artifactId) as { sheet_roles: string | null } | undefined;
+      if (!art) continue;
+      const current = (art.sheet_roles ? JSON.parse(art.sheet_roles) : {}) as Record<string, SheetClassification>;
+      let changed = false;
+      for (const h of hints) {
+        if (!valid.has(h.role) || !current[h.sheet]) continue;
+        if (current[h.sheet].role === h.role) continue;
+        current[h.sheet] = { ...current[h.sheet], role: h.role as SheetClassification['role'], reason: `資料の指定: ${h.reason}` };
+        changed = true;
+      }
+      if (changed) {
+        await db.prepare(`UPDATE artifacts SET sheet_roles = ? WHERE id = ?`).run(JSON.stringify(current), artifactId);
+      }
+    }
+  }
+
+  // ② ブック関係（手順の受け渡し）。ファイルまで解決できた案だけ登録する
+  const flow: StepFlowExtractResult | null = row.stepflow ? JSON.parse(row.stepflow) : null;
+  if (flow) {
+    for (const p of flow.proposals) {
+      if (p.fromArtifactId === null || p.toArtifactId === null) continue;
+      if (await validateFileRel(projectId, p.fromArtifactId, p.toArtifactId, p.relType)) continue;
+      const dup = await db.prepare(
+        `SELECT id FROM file_relations WHERE project_id = ? AND from_artifact_id = ? AND to_artifact_id = ?`,
+      ).get(projectId, p.fromArtifactId, p.toArtifactId);
+      if (dup) continue; // 既にある向きは人の編集かもしれないので触らない
+      const st = normStepInput(p);
+      await db.prepare(
+        `INSERT INTO file_relations (project_id, from_artifact_id, to_artifact_id, rel_type, note, origin, step, step_title, adds)
+           VALUES (?, ?, ?, ?, ?, 'doc-auto', ?, ?, ?)`,
+      ).run(projectId, p.fromArtifactId, p.toArtifactId, p.relType, p.note ?? '', st.step, st.stepTitle, st.adds);
+    }
+  }
+
+  // ③ レポートの要件。一度でも保存された spec（人の判断が入ったもの）には入れない
+  if (req && !(await reportSpecConfigured(projectId))) {
+    await saveReportSpec(projectId, req.spec);
+  }
+}
+
 /** 下書きの取得。古ければ裏で読み直しを蹴る（画面はポーリングで pending → done を拾う） */
 app.get('/api/projects/:id/doc-draft', async (req, res) => {
   const projectId = Number(req.params.id);
   try {
     void ensureDocDraft(projectId).catch(e => console.error(`[doc-draft] project=${projectId}`, e));
+    // 適用がまだの下書き（この機能より前に読み終えたもの）はここで追い付かせる
+    await autoApplyDocDraft(projectId).catch(e => console.error(`[doc-draft:apply] project=${projectId}`, e));
     const row = await db.prepare(
       `SELECT signature, status, error, requirements, stepflow, updated_at FROM doc_drafts WHERE project_id = ?`,
     ).get(projectId) as {
