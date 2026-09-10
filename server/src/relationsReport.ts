@@ -2050,8 +2050,10 @@ function renderSimpleTable(t: ReportSimpleTable): string {
 // 「作られ方」の流れ図。レーンを縦に積み、最後の箱（最終アウトプット）の位置を全レーンで揃える。
 // 位置を揃えないと、レーンごとに終点が別の場所にあるように見えて、同じ形だと分からない
 const LANE_W = 900;
-const LANE_PITCH = 100;   // レーン1本ぶん（札 + 箱）の高さ
-const LANE_BOX_H = 56;
+const LANE_PITCH = 108;   // レーン1本ぶん（札 + 箱）の高さ
+// 箱の添え書きは2行まで折り返す。1行に押し込むと、タブ名を並べた添え書きが
+// 「…・kin」のように語の途中で切れて、何のタブなのか読めなくなる
+const LANE_BOX_H = 64;
 const LANE_TOP = 32;      // 1本目の箱の上端（その上に札が入る）
 const LANE_OUT = { x: 570, w: 318 };  // 最後の箱（最終アウトプット）
 // 途中の箱の位置。箱を増やすほど1つが痩せるので、4つ目からは添え書きが入らない
@@ -2088,12 +2090,14 @@ function renderHowMadeFlowsSvg(flows: ReportHowMadeFlow[], uid: string): string 
       parts.push(`<rect x="${b.x}" y="${top}" width="${b.w}" height="${LANE_BOX_H}" rx="9"`
         + ` fill="${b.last ? '#FBEFEF' : '#fff'}" stroke="${b.last ? '#C0392B' : '#1F5FAE'}"`
         + ` stroke-opacity="${b.last ? '.7' : '.5'}"/>`
-        + `<text x="${b.x + 14}" y="${top + 25}" font-size="12.5"`
+        + `<text x="${b.x + 14}" y="${top + 24}" font-size="12.5"`
         + `${b.last ? ' font-weight="700"' : ''} fill="#0E2A47">`
         + `${esc(fitText(b.last ? `★ ${b.title}` : b.title, b.w - 28, 12.5))}</text>`
         + (b.note === '' ? ''
-          : `<text x="${b.x + 14}" y="${top + 43}" font-size="10.5" fill="#7A8794">`
-            + `${esc(fitText(b.note, b.w - 28, 10.5))}</text>`));
+          : `<text x="${b.x + 14}" y="${top + 41}" font-size="10.5" fill="#7A8794">`
+            + wrapText(b.note, b.w - 28, 10.5, 2)
+              .map((r, j) => `<tspan x="${b.x + 14}" dy="${j === 0 ? 0 : 13}">${esc(r)}</tspan>`).join('')
+            + '</text>'));
       if (i === 0) return;
       const prev = boxes[i - 1];
       // 矢印の先は箱の手前で止める（頭が箱に食い込むと、線と枠がつながって見える）
@@ -2748,7 +2752,12 @@ function buildStepFlow(
     if (b.no > 0) {
       parts.push(`<text x="${SFL.CAP_X}" y="${(mid - 6).toFixed(1)}" font-size="${SFL.FS_CAP}" font-weight="700" fill="#1F5FAE">ステップ${b.no}</text>`);
       if (b.title !== '') {
-        parts.push(`<text x="${SFL.CAP_X}" y="${(mid + 13).toFixed(1)}" font-size="${SFL.FS_CAP_SUB}" fill="#7A8794">${esc(fitText(b.title, 180, SFL.FS_CAP_SUB))}</text>`);
+        // ステップの見出しは「エリア人件費の計算（作成者人件費 × 訪問率）」のように
+        // 括弧つきで長くなる。1行で切ると括弧が開いたまま消えるので2行まで折り返す
+        parts.push(`<text x="${SFL.CAP_X}" y="${(mid + 13).toFixed(1)}" font-size="${SFL.FS_CAP_SUB}" fill="#7A8794">`
+          + wrapText(b.title, SFL.COL_X[0] - SFL.R - SFL.CAP_X - 12, SFL.FS_CAP_SUB, 2)
+            .map((r, j) => `<tspan x="${SFL.CAP_X}" dy="${j === 0 ? 0 : 15}">${esc(r)}</tspan>`).join('')
+          + '</text>');
       }
     } else {
       parts.push(`<text x="${SFL.CAP_X}" y="${(mid - 6).toFixed(1)}" font-size="${SFL.FS_CAP}" font-weight="700" fill="#7A8794">手順に出てこない</text>`);
@@ -3854,16 +3863,21 @@ ${secOn.outcome ? `
         ${reproduceItems.map(o => `<li><b>${esc(o.label)}</b>${o.text.startsWith('（') ? '' : '　'}${o.text}</li>`).join('\n        ')}
       </ul>
     </div>` : ''}
-    ${spec.howMade.length > 0 ? `
+    <!-- 「作られ方」の箇条書きは、図が無い案件だけ。02 は絵1枚と短い読み方で合意する節で、
+         図に描いたことを文章でもう一度並べると、読み合わせがその読み上げで終わってしまう
+         （参考版（協和 8/21）の 02 も、図と読み方だけで箇条書きは置いていない） -->
+    ${spec.howMade.length > 0 && spec.howMadeFigure === null ? `
     <div class="summary">
       <div class="stitle">作られ方</div>
       <ul>
         ${spec.howMade.map(n => `<li>${n}</li>`).join('\n        ')}
       </ul>
     </div>` : ''}
-    ${spec.howMadeFlows.length > 0 ? `
+    ${spec.howMadeFlows.length > 0 && spec.howMadeFigure === null ? `
     <!-- 「作られ方」は、どのアウトプットも「元 → 途中 → 最終帳票」の同じ形なので、並べて見せる。
-         詳しいでき方は 03 にあるので、ここは箱を4つまでにとどめる -->
+         詳しいでき方は 03 にあるので、ここは箱を4つまでにとどめる。
+         ただし「作られ方（イメージ）」の図がある案件では出さない — 同じ作られ方の図が2つ並ぶと、
+         どちらを読めばよいのか分からなくなる。手順まで描けている図のほうが読み合わせで通じる -->
     ${renderHowMadeFlows(spec.howMadeFlows, 'hmf',
       secOn.flow ? `詳しいでき方は ${noFlow} でご覧いただきます。` : '')}` : ''}
     ${spec.howMadeTable ? renderSimpleTable(spec.howMadeTable) : ''}

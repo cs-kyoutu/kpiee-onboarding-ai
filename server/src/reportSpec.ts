@@ -373,7 +373,9 @@ const MAX_BLOCK_ITEMS = 12;
 const MAX_TABLE_GROUPS = 12;
 const MAX_TABLE_ROWS = 24;
 const MAX_TABLE_COLS = 6;
-const MAX_FLOW_SOURCES = 8;
+// 左に並べる受領ファイル。図は縦に伸びるだけなので、受領ファイルが多い案件でも
+// 黙って落とさない（落とすと「この図に出ていないファイルは何？」になる）
+const MAX_FLOW_SOURCES = 12;
 const MAX_FLOW_STAGES = 5;
 const MAX_REPEAT = 5;
 // 「作られ方」の流れ図。レーンも箱も増やすと、02 が 03（ロジックの確認）の代わりになってしまう。
@@ -381,7 +383,9 @@ const MAX_REPEAT = 5;
 const MAX_LANES = 4;
 const MAX_LANE_STEPS = 4;
 const MAX_LANE_TITLE = 22;
-const MAX_LANE_NOTE = 30;
+// 添え書きは箱の中で2行に折り返すので、1行ぶんで切らない（30 だと「…・kin」のように
+// タブ名の途中で切れて、何のタブなのか読めなくなった）
+const MAX_LANE_NOTE = 44;
 const MAX_LANE_VIA = 12;
 // 「作られ方（イメージ）」の図。1行を横に伸ばして描くので、かたまりも列も増やせない
 const MAX_FIG_GROUPS = 6;
@@ -410,6 +414,30 @@ const asStepLines = (v: unknown): ReportStepLine[] =>
         return { tag: asText(r.tag, MAX_STEP_TAG), tone: asTone(r.tone), text: asText(r.text, MAX_LINE) };
       }).filter(s => s.tag !== '' && s.text !== '').slice(0, MAX_STEP_LINES)
     : [];
+
+const CIRCLED = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨'];
+
+/**
+ * ステップカードの中の行。札と色を、参考版（協和 8/21）の型へそろえる。
+ *
+ * ①集計 → ②演算 → ③配賦 の対応と丸数字の連番は、書き手（資料の読み取り・相談の AI・手入力）に
+ * 任せると「②付与 ②付与 ②付与」「(ratio) ②演算」のように崩れる（実際に崩れた）。
+ * 書き手ごとに直すと片方だけ直らないので、保存・読み込みの正規化で1か所に寄せる。
+ * 役割語（集計・演算・配賦・付与・手入力）から色を引き、丸数字は行順で振り直す。
+ *
+ * 02-1 の図（作られ方（イメージ））の読み方は「①土台 / ステップ1 / 営業利益」のように
+ * 連番ではない札を使うため、ここは通さない（asStepLines のまま）。
+ */
+const asCardStepLines = (v: unknown): ReportStepLine[] =>
+  asStepLines(v).map((s, i) => {
+    const word = s.tag.replace(/^[①-⑨\s]+/, '').trim();
+    const tone = /配賦|按分/.test(word) ? 'ratio'
+      : /集計/.test(word) ? 'base'
+      : /演算|計算/.test(word) ? 'direct'
+      : /手入力/.test(word) ? 'manual'
+      : s.tone;
+    return { tag: `${CIRCLED[i] ?? ''}${word}`, tone, text: s.text };
+  });
 
 /** 02-1 に添える表。行が1つも無ければ null（見出しだけの空の表を出さない） */
 function normalizeSimpleTable(raw: unknown): ReportSimpleTable | null {
@@ -547,7 +575,7 @@ function normalizeOutputBlock(raw: unknown): ReportOutputBlock | null {
             const r = asRecord(c);
             return {
               title: asText(r.title, MAX_GUIDE_CELL), text: asText(r.text, MAX_LINE),
-              steps: asStepLines(r.steps), note: asText(r.note, MAX_LINE),
+              steps: asCardStepLines(r.steps), note: asText(r.note, MAX_LINE),
             };
           }).filter(c => c.text !== '' || c.steps.length > 0).slice(0, MAX_STEP_CARDS)
         : [];

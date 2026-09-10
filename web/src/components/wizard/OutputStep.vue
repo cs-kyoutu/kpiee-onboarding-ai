@@ -100,7 +100,7 @@ async function loadSpec() {
   spec.value = d.spec
   sectionLabels.value = d.sectionLabels
   itemLabels.value = d.itemLabels
-  if (!reqDirty.value) syncRequirements(d.spec)
+  adoptSpec(d.spec)
 }
 
 // ---- 要件定義（伺った内容）----
@@ -112,14 +112,30 @@ const reqBusy = ref(false)
 const reqMsg = ref('')
 const reqNotes = ref<string[]>([])
 const reqSaving = ref(false)
-/** 人が触った or 読み取った後は、ポーリングでの取り直しで上書きしない */
-const reqDirty = ref(false)
+/**
+ * 人が欄を触ったか。触っていなければ、AI 相談が指定を変えたときに欄を置き換えてよい。
+ *
+ * 以前は「読み取った結果を欄へ入れた」だけでも編集中と同じ扱いにしていたため、
+ * その後に相談で直しても左の欄が古いままになり、「指示が反映されない」ように見えていた。
+ * さらに、その状態で「レポートへ反映」を押すと、相談の結果を古い中身で上書きしてしまう。
+ */
+const reqEdited = ref(false)
+/** 下書きを欄へ入れたが、まだ「レポートへ反映」を押していない */
+const reqDraftFilled = ref(false)
+/** 未保存の中身があるか（「未保存」バッジ用） */
+const reqDirty = computed(() => reqEdited.value || reqDraftFilled.value)
+/** 最後に欄へ写した指定の中身。サーバー側で変わったかの判定に使う */
+const reqSynced = ref('')
 
 const fReproduce = ref<ReportOverviewItem[]>([])
 const fHowMade = ref('')
 const fHowMadeSource = ref('')
 const fAssumptions = ref('')
 const fFileNotes = ref<ReportFileNote[]>([])
+
+/** 欄に写す対象（要件だけ）。構成のチェックの出し入れでは欄を触らない */
+const reqSig = (s: ReportSpec): string =>
+  JSON.stringify([s.reproduce, s.howMade, s.howMadeSource, s.assumptions, s.fileNotes])
 
 /** 保存済みの指定を編集欄へ写す（1行=1件のテキストへ落とす） */
 function syncRequirements(s: ReportSpec) {
@@ -128,6 +144,21 @@ function syncRequirements(s: ReportSpec) {
   fHowMadeSource.value = s.howMadeSource
   fAssumptions.value = s.assumptions.join('\n')
   fFileNotes.value = s.fileNotes.map(n => ({ ...n }))
+  reqSynced.value = reqSig(s)
+}
+
+/**
+ * サーバー側の指定が変わっていたら欄へ写す（AI 相談が直した内容が左へ出る経路）。
+ * 人が編集中のときは黙って上書きせず、変わったことだけ知らせる。
+ */
+function adoptSpec(s: ReportSpec) {
+  if (reqSig(s) === reqSynced.value) return
+  if (reqEdited.value) {
+    reqMsg.value = 'AI が要件（作られ方・前提など）を更新しました。下の欄は編集中のため上書きしていません'
+    return
+  }
+  syncRequirements(s)
+  reqDraftFilled.value = false
 }
 
 const lines = (s: string): string[] => s.split('\n').map(t => t.trim()).filter(Boolean)
@@ -139,7 +170,7 @@ function fillFromDraft(r: RequirementsDraft, auto: boolean) {
   fHowMadeSource.value = r.spec.howMadeSource
   fAssumptions.value = r.spec.assumptions.join('\n')
   fFileNotes.value = r.spec.fileNotes
-  reqDirty.value = true
+  reqDraftFilled.value = true
   reqNotes.value = []
   const n = r.spec.reproduce.length + r.spec.howMade.length + r.spec.assumptions.length + r.spec.fileNotes.length
   reqMsg.value = n === 0
@@ -199,7 +230,8 @@ async function saveRequirements() {
     })
     spec.value = res.spec
     syncRequirements(res.spec)
-    reqDirty.value = false
+    reqEdited.value = false
+    reqDraftFilled.value = false
     reqMsg.value = 'レポートへ反映しました。'
     reloadKey.value++
     emit('changed')
@@ -225,7 +257,7 @@ async function loadChat() {
   pending.value = d.pending
   spec.value = d.spec
   // AI 相談が要件（前提・作られ方）を変えることもある。編集中でなければ欄へ写す
-  if (!reqDirty.value) syncRequirements(d.spec)
+  adoptSpec(d.spec)
   // サーバー側の履歴に自分の発話が入ったら、仮表示は用済み
   if (echo.value && d.messages.some(m => m.role === 'user' && m.content === echo.value)) echo.value = ''
 }
@@ -329,7 +361,11 @@ onMounted(async () => {
       reloadKey.value++
       notice.value = '構成が変わったのでレポートを作り直しました'
     } else {
-      notice.value = ''
+      // 変わらなかったことも言う。黙って終わると「反映されたのか分からない」になる
+      const last = messages.value[messages.value.length - 1]
+      notice.value = last?.role === 'assistant' && !last.spec_patch
+        ? 'この回答では指定は変わっていません（直したい項目を名指しでお伝えください）'
+        : ''
     }
     emit('changed')
   }, 2500)
@@ -455,37 +491,37 @@ onUnmounted(() => {
 
           <h4 class="wz-h4">再現するもの（帳票）</h4>
           <div v-for="(r, i) in fReproduce" :key="`rp${i}`" class="wz-pair">
-            <input v-model="r.label" placeholder="呼び名（例: 顧客別営業利益）" @input="reqDirty = true">
-            <input v-model="r.text" placeholder="どのファイルのどのタブで、何を並べた表か" @input="reqDirty = true">
-            <button class="link danger" @click="fReproduce.splice(i, 1); reqDirty = true">削除</button>
+            <input v-model="r.label" placeholder="呼び名（例: 顧客別営業利益）" @input="reqEdited = true">
+            <input v-model="r.text" placeholder="どのファイルのどのタブで、何を並べた表か" @input="reqEdited = true">
+            <button class="link danger" @click="fReproduce.splice(i, 1); reqEdited = true">削除</button>
           </div>
-          <button class="link" @click="fReproduce.push({ label: '', text: '' }); reqDirty = true">＋ 行を足す</button>
+          <button class="link" @click="fReproduce.push({ label: '', text: '' }); reqEdited = true">＋ 行を足す</button>
 
           <label class="wz-field">
             <span>作られ方（1行に1件。どのファイルから何を付与するか）</span>
-            <textarea v-model="fHowMade" rows="4" @input="reqDirty = true"></textarea>
+            <textarea v-model="fHowMade" rows="4" @input="reqEdited = true"></textarea>
           </label>
 
           <label class="wz-field">
             <span>出典の呼び名（例: 要件定義シート（○○様_△△pjt）と試算手順）</span>
-            <input v-model="fHowMadeSource" @input="reqDirty = true">
+            <input v-model="fHowMadeSource" @input="reqEdited = true">
           </label>
 
           <label class="wz-field">
             <span>再現するうえでの前提（1行に1件。配賦の例外・未受領データの扱いなど）</span>
-            <textarea v-model="fAssumptions" rows="4" @input="reqDirty = true"></textarea>
+            <textarea v-model="fAssumptions" rows="4" @input="reqEdited = true"></textarea>
           </label>
 
           <h4 class="wz-h4">ファイルごとの備考（01 で開いた先頭に出ます）</h4>
           <div v-for="(n, i) in fFileNotes" :key="`fn${i}`" class="wz-pair">
-            <select v-model="n.file" @change="reqDirty = true">
+            <select v-model="n.file" @change="reqEdited = true">
               <option value="">（ファイルを選ぶ）</option>
               <option v-for="f in facts?.files ?? []" :key="f.filename" :value="f.filename">{{ f.filename }}</option>
             </select>
-            <input v-model="n.note" placeholder="例: アウトプット（月次）。対象タブは「メイン」" @input="reqDirty = true">
-            <button class="link danger" @click="fFileNotes.splice(i, 1); reqDirty = true">削除</button>
+            <input v-model="n.note" placeholder="例: アウトプット（月次）。対象タブは「メイン」" @input="reqEdited = true">
+            <button class="link danger" @click="fFileNotes.splice(i, 1); reqEdited = true">削除</button>
           </div>
-          <button class="link" @click="fFileNotes.push({ file: '', note: '' }); reqDirty = true">＋ 行を足す</button>
+          <button class="link" @click="fFileNotes.push({ file: '', note: '' }); reqEdited = true">＋ 行を足す</button>
         </details>
 
         <!-- 構成の指定（手でも直せる） -->

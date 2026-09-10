@@ -60,7 +60,7 @@ export const STEP_FLOW_SCHEMA = {
  * 資料に書かれていないことは作らせない。空配列で返させ、画面には「読み取れなかった」と出す。
  * ファイル名は受領ファイル名そのままを返させる（言い換えられると artifact へ解決できない）。
  */
-export const REQUIREMENTS_SCHEMA = {
+const REQUIREMENTS_ALL = {
   type: 'object',
   properties: {
     reproduce: {
@@ -167,7 +167,10 @@ export const REQUIREMENTS_SCHEMA = {
           file: { type: 'string', description: '対象の最終アウトプットのファイル名。受領ファイル一覧の名前をそのまま使う' },
           blocks: {
             type: 'array',
-            description: '上から並べる順。話の切れ目に heading、帳票の形は bullets、手順は steps、確認したいことは check',
+            description: '上から並べる順。話の切れ目に heading、帳票の形は bullets、'
+              + '何から何ができるかの1枚図は flow、手順は steps、確認したいことは check。'
+              + 'steps を入れるなら、その直前に flow を必ず1つ置く（図が無いと、'
+              + 'カードだけが並んで全体の流れが見えない）',
             items: {
               type: 'object',
               properties: {
@@ -268,9 +271,42 @@ export const REQUIREMENTS_SCHEMA = {
       },
     },
   },
-  required: ['reproduce', 'howMade', 'howMadeSource', 'assumptions', 'fileNotes', 'outputPlans', 'roleHints'],
+  // howMadeFigure も必須にする。任意にしておくと、モデルは長い項目から順に落とす
+  // （協和で実際に落ちて 02 の図が出なかった）。作れないときは groups: [] を返させる
+  required: [
+    'reproduce', 'howMade', 'howMadeSource', 'assumptions', 'fileNotes',
+    'howMadeFigure', 'outputPlans', 'roleHints',
+  ],
   additionalProperties: false,
 } as const;
+
+/**
+ * 上の定義を2本に切り分ける。
+ *
+ * 全部を1つのスキーマで要求すると構造化出力の文法が上限を超え、API が
+ * 「The compiled grammar is too large」の 400 を返す（実測 6,000 字で不可・4,700 字で可）。
+ * 要件（reproduce / assumptions / 図 …）と帳票の読み方（outputPlans）は資料の読み方も別なので、
+ * 呼び出しごと分ける。資料本文は同じなので、2本目はプロンプトキャッシュで読める。
+ *
+ * この形を崩して1本に戻すと、読み取りが 400 で毎回失敗し、
+ * 「レポートに図が出ない・下書きが更新されない」だけが表に見える状態になる（実際に起きた）。
+ */
+const omitKey = (o: Record<string, unknown>, key: string): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(o).filter(([k]) => k !== key));
+
+export const REQUIREMENTS_SCHEMA = {
+  type: 'object',
+  properties: omitKey(REQUIREMENTS_ALL.properties, 'outputPlans'),
+  required: REQUIREMENTS_ALL.required.filter(k => k !== 'outputPlans'),
+  additionalProperties: false,
+};
+
+export const OUTPUT_PLANS_SCHEMA = {
+  type: 'object',
+  properties: { outputPlans: REQUIREMENTS_ALL.properties.outputPlans },
+  required: ['outputPlans'],
+  additionalProperties: false,
+};
 
 /**
  * 物理カラム突き合わせの AI 補助のスキーマ。

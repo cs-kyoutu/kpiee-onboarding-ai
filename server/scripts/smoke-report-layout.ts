@@ -3,7 +3,7 @@
 //
 // 使い方:
 //   npx tsx scripts/smoke-report-layout.ts
-import { buildRelationsReportHtml } from '../src/relationsReport.js';
+import { buildRelationsReportHtml, type RelationsReportInput } from '../src/relationsReport.js';
 import { DEFAULT_REPORT_SPEC } from '../src/reportSpec.js';
 import type { Region, Edge } from '../src/preprocess/relations.js';
 
@@ -22,7 +22,7 @@ const edge: Edge = {
   evidence: 'SUMIF($A$2:$A$3,A2,$B$2:$B$3)', confidence: 0.9,
 };
 
-const html = buildRelationsReportHtml({
+const input: RelationsReportInput = {
   customerName: '煙試験株式会社',
   generatedAt: new Date('2026-08-18T00:00:00Z'),
   fileCount: 2,
@@ -57,7 +57,8 @@ const html = buildRelationsReportHtml({
         text: '収支表を全事業所共通の形へ組み替えてから作ります。',
         steps: [
           { title: '①2607（収支表）', note: '事業所が毎週入力する', via: '' },
-          { title: '②グラフ用縦表', note: '全事業所共通の形', via: '勘定科目で揃える' },
+          // 箱に入りきらない添え書き。1行で切ると「全事業所共通の…」で終わってしまう
+          { title: '②グラフ用縦表', note: '全事業所共通の形・拠点別配賦経費・エリア経費', via: '勘定科目で揃える' },
           { title: '③④利益グラフ', note: '売上・仕入・固定費 に分解', via: '' },
         ],
       },
@@ -119,6 +120,14 @@ const html = buildRelationsReportHtml({
       ],
     }],
   },
+};
+
+const html = buildRelationsReportHtml(input);
+// 「作られ方（イメージ）」の図が無い案件（手順までは分からず、流れだけ言える案件）。
+// このときだけ 02 はレーンの流れ図になる — 両方出すと同じ作られ方の図が2つ並ぶ
+const lanes = buildRelationsReportHtml({
+  ...input,
+  spec: { ...input.spec!, howMadeFigure: null },
 });
 
 const checks: [string, boolean][] = [
@@ -135,20 +144,25 @@ const checks: [string, boolean][] = [
   ['作られ方の図が出る',
     html.includes('<figure class="fig">') && html.includes('作られ方（イメージ）')
     && html.includes('<figcaption>')],
-  // 図は箇条書きを置き換えず、その下に並ぶ（図に寄せた項目を箇条書きから外すのは指定側の仕事）
-  ['箇条書きの箱と図が並ぶ',
-    html.includes('<div class="stitle">作られ方</div>')
-    && html.indexOf('<div class="stitle">作られ方</div>') < html.indexOf('<figure class="fig">')],
+  // 02 は絵1枚と短い読み方で合意する節。図があるなら、同じ話の箇条書きは置かない
+  ['図があるときは作られ方の箇条書きを置かない', !html.includes('<div class="stitle">作られ方</div>')],
+  ['図が無いときは箇条書きで出す', lanes.includes('<div class="stitle">作られ方</div>')],
+  // 作られ方の図は1枚だけ。手順まで描けている図がある案件では、レーンの流れ図は出さない
+  ['作られ方の図が2つ並ばない', !html.includes('のでき方</text>')],
   // アウトプットごとの流れ図（レーン）。最後の箱は最終アウトプットとして赤＋★で出す
-  ['作られ方の流れ図が出る',
-    html.includes('収支サマリー のでき方') && html.includes('利益グラフ のでき方')
-    && html.includes('★ ①サマリー') && html.includes('#FBEFEF')],
-  ['流れ図の矢印に言葉が付く', html.includes('>月で拾う<') && html.includes('>勘定科目で揃える<')],
+  ['作られ方の流れ図が出る（図が無い案件）',
+    lanes.includes('収支サマリー のでき方') && lanes.includes('利益グラフ のでき方')
+    && lanes.includes('★ ①サマリー') && lanes.includes('#FBEFEF')],
+  ['流れ図の矢印に言葉が付く', lanes.includes('>月で拾う<') && lanes.includes('>勘定科目で揃える<')],
   ['流れ図の読み方が札付きで出る',
-    html.includes('<span class="tag base">収支サマリー</span>')
-    && html.includes('各タブに入れた数字を、<b>月で拾って</b>並べます。')],
+    lanes.includes('<span class="tag base">収支サマリー</span>')
+    && lanes.includes('各タブに入れた数字を、<b>月で拾って</b>並べます。')],
   // 最後の箱の位置は全レーンでそろえる（そろわないと、同じ形をしていることが読み取れない）
-  ['流れ図の最後の箱がレーンでそろう', (html.match(/x="570" y="\d+" width="318"/g) ?? []).length === 2],
+  ['流れ図の最後の箱がレーンでそろう', (lanes.match(/x="570" y="\d+" width="318"/g) ?? []).length === 2],
+  // 箱の添え書きは箱の中で2行に折り返す（語の途中で切れると、何のタブなのか読めない）
+  // 「…」で切らずに2行へ送る（区切りの「・」で折る）
+  ['流れ図の添え書きが2行に折り返る',
+    lanes.includes('>全事業所共通の形・</tspan>') && lanes.includes('dy="13">拠点別配賦経費・エリア経費</tspan>')],
   ['作られ方の表が出る',
     html.includes('数字の入り口') && html.includes('<th>入るタブ</th>')
     && html.indexOf('<th>入るタブ</th>') < html.indexOf('<figure class="fig">')],

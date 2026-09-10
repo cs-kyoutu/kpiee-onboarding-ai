@@ -50,6 +50,20 @@ const matchedCount = computed(() => rows.value.filter(r => r.local_table && r.lo
 const localColumnOptions = computed(() =>
   localTables.value.flatMap(t => t.columns.map(c => `${t.name}.${c}`)))
 
+/**
+ * 表が空のときの案内。「0 行」とだけ出ると、何を待っている状態なのかが分からない
+ * （添付しただけで読み取っていないのか、読み取って当たらなかったのかで、次の一手が違う）。
+ */
+const emptyHint = computed(() => {
+  if (parsing.value) return '読み取り中です。終わるとここに表が出ます。'
+  if (columnFiles.value.length === 0) {
+    return 'まず Redash の CSV（クエリ145／147）を添付してください。物理カラム名はその書き出しにしかありません。'
+      + ' kpiee へ取り込む前の案件は、空のまま確定して構いません（物理名の当てはめは保留のまま SQL を組みます）。'
+  }
+  return 'CSV は添付済みですが、まだ読み取っていません。上の「ファイルから対応表を読み取る」を押してください'
+    + '（取込データと突き合わせるため数分かかります）。'
+})
+
 const visibleRows = computed(() => {
   const f = filter.value.trim().toLowerCase()
   if (!f) return rows.value
@@ -433,10 +447,12 @@ onUnmounted(() => {
           </span>
           <input v-model="filter" class="wz-colfilter" placeholder="絞り込み（表示だけ。編集は元の行に効きます）">
         </div>
-        <p v-if="rows.length === 0" class="muted">
-          まだありません。上の「読み取る」で自動突き合わせ表を起こすか、「＋ 行を足す」で手入力してください。
-          取込前の案件は空のまま確定して構いません。
+        <p class="muted">
+          SQL に書く物理カラム名（IMPORT_xxxxx）の<b>唯一の根拠</b>になる表です。AI はここに無い物理名を書きません。
+          入力欄は自動突き合わせの<b>直し用</b>で、全部を手で埋めるものではありません —
+          黄色い行（原本の列か物理名が空）だけ、候補から選ぶか名前を入れてください。
         </p>
+        <p v-if="rows.length === 0" class="muted">{{ emptyHint }}</p>
         <div v-else class="wz-coltable">
           <table class="wz-table">
             <thead>

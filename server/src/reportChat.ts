@@ -140,7 +140,8 @@ const SPEC_TOOL = {
       howMade: {
         type: 'array', items: { type: 'string' },
         description: '02-1「作られ方」（最大8件）。どのタブに何を入れて、どこがそれを拾うのかを1行ずつ。<b> で強調できる。'
-          + 'howMadeFlows で図にしたアウトプットは、同じ話を二度読ませないためここから外す',
+          + '図（howMadeFigure / howMadeFlows）にした内容はここへ書かない（同じ話を二度読ませない）。'
+          + '図がある案件では空配列が既定 — レポートにも出ない',
       },
       howMadeFlows: {
         type: 'array',
@@ -168,6 +169,55 @@ const SPEC_TOOL = {
           },
           required: ['label', 'steps'],
         },
+      },
+      howMadeFigure: {
+        type: 'object',
+        description: '02-1「作られ方（イメージ）」の図。土台の1行（例: 得意先・売上・粗利）に、'
+          + 'ステップごとに列が足されて最終指標になるまでを1枚で見せる。手順が分かっている案件では'
+          + 'この図を出す（流れ図 howMadeFlows より読み合わせで通じる）。'
+          + '資料の読み取りで既に入っている図は、直せと言われない限り触らない。'
+          + 'sample は説明のための架空の例（万円単位のきりのよい数）で、実データの数値は絶対に使わない',
+        properties: {
+          title: { type: 'string', description: '図の見出し。通常は空文字（既定「作られ方（イメージ）」が付く）' },
+          note: { type: 'string', description: '見出しに添える注記。通常は空文字（既定の注記が付く）' },
+          groups: {
+            type: 'array',
+            description: '左から並べる列のかたまり。[土台(base)] → [ステップごと(direct/ratio)] → [＝最終指標(result)] の順',
+            items: {
+              type: 'object',
+              properties: {
+                label: { type: 'string', description: 'かたまりの上の札（例: ①68期実績（土台）、ステップ2・訪問比率、＝営業利益）' },
+                tone: { type: 'string', enum: ['base', 'direct', 'ratio', 'manual', 'result'] },
+                columns: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      name: { type: 'string', description: '列名（例: 管理料）' },
+                      sample: { type: 'string', description: '説明のための架空の例（例: 20万円）' },
+                    },
+                    required: ['name', 'sample'],
+                  },
+                },
+              },
+              required: ['label', 'tone', 'columns'],
+            },
+          },
+          steps: {
+            type: 'array',
+            description: '図の下の読み方（1段=1行）。tag は ①土台 / ステップ1〜 / 最終指標名',
+            items: {
+              type: 'object',
+              properties: {
+                tag: { type: 'string' },
+                tone: { type: 'string', enum: ['base', 'direct', 'ratio', 'manual', 'result'] },
+                text: { type: 'string', description: 'その段で何が足されるか（出所ファイルを含める）' },
+              },
+              required: ['tag', 'tone', 'text'],
+            },
+          },
+        },
+        required: ['groups', 'steps'],
       },
       howMadeSource: {
         type: 'string',
@@ -197,14 +247,17 @@ const SPEC_TOOL = {
         type: 'array',
         description: '03「ロジックの確認」の帳票ごとの読み方。担当者が「ステップの切り方を変えたい」'
           + '「帳票の形の説明を直したい」と言ったらここを丸ごと作り直す（部分修正でも全ブロックを返す）。'
-          + 'ステップは資料の記載順ではなく業務の依存関係で切り、カードの見出しは「何を付与するか」で立てる',
+          + 'ステップは資料の記載順ではなく業務の依存関係で切り、カードの見出しは「何を付与するか」で立てる。'
+          + '作り直すときは、いま入っているブロック（特に flow の図）を落とさないこと。'
+          + 'steps を入れるなら、その直前に flow を必ず1つ置く',
         items: {
           type: 'object',
           properties: {
             file: { type: 'string', description: '対象の最終アウトプットのファイル名（受領時の名前そのまま）' },
             blocks: {
               type: 'array',
-              description: '上から並べる順。話の切れ目に heading、帳票の形は bullets、手順は steps、確認したいことは check',
+              description: '上から並べる順。話の切れ目に heading、帳票の形は bullets、'
+                + '何から何ができるかの1枚図は flow、手順は steps、確認したいことは check',
               items: {
                 type: 'object',
                 properties: {
@@ -306,7 +359,10 @@ function systemText(facts: ProjectFacts, spec: ReportSpec): string {
     '- 回答は日本語で簡潔に。装飾記号（** や #）は使わず、箇条書きは「- 」で書く。',
     '',
     '## 節の役割（どこに何を書くか）',
-    '- 02 は「何を再現するか」を合意する入口。作られ方は流れ図（howMadeFlows）で見せ、',
+    '- 02 は「何を再現するか」を合意する入口。作られ方は図で見せる。',
+    '  手順（ステップ1〜）が分かっている案件は「作られ方（イメージ）」の図（howMadeFigure）を出す。',
+    '  手順までは分からず、アウトプットごとの流れだけ言える案件は流れ図（howMadeFlows）にする。',
+    '  同じ話の図を2つ並べない（図があるアウトプットは howMade の箇条書きからも外す）。',
     '  前提（assumptions）はシートの中身を開かなくてもその場で合意できるものだけを置く。',
     '- 範囲・分担・キーのように、中身を見てからでないと決まらない話は 03 の確認欄と 04 の確認事項が受け持つ。',
     '  02 でそこまで踏み込むと、ロジックを見る前に話が終わらなくなるため、02 には書かない。',

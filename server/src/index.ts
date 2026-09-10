@@ -39,7 +39,8 @@ import {
 } from './sqlChat.js';
 import { invalidateBooks } from './qa/tools.js';
 import { aiAvailable, callStructured, MODEL, estimateCostUsd } from './ai/client.js';
-import { STEP_FLOW_SCHEMA, REQUIREMENTS_SCHEMA } from './ai/schemas.js';
+import { STEP_FLOW_SCHEMA, REQUIREMENTS_SCHEMA, OUTPUT_PLANS_SCHEMA } from './ai/schemas.js';
+import { requirementsMaterial, requirementsInstruction, outputPlansInstruction } from './ai/prompts.js';
 import {
   googleConfigured, fetchDriveArtifact, fetchDriveDoc, fetchDriveForRelations, clearStreamCache, listSpreadsheets, listFolderChildren, extractSpreadsheetId,
   oauthClientConfigured, connectionStatus, buildAuthUrl, exchangeCodeAndStore, disconnect, warmupDrive,
@@ -893,6 +894,31 @@ interface RequirementsExtractResult {
   unresolved: string[];
 }
 
+/**
+ * 受領ファイルの列構成の要約。資料の読み取りへ「原本の形」を渡すための材料。
+ *
+ * 手順書が無く要件定義シートしか無い案件でも、「どのファイルに何の列があるか」が分かれば
+ * 土台になるファイルと足し込む項目を組み立てられる。セルの値は渡さない（原本の数値は出さない）。
+ * 表が多い案件でも指示が膨れないよう、シート数・列数の両方で頭打ちにする。
+ */
+async function structureDigest(projectId: number): Promise<string> {
+  const loaded = await loadRelationGraphWithDeclarations(projectId);
+  if (!loaded) return '（列構成はまだ解析できていません）';
+  const MAX_SHEETS = 60, MAX_COLS = 24;
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const r of loaded.graph.regions) {
+    const key = `${r.file} ${r.sheet}`;
+    if (seen.has(key) || lines.length >= MAX_SHEETS) continue;
+    seen.add(key);
+    const cols = r.columns.map(c => c.name).filter(n => n !== '');
+    const shown = cols.slice(0, MAX_COLS).join(', ');
+    lines.push(`- ${r.file} / ${r.sheet}（${r.dataRowCount.toLocaleString('en-US')}行）: `
+      + `${shown}${cols.length > MAX_COLS ? ` ほか${cols.length - MAX_COLS}列` : ''}`);
+  }
+  return lines.length > 0 ? lines.join('\n') : '（列構成はまだ解析できていません）';
+}
+
 async function runRequirementsExtract(projectId: number): Promise<RequirementsExtractResult> {
   {
     if (!aiAvailable()) {
@@ -913,39 +939,9 @@ async function runRequirementsExtract(projectId: number): Promise<RequirementsEx
       return `- ${a.original_filename}${sheets.length > 0 ? `（シート: ${sheets.join(' / ')}）` : ''}`;
     }).join('\n');
     const body = docs.map(d => `<doc name="${d.filename}">\n${d.content}\n</doc>`).join('\n');
-    const instruction = [
-      '次の業務資料（要件定義シート・手順書）から、この案件の要件を取り出してください。',
-      '顧客へ渡す構造分析レポートの「再現するアウトプット」「作られ方」「前提」に載せる内容になります。',
-      '',
-      '守ること:',
-      '- 資料に書かれていないことは作らない。読み取れない項目は空配列・空文字で返す',
-      '- ファイル名・シート名は、下の受領ファイル一覧の名前をそのまま使う（言い換え・省略をしない）',
-      '- 資料の項目が空欄なら、それは「まだいただいていない」ものとして assumptions へ1行入れる。',
-      '  assumptions は読み合わせでその場で合意できる重要なものだけに絞る（6件以内。',
-      '  多く並べると読み合わせが前提の確認で終わってしまう）',
-      '- 顧客が読む文章になるため、資料の言い回しを尊重し、こちらの推測で断定しない',
-      '- 帳票の作成手順（ステップ1〜のような文書）があれば outputPlans の steps ブロックへ、',
-      '  帳票の縦横の形が書かれていれば bullets ブロックへ整理する。数値の実例（金額など）は書かない',
-      '- steps の整理は、資料の箇条書きを1行ずつ写すのではなく「読み合わせで顧客に確認する文面」に',
-      '  編集する: 同じ土台に列を足していく一連の作業は1ステップにまとめ、カードの見出しは',
-      '  「ステップN　対象の名詞」（例: ステップ2　エリア人件費）で立てる。順番は業務の依存関係に従う',
-      '  （資料の記載順が依存関係と食い違うときは依存関係を優先し、その旨を note に書く）',
-      '- 比率で配る（配賦・按分）ステップのカードの中の行は、必ず次の3行の型にする:',
-      '  ①集計（tone=base: 分母・分子のもとを集計）→ ②演算（tone=direct: 「X ÷ Y ＝ Z（％）を計算します」の形）',
-      '  → ③配賦（tone=ratio: 「金額 × Z ＝ その得意先への◯◯です」の形）。',
-      '  比率を使わないステップ（そのまま付与）は行を作らず、カードの text に',
-      '  「…を、キーでそのまま付けます（比率による配賦はありません）」の形で書く',
-      '- 作成手順があるときは howMadeFigure（作られ方の図）も作る: 土台1行（例: 得意先・売上・粗利）に',
-      '  ステップごとの列（グループ）が足され、最後に ＝最終指標 となる並び。sample は万円単位の',
-      '  きりのよい架空の例にする（土台の売上500万円 → 各ステップの経費 → 最終指標が引き算で合う数字にする）',
-      '- steps ブロックの直前には flow ブロック（何から何ができるかの1枚図）を置く:',
-      '  flowSources=足し込む受領ファイル（括弧で何を付与するかを添える）、flowKey=突き合わせのキー、',
-      '  flowStages=［土台のファイル → 足し込みの途中 → 最終アウトプット］の3段、',
-      '  flowNote=貼り付けで数式が残らない案件ではその旨（「この図は伺った手順のとおりに描いたものです」）',
-      '',
-      `<received_files>\n${fileList}\n</received_files>`,
-      `<docs>\n${body}\n</docs>`,
-    ].join('\n');
+    // 原本の列構成。要件定義シートしか無い案件でも「どのファイルの何を足すと帳票になるか」を
+    // 組み立てられるように、シートごとの列名を渡す（値は渡さない — 原本の数値は AI にも出さない）
+    const material = requirementsMaterial(fileList, await structureDigest(projectId), body);
 
     interface ExtractedBlock {
       kind: 'heading' | 'bullets' | 'flow' | 'steps' | 'check';
@@ -967,31 +963,24 @@ async function runRequirementsExtract(projectId: number): Promise<RequirementsEx
       assumptions: string[];
       fileNotes: { file: string; note: string }[];
       howMadeFigure: ExtractedFigure;
-      outputPlans: { file: string; blocks: ExtractedBlock[] }[];
       roleHints: { file: string; sheet: string; role: string; reason: string }[];
     }
 
-    /**
-     * カードの中の行の札と色を、参考版（協和 8/21）の型に正規化する。
-     * ①集計=base → ②演算=direct → ③配賦=ratio の対応と連番は、AI の出力ゆらぎに任せると
-     * 「②付与 ②付与 ②付与」「(ratio) ②演算」のように崩れる（実際に崩れた）。
-     * 役割語（集計・演算・配賦・付与・手入力）から tone を引き、丸数字は行順で振り直す。
-     */
-    const CIRCLED = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨'];
-    const normalizeStepLines = (lines: { tag: string; tone: string; text: string }[]) =>
-      lines.map((s, i) => {
-        const word = s.tag.replace(/^[①-⑨\s]+/, '').trim();
-        const tone = /配賦|按分/.test(word) ? 'ratio'
-          : /集計/.test(word) ? 'base'
-          : /演算|計算/.test(word) ? 'direct'
-          : /手入力/.test(word) ? 'manual'
-          : s.tone;
-        return { tag: `${CIRCLED[i] ?? ''}${word}`, tone, text: s.text };
-      });
+    // カードの中の行の札と色（①集計 → ②演算 → ③配賦）の型そろえは saveReportSpec の
+    // 正規化が受け持つ。書き手（ここと相談チャット）ごとに直すと片方だけ直らないため。
+    //
+    // 要件と帳票の読み方は別々に呼ぶ。1つのスキーマにまとめると構造化出力の文法が上限を超え、
+    // API が 400（grammar too large）を返して読み取りごと落ちる。材料（資料本文）は同じなので、
+    // 2本目はプロンプトキャッシュで読める（cachePrefix）。
     const result = await callStructured<Extracted>(
-      projectId, 'requirements', instruction, REQUIREMENTS_SCHEMA as unknown as Record<string, unknown>,
+      projectId, 'requirements', material, REQUIREMENTS_SCHEMA as unknown as Record<string, unknown>,
+      { cachePrefix: true, suffix: requirementsInstruction() },
     );
     const data = result.data;
+    const plansResult = await callStructured<{ outputPlans: { file: string; blocks: ExtractedBlock[] }[] }>(
+      projectId, 'output-plans', material, OUTPUT_PLANS_SCHEMA as unknown as Record<string, unknown>,
+      { cachePrefix: true, suffix: outputPlansInstruction() },
+    );
 
     // ファイル名を受領ファイルへ解決する。解決できた fileNotes だけがレポートで効く
     // （spec の fileNotes は受領時のファイル名で突き合わせるため）。
@@ -1009,7 +998,7 @@ async function runRequirementsExtract(projectId: number): Promise<RequirementsEx
 
     // 帳票ごとの読み方。フラットな抽出形（全 kind の項目が並ぶ）を ReportOutputBlock の判別型へ戻す。
     // 中身は normalizeReportSpec（saveReportSpec 経由）が上限・体裁を面倒みるので、ここは形合わせだけ
-    const outputPlans = data.outputPlans.map(p => {
+    const outputPlans = plansResult.data.outputPlans.map(p => {
       const id = idOf(p.file);
       if (id === null) { unresolved.add(p.file); return null; }
       const blocks = p.blocks.map((b): Record<string, unknown> | null => {
@@ -1021,10 +1010,7 @@ async function runRequirementsExtract(projectId: number): Promise<RequirementsEx
             key: b.flowKey, sourceNote: 'いただいたファイル', text: b.flowText,
             sources: b.flowSources, stages: b.flowStages, note: b.flowNote,
           };
-          case 'steps': return {
-            kind: 'steps', title: b.title,
-            cards: b.cards.map(c => ({ ...c, steps: normalizeStepLines(c.steps) })),
-          };
+          case 'steps': return { kind: 'steps', title: b.title, cards: b.cards };
           case 'check': return { kind: 'check', question: b.question, detail: b.detail };
           default: return null;
         }
@@ -1079,7 +1065,9 @@ async function runRequirementsExtract(projectId: number): Promise<RequirementsEx
 
     // 作られ方の図。読み方の note（架空の例である旨）はこちらで固定する — AI 任せにすると
     // 文言が揺れて、実データと誤読される書き方になり得る
-    const howMadeFigure = data.howMadeFigure.groups.length > 0
+    // 図が作れない案件では groups: [] で返る。項目そのものが欠けて返ることもあるので、
+    // 読み取り全体を落とさないよう存在チェックから入る
+    const howMadeFigure = (data.howMadeFigure?.groups?.length ?? 0) > 0
       ? {
           title: data.howMadeFigure.title,
           note: '数値は説明のための例です。実際の値ではございません。',
@@ -1518,6 +1506,15 @@ async function ensureDocDraft(projectId: number, force = false): Promise<void> {
         }
         if (!spec.howMadeFigure) {
           warnings.push('「作られ方（イメージ）」の図を起こせませんでした（手順の文書が無い案件では出ません）');
+        }
+        // ステップのカードだけが並んで、その前の1枚図が無い状態。03 が「カードの羅列」になる
+        const missingFlow = spec.outputPlans.filter(p => {
+          const kinds = p.blocks.map(b => (b as { kind?: string }).kind);
+          const at = kinds.indexOf('steps');
+          return at >= 0 && !kinds.slice(0, at).includes('flow');
+        }).map(p => p.file);
+        if (missingFlow.length > 0) {
+          warnings.push(`ステップの前に置く「何から何ができるか」の図を起こせませんでした（${missingFlow.join(' / ')}）`);
         }
         if (spec.reproduce.length === 0) {
           warnings.push('再現するアウトプットを資料から特定できませんでした。要件定義書に対象の記載があるかご確認ください');
