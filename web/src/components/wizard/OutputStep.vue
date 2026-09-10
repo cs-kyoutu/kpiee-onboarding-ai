@@ -10,9 +10,9 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   getReportChat, sendReportChat, getReportSpec, getReportFacts, saveReportSpec, reportUrl,
-  extractRequirements,
+  extractRequirements, getDocDraft,
   type ReportChatMessage, type ReportFacts, type ReportFileNote, type ReportOverviewItem,
-  type ReportSpec, type ReportSpecItems, type ReportSpecSections,
+  type ReportSpec, type ReportSpecItems, type ReportSpecSections, type RequirementsDraft,
 } from '../../api'
 
 const props = defineProps<{ projectId: number }>()
@@ -132,27 +132,53 @@ function syncRequirements(s: ReportSpec) {
 
 const lines = (s: string): string[] => s.split('\n').map(t => t.trim()).filter(Boolean)
 
-/** 業務資料から読み取って編集欄へ入れる。保存はしない（読み取り違いをそのまま載せないため） */
+/** 読み取り結果を編集欄へ入れる。保存はしない（読み取り違いをそのまま載せないため） */
+function fillFromDraft(r: RequirementsDraft, auto: boolean) {
+  fReproduce.value = r.spec.reproduce
+  fHowMade.value = r.spec.howMade.join('\n')
+  fHowMadeSource.value = r.spec.howMadeSource
+  fAssumptions.value = r.spec.assumptions.join('\n')
+  fFileNotes.value = r.spec.fileNotes
+  reqDirty.value = true
+  reqNotes.value = []
+  const n = r.spec.reproduce.length + r.spec.howMade.length + r.spec.assumptions.length + r.spec.fileNotes.length
+  reqMsg.value = n === 0
+    ? `業務資料 ${r.docCount} 件からは要件を読み取れませんでした。`
+    : `業務資料（${r.docNames.join('、')}）から ${n} 件${auto ? '自動で' : ''}読み取りました。確かめて「レポートへ反映」を押してください。`
+  if (r.unresolved.length > 0) {
+    reqNotes.value.push(`受領ファイルに見当たらない名前: ${r.unresolved.join('、')} — 未受領の可能性があります`)
+  }
+}
+
+/** spec が空か（＝要件をまだ一度も反映していないか）。空のときだけ下書きを自動で入れる */
+function specEmpty(s: ReportSpec): boolean {
+  return s.reproduce.length === 0 && s.howMade.length === 0 && s.assumptions.length === 0 && s.fileNotes.length === 0
+}
+
+/** 下書きを見て、未反映なら編集欄へ自動で入れる。読み取り中なら true（ポーリング継続） */
+async function tryAutoFill(): Promise<boolean> {
+  if (reqDirty.value || (spec.value && !specEmpty(spec.value))) return false // 反映済み・編集中は触らない
+  const d = await getDocDraft(props.projectId)
+  if (d.status === 'pending') {
+    reqMsg.value = '業務資料を読み取っています…（できたら自動でここに入ります）'
+    return true
+  }
+  if (d.status === 'done' && d.requirements) fillFromDraft(d.requirements, true)
+  else if (d.status === 'failed') reqMsg.value = `資料の読み取りに失敗しました: ${d.error ?? ''}`
+  else if (reqMsg.value.startsWith('業務資料を読み取って')) reqMsg.value = ''
+  return false
+}
+
+/** 手動の読み直し（資料を差し替えた直後などに押す） */
 async function readRequirements() {
   reqBusy.value = true
   reqMsg.value = ''
-  reqNotes.value = []
   error.value = ''
   try {
-    const r = await extractRequirements(props.projectId)
-    fReproduce.value = r.spec.reproduce
-    fHowMade.value = r.spec.howMade.join('\n')
-    fHowMadeSource.value = r.spec.howMadeSource
-    fAssumptions.value = r.spec.assumptions.join('\n')
-    fFileNotes.value = r.spec.fileNotes
-    reqDirty.value = true
-    const n = r.spec.reproduce.length + r.spec.howMade.length + r.spec.assumptions.length + r.spec.fileNotes.length
-    reqMsg.value = n === 0
-      ? `業務資料 ${r.docCount} 件からは要件を読み取れませんでした。`
-      : `業務資料 ${r.docCount} 件（${r.docNames.join('、')}）から ${n} 件読み取りました。確かめてから保存してください。`
-    if (r.unresolved.length > 0) {
-      reqNotes.value.push(`受領ファイルに見当たらない名前: ${r.unresolved.join('、')} — 未受領の可能性があります`)
-    }
+    const d = await getDocDraft(props.projectId)
+    if (d.status === 'done' && d.requirements) fillFromDraft(d.requirements, false)
+    else if (d.status === 'pending') reqMsg.value = '読み取り中です。少し待ってからもう一度押してください。'
+    else fillFromDraft(await extractRequirements(props.projectId), false) // 下書きが無い（旧データ等）ときだけその場で読む
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -276,11 +302,22 @@ function download() {
 }
 
 // 応答は非同期に届く。届いたら指定を取り直し、AI が構成を変えていたらプレビューも作り直す
+let draftTimer: ReturnType<typeof setInterval> | null = null
 let timer: ReturnType<typeof setInterval> | null = null
 onMounted(async () => {
   await loadSpec()
   await loadChat()
   void loadFacts() // 重いので待たない（届いたらタイルが埋まる）
+  // 要件が未反映なら、業務資料の下書きを自動で編集欄へ入れる（反映は人が押す）
+  try {
+    if (await tryAutoFill()) {
+      draftTimer = setInterval(async () => {
+        try {
+          if (!(await tryAutoFill()) && draftTimer) { clearInterval(draftTimer); draftTimer = null }
+        } catch { /* 取れない間は次の周回で */ }
+      }, 8000)
+    }
+  } catch { /* 下書きが無くても相談・編集はできる */ }
   timer = setInterval(async () => {
     if (!pending.value) return
     const before = JSON.stringify(spec.value)
@@ -297,7 +334,10 @@ onMounted(async () => {
     emit('changed')
   }, 2500)
 })
-onUnmounted(() => { if (timer) clearInterval(timer) })
+onUnmounted(() => {
+  if (timer) clearInterval(timer)
+  if (draftTimer) clearInterval(draftTimer)
+})
 </script>
 
 <template>
@@ -396,12 +436,12 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
           <p class="muted">
             レポートの <b>02 再現するアウトプットの確認</b> になる部分です。
             数式には残らないため、<b>要件定義書・手順書が唯一の根拠</b>になります。
-            資料から読み取って、言い回しを直してから保存してください。
+            資料を入れてあれば読み取り結果が自動でここに入るので、言い回しを直して「反映」を押してください。
           </p>
 
           <div class="wz-actions">
             <button :disabled="reqBusy || reqSaving" @click="readRequirements">
-              {{ reqBusy ? '読み取り中…' : '業務資料から読み取る' }}
+              {{ reqBusy ? '読み取り中…' : '資料から読み直す' }}
             </button>
             <button class="primary" :disabled="reqSaving || reqBusy" @click="saveRequirements">
               {{ reqSaving ? '保存中…' : 'この内容でレポートへ反映' }}

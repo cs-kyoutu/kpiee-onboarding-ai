@@ -8,10 +8,10 @@
 //   ここで人の業務知識を入れると、シート関係の確度補正とレポートの説明文に反映される。
 //
 // 自動検出は「初期案」として出すだけで、確定するのは人。ファイルが多い案件のために一括確定も置く。
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   getFileRelations, addFileRelation, acceptAllFileRelations, updateFileRelation, deleteFileRelation,
-  extractFileRelationsFromDocs,
+  extractFileRelationsFromDocs, getDocDraft,
   type FileRelationsData, type FileRelType, type FileRelVerdict, type StepFlowProposal,
 } from '../api'
 
@@ -127,24 +127,72 @@ function addManual() {
   })
 }
 
-/** 手順書を読み取って案を出す。保存はしない（読み取り違いをそのまま登録しないため） */
+/**
+ * 手順書の読み取り案。資料を入れた時点で裏で読んであり（doc-draft）、この画面へ着いたら
+ * 登録済みが無いうちは黙って案を出す。登録は人（読み取り違いをそのまま載せないため）。
+ */
+function showProposals(r: { proposals: StepFlowProposal[]; unresolved: string[]; docCount: number }, auto: boolean) {
+  // 既に登録済みの向きは案から外す（自動表示のたびに同じ案が並び直さないように）
+  const declaredKeys = new Set((data.value?.declared ?? []).map(d => `${d.fromFile}>${d.toFile}`))
+  docProposals.value = r.proposals.filter(p => {
+    const from = p.fromArtifactId !== null ? files.value.find(f => f.id === p.fromArtifactId)?.label : null
+    const to = p.toArtifactId !== null ? files.value.find(f => f.id === p.toArtifactId)?.label : null
+    return !(from && to && declaredKeys.has(`${from}>${to}`))
+  })
+  docUnresolved.value = r.unresolved
+  docMsg.value = docProposals.value.length === 0
+    ? (r.proposals.length > 0 ? '資料から読み取れた受け渡しは、すべて登録済みです。' : '資料からファイル間の受け渡しを読み取れませんでした。')
+    : `業務資料 ${r.docCount} 件から ${docProposals.value.length} 件の受け渡しを${auto ? '自動で' : ''}読み取りました。内容を確かめてから登録してください。`
+}
+
+/** 下書きを見て案を出す。読み取り中なら true（ポーリング継続） */
+async function tryAutoProposals(): Promise<boolean> {
+  const d = await getDocDraft(props.projectId)
+  if (d.status === 'pending') {
+    docMsg.value = '業務資料（手順書）を読み取っています…（できたら自動で案を出します）'
+    return true
+  }
+  if (d.status === 'done' && d.stepflow) showProposals(d.stepflow, true)
+  else if (d.status === 'failed') docMsg.value = `資料の読み取りに失敗しました: ${d.error ?? ''}`
+  else if (docMsg.value.startsWith('業務資料（手順書）を読み取って')) docMsg.value = ''
+  return false
+}
+
+/** 手動の読み直し（資料を差し替えた直後などに押す） */
 async function readDocs() {
   docBusy.value = true
   docMsg.value = ''
   error.value = ''
   try {
-    const r = await extractFileRelationsFromDocs(props.projectId)
-    docProposals.value = r.proposals
-    docUnresolved.value = r.unresolved
-    docMsg.value = r.proposals.length === 0
-      ? '資料からファイル間の受け渡しを読み取れませんでした。'
-      : `業務資料 ${r.docCount} 件から ${r.proposals.length} 件の受け渡しを読み取りました。内容を確かめてから登録してください。`
+    const d = await getDocDraft(props.projectId)
+    if (d.status === 'done' && d.stepflow) showProposals(d.stepflow, false)
+    else if (d.status === 'pending') docMsg.value = '読み取り中です。少し待ってからもう一度押してください。'
+    else {
+      // 下書きが無い（旧データ等）場合だけ、その場で読む
+      const r = await extractFileRelationsFromDocs(props.projectId)
+      showProposals(r, false)
+    }
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
     docBusy.value = false
   }
 }
+
+// 画面に着いたら下書きの案を出す。読み取り中なら終わるまでポーリングする
+let draftTimer: ReturnType<typeof setInterval> | null = null
+onMounted(async () => {
+  try {
+    if (await tryAutoProposals()) {
+      draftTimer = setInterval(async () => {
+        try {
+          if (!(await tryAutoProposals()) && draftTimer) { clearInterval(draftTimer); draftTimer = null }
+        } catch { /* 取れない間は次の周回で */ }
+      }, 8000)
+    }
+  } catch { /* 下書きが無くても手動登録はできる */ }
+})
+onUnmounted(() => { if (draftTimer) clearInterval(draftTimer) })
 
 /** 手順書から読み取った案を1件登録する */
 function confirmDocProposal(p: StepFlowProposal) {
@@ -207,15 +255,16 @@ onMounted(load)
              資料を貰っているなら手で入れ直さずここから起こす。確定は人が行う。 -->
         <section class="frsec">
           <div class="frhead">
-            <h3>手順書から読み取る</h3>
-            <button :disabled="docBusy || busy" @click="readDocs">
-              {{ docBusy ? '読み取り中…' : '業務資料を読み取る' }}
+            <h3>手順書から読み取った案</h3>
+            <button class="link" :disabled="docBusy || busy" @click="readDocs">
+              {{ docBusy ? '読み取り中…' : '読み直す' }}
             </button>
           </div>
           <p class="muted">
-            「資料アップロード」で入れた<strong>手順書・要件定義書</strong>から、
-            <strong>どのファイルから何を付与するか</strong>と<strong>その順番（ステップ）</strong>を読み取ります。
-            ステップを登録すると、顧客共有レポートの全体関係図が<strong>手順の並び</strong>で描かれます。
+            ステップ1で入れた<strong>手順書・要件定義書</strong>から、
+            <strong>どのファイルから何を付与するか</strong>と<strong>その順番（ステップ）</strong>を
+            自動で読み取って、ここに案として出します。<strong>登録するのはあなたです。</strong>
+            登録すると、顧客共有レポートの全体関係図が<strong>手順の並び</strong>で描かれます。
           </p>
           <p v-if="docMsg" class="muted frempty">{{ docMsg }}</p>
           <p v-if="docUnresolved.length > 0" class="muted frempty">

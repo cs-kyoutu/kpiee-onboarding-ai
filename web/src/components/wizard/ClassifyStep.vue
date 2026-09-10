@@ -8,10 +8,10 @@
 // 「確定」は全ファイルの役割を明示的に保存し、roles_confirmed の印を立てる（人が見た証跡）。
 // 確定後は編集をロックする。後段（関係図・レポート）がこの分類を前提に作られるため、
 // 気づかず書き換わるのを防ぐ。直したいときは「確定を解除」で明示的に開けてもらう。
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
-  patch, setProjectFlag, clearProjectFlag, extractRequirements,
-  type Artifact, type SheetClassification,
+  patch, setProjectFlag, clearProjectFlag, getDocDraft,
+  type Artifact, type RequirementsDraft, type SheetClassification,
 } from '../../api'
 
 const props = defineProps<{ projectId: number; artifacts: Artifact[]; confirmed: boolean }>()
@@ -82,45 +82,86 @@ function buildBooks() {
  * 業務資料（要件定義書）の指定をこの画面へ当て込む。
  *
  * 「どれが最終アウトプットか」「どのタブか」は要件定義シートに書かれている指定で、
- * 構造からは決められない。資料を貰っているのに人が選び直すのは二度手間なので、
- * 資料から読み取って選択状態へ当てる。保存はしない（確定はいつもどおり人が押す）。
+ * 構造からは決められない。資料は入れた時点で裏で読んであり（doc-draft）、この画面へ着いたら
+ * 未確定のうちは黙って当て込む。保存はしない（確定はいつもどおり人が押す）。
  */
 const hintBusy = ref(false)
 const hintMsg = ref('')
 const hintNotes = ref<string[]>([])
+/** 同じ下書きを二度当てない（当てたあと人が直したものを、ポーリングで上書きしない） */
+const appliedDraftAt = ref('')
 
+function applyHints(r: RequirementsDraft, auto: boolean) {
+  hintNotes.value = []
+  let applied = 0
+  const skipped: string[] = []
+  for (const h of r.roleHints) {
+    const book = books.value.find(b => b.artifactId === h.artifactId)
+    const row = book?.rows.find(x => x.sheet === h.sheet)
+    if (!book || !row || !h.sheetFound) {
+      skipped.push(`${h.file}${h.sheet ? `!${h.sheet}` : ''}`)
+      continue
+    }
+    row.role = h.role
+    row.reason = `資料の指定: ${h.reason}`
+    applied++
+  }
+  saved.value = false
+  hintMsg.value = applied === 0
+    ? `業務資料 ${r.docCount} 件からシートの指定は読み取れませんでした。`
+    : `要件定義書の指定を ${applied} シートに${auto ? '自動で' : ''}当てました。内容を確かめて「この分類で確定する」を押してください。`
+  if (skipped.length > 0) hintNotes.value.push(`当てられなかった指定: ${skipped.join('、')}（シート名の言い換えか未受領の可能性）`)
+  if (r.unresolved.length > 0) hintNotes.value.push(`受領ファイルに見当たらない名前: ${r.unresolved.join('、')}`)
+}
+
+/** 下書きを見て、未確定なら自動で当てる。読み取り中なら true（ポーリング継続）を返す */
+async function tryAutoApply(): Promise<boolean> {
+  const d = await getDocDraft(props.projectId)
+  if (d.status === 'pending') {
+    hintMsg.value = '要件定義書を読み取っています…（できたら自動で当てます）'
+    return true
+  }
+  if (d.status === 'done' && d.requirements && d.updated_at !== appliedDraftAt.value && !locked.value) {
+    appliedDraftAt.value = d.updated_at ?? ''
+    applyHints(d.requirements, true)
+  } else if (d.status === 'failed') {
+    hintMsg.value = `資料の読み取りに失敗しました: ${d.error ?? ''}`
+  } else if (hintMsg.value.startsWith('要件定義書を読み取って')) {
+    hintMsg.value = ''
+  }
+  return false
+}
+
+/** 手動の当て直し（自動で当てたあと、直し過ぎて戻したいときに押す） */
 async function applyDocHints() {
   hintBusy.value = true
-  hintMsg.value = ''
-  hintNotes.value = []
   error.value = ''
   try {
-    const r = await extractRequirements(props.projectId)
-    let applied = 0
-    const skipped: string[] = []
-    for (const h of r.roleHints) {
-      const book = books.value.find(b => b.artifactId === h.artifactId)
-      const row = book?.rows.find(x => x.sheet === h.sheet)
-      if (!book || !row || !h.sheetFound) {
-        skipped.push(`${h.file}${h.sheet ? `!${h.sheet}` : ''}`)
-        continue
-      }
-      row.role = h.role
-      row.reason = `資料の指定: ${h.reason}`
-      applied++
-    }
-    saved.value = false
-    hintMsg.value = applied === 0
-      ? `業務資料 ${r.docCount} 件からシートの指定は読み取れませんでした。`
-      : `業務資料 ${r.docCount} 件から ${applied} シートの役割を当てました。内容を確かめて「この分類で確定する」を押してください。`
-    if (skipped.length > 0) hintNotes.value.push(`当てられなかった指定: ${skipped.join('、')}（シート名の言い換えか未受領の可能性）`)
-    if (r.unresolved.length > 0) hintNotes.value.push(`受領ファイルに見当たらない名前: ${r.unresolved.join('、')}`)
+    const d = await getDocDraft(props.projectId)
+    if (d.status === 'done' && d.requirements) applyHints(d.requirements, false)
+    else if (d.status === 'pending') hintMsg.value = '要件定義書を読み取っています。少し待ってからもう一度押してください。'
+    else hintMsg.value = d.status === 'failed' ? `資料の読み取りに失敗しました: ${d.error ?? ''}` : '業務資料がまだありません。ステップ1で入れてください。'
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
     hintBusy.value = false
   }
 }
+
+// 画面に着いたら下書きを見て自動で当てる。読み取り中なら終わるまでポーリングする
+let draftTimer: ReturnType<typeof setInterval> | null = null
+onMounted(async () => {
+  try {
+    if (await tryAutoApply()) {
+      draftTimer = setInterval(async () => {
+        try {
+          if (!(await tryAutoApply()) && draftTimer) { clearInterval(draftTimer); draftTimer = null }
+        } catch { /* 取れない間は次の周回で */ }
+      }, 8000)
+    }
+  } catch { /* 下書きが無くても分類はできる */ }
+})
+onUnmounted(() => { if (draftTimer) clearInterval(draftTimer) })
 
 /** 1ファイルの全シートを同じ役割にする（部門別ブックのように役割が揃っている場合の近道） */
 function applyAll(book: Book, role: string) {
@@ -185,15 +226,16 @@ watch(() => targets.value.map(a => a.id + ':' + (a.sheet_roles ?? '').length).jo
     <p v-if="error" class="error-box">{{ error }}</p>
     <p v-if="targets.length === 0" class="muted">解析済みのファイルがありません。前のステップで取り込んでください。</p>
 
-    <!-- 資料の指定を当て込む。自動判定では言い当てられない「最終アウトプット」「マスタ」が主目的 -->
+    <!-- 資料の指定の当て込み。資料を入れた時点で裏で読んであり、未確定ならこの画面で自動で当たる。
+         ボタンは「直し過ぎて戻したい」ときの当て直し用 -->
     <div v-if="targets.length > 0 && !locked" class="wz-card">
       <div class="wz-actions">
-        <button :disabled="hintBusy || saving" @click="applyDocHints">
-          {{ hintBusy ? '読み取り中…' : '業務資料の指定を当てる' }}
-        </button>
         <span class="muted">
-          ステップ1で入れた<b>要件定義書</b>から、対象タブ・マスタの指定を読み取って下の表へ当てます（保存はしません）。
+          ステップ1で入れた<b>要件定義書</b>の指定（対象タブ・マスタ）は、読み取りでき次第この表へ自動で当たります。
         </span>
+        <button class="link" :disabled="hintBusy || saving" @click="applyDocHints">
+          {{ hintBusy ? '読み取り中…' : '資料の指定を当て直す' }}
+        </button>
       </div>
       <p v-if="hintMsg" class="muted">{{ hintMsg }}</p>
       <ul v-if="hintNotes.length > 0" class="wz-list">

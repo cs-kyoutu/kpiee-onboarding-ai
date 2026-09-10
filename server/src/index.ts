@@ -176,6 +176,7 @@ app.delete('/api/projects/:id', async (req, res) => {
     await t.prepare(`DELETE FROM sql_chat_messages WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM sql_jobs WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM sql_column_maps WHERE project_id = ?`).run(projectId);
+    await t.prepare(`DELETE FROM doc_drafts WHERE project_id = ?`).run(projectId);
     // file_relations は artifacts を参照するので artifacts より先に消す
     await t.prepare(`DELETE FROM file_relations WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM artifacts WHERE project_id = ?`).run(projectId);
@@ -869,20 +870,33 @@ app.put('/api/projects/:id/report-spec', async (req, res) => {
  *
  * 保存はしない。読み取り違いをそのまま顧客レポートへ載せないため、確定は人が行う。
  */
-app.post('/api/projects/:id/requirements/extract', async (req, res) => {
-  const projectId = Number(req.params.id);
-  try {
+interface RequirementsExtractResult {
+  docCount: number;
+  docNames: string[];
+  spec: {
+    reproduce: { label: string; text: string }[];
+    howMade: string[];
+    howMadeSource: string;
+    assumptions: string[];
+    fileNotes: { file: string; note: string }[];
+  };
+  roleHints: {
+    file: string; artifactId: number | null; sheet: string; sheetFound: boolean; role: string; reason: string;
+  }[];
+  unresolved: string[];
+}
+
+async function runRequirementsExtract(projectId: number): Promise<RequirementsExtractResult> {
+  {
     if (!aiAvailable()) {
-      return res.status(400).json({ error: 'ANTHROPIC_API_KEY が未設定のため、資料の読み取りは使えません' });
+      throw new Error('ANTHROPIC_API_KEY が未設定のため、資料の読み取りは使えません');
     }
     const arts = await relationArtifacts(projectId);
-    if (arts.length === 0) return res.status(400).json({ error: '受領ファイルがまだありません' });
+    if (arts.length === 0) throw new Error('受領ファイルがまだありません');
     // Redash の物理カラム一覧（sql-columns）は要件の資料ではないので混ぜない
     const docs = (await listProjectDocs(projectId, 'doc')).filter(d => d.content.trim() !== '');
     if (docs.length === 0) {
-      return res.status(400).json({
-        error: '業務資料が登録されていません。要件定義シート・手順書（txt / md / docx / pdf）を先にアップロードしてください',
-      });
+      throw new Error('業務資料が登録されていません。要件定義シート・手順書（xlsx / txt / md / docx / pdf）を先にアップロードしてください');
     }
 
     // ファイルとシートの一覧を渡す。シート名まで渡すのは、資料が「対象タブはメイン」のように
@@ -951,7 +965,7 @@ app.post('/api/projects/:id/requirements/extract', async (req, res) => {
       };
     });
 
-    res.json({
+    return {
       docCount: docs.length,
       docNames: docs.map(d => d.filename),
       // そのまま PUT /report-spec へ渡せる形（画面で確認・編集してから保存する）
@@ -964,9 +978,15 @@ app.post('/api/projects/:id/requirements/extract', async (req, res) => {
       },
       roleHints,
       unresolved: [...unresolved],
-    });
+    };
+  }
+}
+
+app.post('/api/projects/:id/requirements/extract', async (req, res) => {
+  try {
+    res.json(await runRequirementsExtract(Number(req.params.id)));
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });
 
@@ -1188,18 +1208,23 @@ interface StepFlowProposal {
  *   「業務資料」として取り込めるので、その本文からステップ付きの受け渡しを起こす。
  *   確定は人が行う（自動保存しない）— 読み取り違いをそのまま顧客レポートへ載せないため。
  */
-app.post('/api/projects/:id/file-relations/from-docs', async (req, res) => {
-  const projectId = Number(req.params.id);
-  try {
+interface StepFlowExtractResult {
+  proposals: (StepFlowProposal & { fromArtifactId: number | null; toArtifactId: number | null })[];
+  unresolved: string[];
+  docCount: number;
+}
+
+async function runStepFlowExtract(projectId: number): Promise<StepFlowExtractResult> {
+  {
     if (!aiAvailable()) {
-      return res.status(400).json({ error: 'ANTHROPIC_API_KEY が未設定のため、手順書の読み取りは使えません' });
+      throw new Error('ANTHROPIC_API_KEY が未設定のため、手順書の読み取りは使えません');
     }
     const arts = await relationArtifacts(projectId);
-    if (arts.length === 0) return res.status(400).json({ error: '関係を登録できるファイルがまだありません' });
+    if (arts.length === 0) throw new Error('関係を登録できるファイルがまだありません');
     // Redash の物理カラム一覧（sql-columns）は手順書ではないので混ぜない
     const docs = (await listProjectDocs(projectId, 'doc')).filter(d => d.content.trim() !== '');
     if (docs.length === 0) {
-      return res.status(400).json({ error: '業務資料が登録されていません。手順書（txt / docx / md）を先にアップロードしてください' });
+      throw new Error('業務資料が登録されていません。手順書（xlsx / txt / docx / md）を先にアップロードしてください');
     }
     const fileList = arts.map(a => `- ${a.original_filename}`).join('\n');
     const body = docs.map(d => `<doc name="${d.filename}">\n${d.content}\n</doc>`).join('\n');
@@ -1229,12 +1254,113 @@ app.post('/api/projects/:id/file-relations/from-docs', async (req, res) => {
       fromArtifactId: idOf(s.fromFile),
       toArtifactId: idOf(s.toFile),
     }));
-    res.json({
+    return {
       proposals,
       // 読み取れたが受領ファイルに無い名前（未受領のファイルを指している可能性がある）
       unresolved: [...new Set(proposals.flatMap(p =>
         [p.fromArtifactId === null ? p.fromFile : '', p.toArtifactId === null ? p.toFile : ''].filter(Boolean)))],
       docCount: docs.length,
+    };
+  }
+}
+
+app.post('/api/projects/:id/file-relations/from-docs', async (req, res) => {
+  try {
+    res.json(await runStepFlowExtract(Number(req.params.id)));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ---- 業務資料の自動読み取り（下書き）----
+// 資料を入れたら黙って読み始め、各ステップに着いたときには案ができているようにする。
+// 「読み取るボタンがあることを知らないと反映されない」を無くすため（協和の再現で実際に踏まれた）。
+// 確定（分類の確定・関係の登録・レポートへの反映）は従来どおり人が行う — 自動になるのは読むところまで。
+
+/** 下書きの鮮度判定に使う署名。資料（doc）と受領ファイルの構成が変わったら読み直す */
+async function docDraftSignature(projectId: number): Promise<string> {
+  const docs = (await listProjectDocs(projectId, 'doc')).filter(d => d.content.trim() !== '');
+  const arts = await relationArtifacts(projectId);
+  return JSON.stringify({ d: docs.map(d => d.id).sort((a, b) => a - b), a: arts.map(a => a.id).sort((a, b) => a - b) });
+}
+
+const draftRunning = new Set<number>();
+
+/**
+ * 下書きが無い・古いときにバックグラウンドで読み直す（fire-and-forget）。
+ * 要件（reproduce 等）と手順（ブック関係の案）は別々の AI 呼び出しなので、
+ * 片方が失敗してももう片方は残す。
+ */
+async function ensureDocDraft(projectId: number): Promise<void> {
+  if (draftRunning.has(projectId)) return;
+  const docs = (await listProjectDocs(projectId, 'doc')).filter(d => d.content.trim() !== '');
+  const arts = await relationArtifacts(projectId);
+  if (docs.length === 0 || arts.length === 0 || !aiAvailable()) return; // 材料が揃うまで何もしない
+  const signature = await docDraftSignature(projectId);
+  const row = await db.prepare(`SELECT signature, status FROM doc_drafts WHERE project_id = ?`)
+    .get(projectId) as { signature: string; status: string } | undefined;
+  if (row && row.signature === signature && row.status !== 'failed') return; // 最新の下書きがある
+
+  draftRunning.add(projectId);
+  const upsert = async (patch: Record<string, unknown>) => {
+    const cols = Object.keys(patch);
+    const updated = await db.prepare(
+      `UPDATE doc_drafts SET ${cols.map(c => `${c} = ?`).join(', ')}, updated_at = ${db.driver === 'pg' ? 'now()' : "datetime('now')"} WHERE project_id = ?`,
+    ).run(...cols.map(c => patch[c]), projectId);
+    if (updated.changes === 0) {
+      await db.prepare(
+        `INSERT INTO doc_drafts (project_id, ${cols.join(', ')}) VALUES (?${', ?'.repeat(cols.length)})`,
+      ).run(projectId, ...cols.map(c => patch[c]));
+    }
+  };
+  await upsert({ signature, status: 'pending', error: null });
+
+  void (async () => {
+    try {
+      const [reqResult, flowResult] = await Promise.allSettled([
+        runRequirementsExtract(projectId),
+        runStepFlowExtract(projectId),
+      ]);
+      const errors: string[] = [];
+      const patch: Record<string, unknown> = {};
+      if (reqResult.status === 'fulfilled') patch.requirements = JSON.stringify(reqResult.value);
+      else errors.push(`要件: ${reqResult.reason instanceof Error ? reqResult.reason.message : String(reqResult.reason)}`);
+      if (flowResult.status === 'fulfilled') patch.stepflow = JSON.stringify(flowResult.value);
+      else errors.push(`手順: ${flowResult.reason instanceof Error ? flowResult.reason.message : String(flowResult.reason)}`);
+      patch.status = errors.length === 2 ? 'failed' : 'done';
+      patch.error = errors.length > 0 ? errors.join(' / ') : null;
+      await upsert(patch);
+    } catch (e) {
+      await upsert({ status: 'failed', error: String(e) }).catch(() => {});
+    } finally {
+      draftRunning.delete(projectId);
+    }
+  })();
+}
+
+/** 下書きの取得。古ければ裏で読み直しを蹴る（画面はポーリングで pending → done を拾う） */
+app.get('/api/projects/:id/doc-draft', async (req, res) => {
+  const projectId = Number(req.params.id);
+  try {
+    void ensureDocDraft(projectId).catch(e => console.error(`[doc-draft] project=${projectId}`, e));
+    const row = await db.prepare(
+      `SELECT signature, status, error, requirements, stepflow, updated_at FROM doc_drafts WHERE project_id = ?`,
+    ).get(projectId) as {
+      signature: string; status: string; error: string | null;
+      requirements: string | null; stepflow: string | null; updated_at: string;
+    } | undefined;
+    if (!row) {
+      const docs = (await listProjectDocs(projectId, 'doc')).filter(d => d.content.trim() !== '');
+      return res.json({ status: docs.length > 0 ? 'pending' : 'none' });
+    }
+    const stale = row.signature !== await docDraftSignature(projectId);
+    res.json({
+      // 署名がずれている間（読み直し中）は pending 扱いにして、古い案を新しい資料の案として見せない
+      status: stale && row.status !== 'failed' ? 'pending' : row.status,
+      error: row.error,
+      requirements: row.requirements ? JSON.parse(row.requirements) : null,
+      stepflow: row.stepflow ? JSON.parse(row.stepflow) : null,
+      updated_at: row.updated_at,
     });
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -1364,6 +1490,8 @@ app.post('/api/projects/:id/docs', upload.single('file'), async (req, res) => {
   try {
     const id = await addProjectDoc(projectId, filename, req.file.buffer, kind as ProjectDocKind);
     const doc = (await listProjectDocs(projectId)).find(d => d.id === id)!;
+    // 資料が変わったので下書きの読み直しを裏で始める（各ステップに着く頃には案ができている）
+    if (kind === 'doc') void ensureDocDraft(projectId).catch(() => {});
     res.status(201).json({
       id: doc.id, filename: doc.filename, kind: doc.kind, byte_size: doc.byte_size,
       text_length: doc.content.length, extract_error: doc.extract_error, created_at: doc.created_at,
@@ -1395,6 +1523,7 @@ app.post('/api/projects/:id/docs/from-drive', async (req, res) => {
     const { filename, buffer } = await fetchDriveDoc(url);
     const id = await addProjectDoc(projectId, filename, buffer, kind as ProjectDocKind);
     const doc = (await listProjectDocs(projectId)).find(d => d.id === id)!;
+    if (kind === 'doc') void ensureDocDraft(projectId).catch(() => {});
     res.status(201).json({
       id: doc.id, filename: doc.filename, kind: doc.kind, byte_size: doc.byte_size,
       text_length: doc.content.length, extract_error: doc.extract_error, created_at: doc.created_at,

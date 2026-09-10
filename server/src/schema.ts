@@ -237,6 +237,20 @@ CREATE TABLE IF NOT EXISTS sql_column_maps (
   note TEXT NOT NULL DEFAULT ''
 );
 
+-- 業務資料の自動読み取りの下書き（案件ごとに1件）。
+-- 資料を入れたら黙って読み始め、各ステップに着いたときには案ができているようにするための置き場。
+-- requirements = 要件（reproduce / roleHints 等）、stepflow = 手順（ブック関係の案）。どちらも JSON。
+-- signature は資料＋受領ファイルの構成。変わったら読み直す。
+CREATE TABLE IF NOT EXISTS doc_drafts (
+  project_id INTEGER PRIMARY KEY REFERENCES projects(id),
+  signature TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  error TEXT,
+  requirements TEXT,
+  stepflow TEXT,
+  updated_at ${ts}
+);
+
 -- 構築した SQLジョブ（1案件に複数本。協和は STEP1〜4 ＋ 統合の5本）。
 -- output_spec は出力仕様（順番 → 別名 → 予測物理名 → 原本の列 → 下流での用途）。
 -- ジョブ登録で別名は物理名に変わるため、これが無いと下流の担当者が参照名を辿れない。

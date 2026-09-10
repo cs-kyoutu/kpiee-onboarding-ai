@@ -1,4 +1,4 @@
-// 非同期 DB アダプタ（SQLite→Postgres 移行の土台）。
+﻿// 非同期 DB アダプタ（SQLite→Postgres 移行の土台）。
 // 既存コードは better-sqlite3 の同期 API（db.prepare(sql).get/all/run(...)）に依存するため、
 // 同じ形の非同期版 prepare() を提供して「await を付けるだけ」で移行できるようにする。
 // バックエンドは env で切替:
@@ -36,7 +36,7 @@ const isInsert = (sql: string) => /^\s*insert\b/i.test(sql);
 const hasReturning = (sql: string) => /\breturning\b/i.test(sql);
 // id 列を持たないテーブルへの INSERT には RETURNING id を付けない（project_id が PK のテーブル群）
 const noIdTable = (sql: string) =>
-  /\binto\s+(project_overviews|relation_graphs|report_specs|project_flags)\b/i.test(sql);
+  /\binto\s+(project_overviews|relation_graphs|report_specs|project_flags|doc_drafts)\b/i.test(sql);
 
 // ───────────────────────── Postgres ─────────────────────────
 function makePgDb(pool: pg.Pool, client?: pg.PoolClient): Db {

@@ -331,6 +331,23 @@ export function extractRequirements(projectId: number): Promise<RequirementsDraf
   return post<RequirementsDraft>(`/projects/${projectId}/requirements/extract`)
 }
 
+/**
+ * 業務資料の自動読み取りの下書き。資料を入れると裏で読み始め、各ステップに着いたときには
+ * 案ができている（「読み取るボタンを知らないと反映されない」を無くす）。
+ * status: none=資料なし / pending=読み取り中 / done / failed
+ */
+export interface DocDraft {
+  status: 'none' | 'pending' | 'done' | 'failed'
+  error?: string | null
+  requirements?: RequirementsDraft | null
+  stepflow?: { proposals: StepFlowProposal[]; unresolved: string[]; docCount: number } | null
+  updated_at?: string
+}
+
+export function getDocDraft(projectId: number): Promise<DocDraft> {
+  return get<DocDraft>(`/projects/${projectId}/doc-draft`)
+}
+
 // ---- SQL構築チャット ----
 // レポート読み合わせ後の工程。AI がナレッジ（kpiee-sql-builder）の4ターン運用で SQLジョブを組み立て、
 // 検証・本体・検算を取込済みの実データ（DuckDB サンドボックス）で自分で流す。

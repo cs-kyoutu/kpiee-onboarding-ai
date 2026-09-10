@@ -11,11 +11,11 @@
 //
 // 抽出できた文字数を必ず出す。0 文字は「資料を入れたのに何も変わらない」状態そのもので、
 // 黙って一覧に並べると気づけないため、警告として見せる。
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   getProjectDocs, uploadProjectDoc, importDocFromDrive, getProjectDocText, deleteProjectDoc,
-  browseDrive, googleStatus,
-  type ProjectDoc, type DriveFolder, type DriveSheet, type GoogleStatus,
+  browseDrive, googleStatus, getDocDraft,
+  type DocDraft, type ProjectDoc, type DriveFolder, type DriveSheet, type GoogleStatus,
 } from '../../api'
 import ScriptsPanel from '../ScriptsPanel.vue'
 
@@ -89,6 +89,7 @@ async function importFromDrive(f: DriveSheet) {
   try {
     await importDocFromDrive(props.projectId, f.id)
     await load()
+    watchDraft()
   } catch (e) {
     error.value = `${f.name}: ${String(e)}`
   } finally {
@@ -112,6 +113,7 @@ async function pick(ev: Event) {
   }
   busy.value = ''
   await load()
+  watchDraft() // 入れた資料は裏で自動読み取りが始まる。状態を追う
 }
 
 async function openText(d: ProjectDoc) {
@@ -136,6 +138,24 @@ async function remove(d: ProjectDoc) {
 }
 
 const kb = (n: number) => `${Math.max(1, Math.round(n / 1024)).toLocaleString()} KB`
+
+// 自動読み取りの状態。資料を入れると裏で AI が読み、後のステップ（分類・ブック関係・レポートの要件）へ
+// 案として自動で出る。ここではその進み具合だけを見せる（入れっぱなしで先へ進んで構わない）。
+const draft = ref<DocDraft | null>(null)
+let draftTimer: ReturnType<typeof setInterval> | null = null
+
+async function pollDraft() {
+  try {
+    draft.value = await getDocDraft(props.projectId)
+    if (draft.value.status !== 'pending' && draftTimer) { clearInterval(draftTimer); draftTimer = null }
+  } catch { /* 状態が取れなくても取り込みはできる */ }
+}
+
+function watchDraft() {
+  void pollDraft()
+  if (!draftTimer) draftTimer = setInterval(pollDraft, 8000)
+}
+onUnmounted(() => { if (draftTimer) clearInterval(draftTimer) })
 /** 取り込み済みかどうか（同じ資料を二度入れると AI へ二重に渡ってしまう） */
 const alreadyIn = (name: string) =>
   docs.value.some(d => d.filename === name || d.filename.replace(/\.[^.]+$/, '') === name)
@@ -149,6 +169,7 @@ watch(() => props.folderId, async id => {
 
 onMounted(async () => {
   await load()
+  if (docs.value.length > 0) watchDraft() // 既に資料がある案件は読み取り状態を出す
   try { conn.value = await googleStatus() } catch { /* サーバー未起動時は未接続扱い */ }
   if (conn.value.connected) {
     if (props.folderId && props.folderName) crumbs.value = [{ id: props.folderId, name: props.folderName }]
@@ -222,6 +243,16 @@ onMounted(async () => {
         </p>
       </div>
     </div>
+
+    <!-- 自動読み取りの状態。入れっぱなしで先へ進んでよい（後のステップに案として自動で出る） -->
+    <p v-if="draft && docs.length > 0" class="muted">
+      <span v-if="draft.status === 'pending'" class="badge info">AI が読み取り中…</span>
+      <span v-else-if="draft.status === 'done'" class="badge ok">読み取り済み</span>
+      <span v-else-if="draft.status === 'failed'" class="badge ng">読み取り失敗: {{ draft.error }}</span>
+      <span v-if="draft.status !== 'failed'">
+        読み取った内容は、分類確認・ブック関係・レポートの要件定義へ<b>案として自動で出ます</b>（確定はあなたが行います）。
+      </span>
+    </p>
 
     <p v-if="loading" class="muted">読み込み中…</p>
 
