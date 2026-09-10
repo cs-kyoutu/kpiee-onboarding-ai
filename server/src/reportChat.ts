@@ -193,9 +193,84 @@ const SPEC_TOOL = {
           required: ['file', 'note'],
         },
       },
+      outputPlans: {
+        type: 'array',
+        description: '03「ロジックの確認」の帳票ごとの読み方。担当者が「ステップの切り方を変えたい」'
+          + '「帳票の形の説明を直したい」と言ったらここを丸ごと作り直す（部分修正でも全ブロックを返す）。'
+          + 'ステップは資料の記載順ではなく業務の依存関係で切り、カードの見出しは「何を付与するか」で立てる',
+        items: {
+          type: 'object',
+          properties: {
+            file: { type: 'string', description: '対象の最終アウトプットのファイル名（受領時の名前そのまま）' },
+            blocks: {
+              type: 'array',
+              description: '上から並べる順。話の切れ目に heading、帳票の形は bullets、手順は steps、確認したいことは check',
+              items: {
+                type: 'object',
+                properties: {
+                  kind: { type: 'string', enum: ['heading', 'bullets', 'steps', 'check'] },
+                  title: { type: 'string', description: 'heading / bullets / steps の見出し。check では空文字' },
+                  lede: { type: 'string', description: 'heading の導入1文。他は空文字' },
+                  items: { type: 'array', items: { type: 'string' }, description: 'bullets の箇条書き。他は空配列' },
+                  cards: {
+                    type: 'array',
+                    description: 'steps のカード（1ステップ=1カード）。他は空配列',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        title: { type: 'string' },
+                        text: { type: 'string' },
+                        steps: {
+                          type: 'array',
+                          items: {
+                            type: 'object',
+                            properties: {
+                              tag: { type: 'string', description: '左の札（例: ①集計）' },
+                              tone: { type: 'string', enum: ['base', 'direct', 'ratio', 'manual', 'result'] },
+                              text: { type: 'string' },
+                            },
+                            required: ['tag', 'tone', 'text'],
+                          },
+                        },
+                        note: { type: 'string' },
+                      },
+                      required: ['title', 'text', 'steps', 'note'],
+                    },
+                  },
+                  question: { type: 'string', description: 'check の問い。他は空文字' },
+                  detail: { type: 'array', items: { type: 'string' }, description: 'check の補足。他は空配列' },
+                },
+                required: ['kind', 'title', 'lede', 'items', 'cards', 'question', 'detail'],
+              },
+            },
+          },
+          required: ['file', 'blocks'],
+        },
+      },
     },
   },
 } as const;
+
+/**
+ * 相談ツールのフラットなブロック（全 kind の項目が並ぶ形。構造化出力で union を避けるため）を
+ * ReportOutputBlock の判別型へ戻す。要件抽出（index.ts）と同じ変換。
+ */
+function shapeOutputPlans(raw: unknown): { file: string; blocks: Record<string, unknown>[] }[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  return raw.map(p => {
+    const plan = p as { file?: string; blocks?: Record<string, unknown>[] };
+    const blocks = (plan.blocks ?? []).map((b): Record<string, unknown> | null => {
+      switch (b.kind) {
+        case 'heading': return { kind: 'heading', title: b.title, lede: b.lede };
+        case 'bullets': return { kind: 'bullets', title: b.title, items: b.items, notes: [] };
+        case 'steps': return { kind: 'steps', title: b.title, cards: b.cards };
+        case 'check': return { kind: 'check', question: b.question, detail: b.detail };
+        default: return null;
+      }
+    }).filter((b): b is Record<string, unknown> => b !== null);
+    return { file: String(plan.file ?? ''), blocks };
+  }).filter(p => p.file !== '' && p.blocks.length > 0);
+}
 
 function systemText(facts: ProjectFacts, spec: ReportSpec): string {
   return [
@@ -290,7 +365,10 @@ export async function startReportChat(
         async call => {
           if (call.name !== 'update_report_spec') return `未知のツール: ${call.name}`;
           patched = call.input;
-          const saved = await saveReportSpec(projectId, call.input);
+          // outputPlans はフラットなブロック形で来るので、保存前に判別型へ戻す
+          const input = call.input as Record<string, unknown>;
+          const plans = shapeOutputPlans(input.outputPlans);
+          const saved = await saveReportSpec(projectId, plans ? { ...input, outputPlans: plans } : input);
           return JSON.stringify({ ok: true, spec: saved });
         },
         6,

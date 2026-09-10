@@ -1379,7 +1379,7 @@ const draftRunning = new Set<number>();
  * 要件（reproduce 等）と手順（ブック関係の案）は別々の AI 呼び出しなので、
  * 片方が失敗してももう片方は残す。
  */
-async function ensureDocDraft(projectId: number): Promise<void> {
+async function ensureDocDraft(projectId: number, force = false): Promise<void> {
   if (draftRunning.has(projectId)) return;
   const docs = (await listProjectDocs(projectId, 'doc')).filter(d => d.content.trim() !== '');
   const arts = await relationArtifacts(projectId);
@@ -1390,7 +1390,7 @@ async function ensureDocDraft(projectId: number): Promise<void> {
   // 抽出の項目を後から足したとき（outputPlans など）、古い下書きにはその項目が無い。
   // 署名が同じでも読み直して、既存の案件にも新しい項目が行き渡るようにする
   const legacy = row?.requirements != null && !row.requirements.includes('"outputPlans"');
-  if (row && row.signature === signature && row.status !== 'failed' && !legacy) return; // 最新の下書きがある
+  if (!force && row && row.signature === signature && row.status !== 'failed' && !legacy) return; // 最新の下書きがある
 
   draftRunning.add(projectId);
   const upsert = async (patch: Record<string, unknown>) => {
@@ -1511,6 +1511,25 @@ async function autoApplyDocDraft(projectId: number): Promise<void> {
     }
   }
 }
+
+/**
+ * 下書きの読み直し（強制）。資料が同じでも、抽出の質が変わったとき（モデル・指示の改善後）に
+ * 押し直せる入り口。読み直した結果は自動適用の対象になる（人が確定・編集済みのものは従来どおり守る）が、
+ * spec の outputPlans は「読み直し」の意思を尊重して、再抽出の結果で置き直す。
+ */
+app.post('/api/projects/:id/doc-draft/refresh', async (req, res) => {
+  const projectId = Number(req.params.id);
+  try {
+    // 読み直しで作り直したい対象（帳票の読み方）は空へ戻し、適用時に新しい結果が入るようにする。
+    // 人がその後に編集していた場合も「読み直す」を押した以上は作り直しの意思とみなす。
+    const cur = await loadReportSpec(projectId);
+    if (cur.outputPlans.length > 0) await saveReportSpec(projectId, { outputPlans: [] });
+    await ensureDocDraft(projectId, true);
+    res.status(202).json({ pending: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
 
 /** 下書きの取得。古ければ裏で読み直しを蹴る（画面はポーリングで pending → done を拾う） */
 app.get('/api/projects/:id/doc-draft', async (req, res) => {

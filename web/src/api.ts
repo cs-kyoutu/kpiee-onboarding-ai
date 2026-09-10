@@ -350,6 +350,11 @@ export function getDocDraft(projectId: number): Promise<DocDraft> {
   return get<DocDraft>(`/projects/${projectId}/doc-draft`)
 }
 
+/** 資料が同じでも読み直す（抽出の質が変わったとき・結果を作り直したいとき） */
+export function refreshDocDraft(projectId: number): Promise<{ pending: boolean }> {
+  return post<{ pending: boolean }>(`/projects/${projectId}/doc-draft/refresh`)
+}
+
 // ---- SQL構築チャット ----
 // レポート読み合わせ後の工程。AI がナレッジ（kpiee-sql-builder）の4ターン運用で SQLジョブを組み立て、
 // 検証・本体・検算を取込済みの実データ（DuckDB サンドボックス）で自分で流す。

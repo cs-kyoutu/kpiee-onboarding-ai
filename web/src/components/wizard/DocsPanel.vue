@@ -14,7 +14,7 @@
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   getProjectDocs, uploadProjectDoc, importDocFromDrive, getProjectDocText, deleteProjectDoc,
-  browseDrive, googleStatus, getDocDraft,
+  browseDrive, googleStatus, getDocDraft, refreshDocDraft,
   type DocDraft, type ProjectDoc, type DriveFolder, type DriveSheet, type GoogleStatus,
 } from '../../api'
 import ScriptsPanel from '../ScriptsPanel.vue'
@@ -161,6 +161,17 @@ function watchDraft() {
   if (!draftTimer) draftTimer = setInterval(pollDraft, 8000)
 }
 onUnmounted(() => { if (draftTimer) clearInterval(draftTimer) })
+
+/** 資料が同じでも読み直す（読み取りの質が上がったとき・結果を作り直したいとき） */
+async function redoDraft() {
+  try {
+    await refreshDocDraft(props.projectId)
+    draft.value = { status: 'pending' }
+    watchDraft()
+  } catch (e) {
+    error.value = String(e)
+  }
+}
 /** 取り込み済みかどうか（同じ資料を二度入れると AI へ二重に渡ってしまう） */
 const alreadyIn = (name: string) =>
   docs.value.some(d => d.filename === name || d.filename.replace(/\.[^.]+$/, '') === name)
@@ -257,6 +268,7 @@ onMounted(async () => {
       <span v-if="draft.status !== 'failed'">
         読み取った内容は、分類確認・ブック関係・レポートの要件定義へ<b>案として自動で出ます</b>（確定はあなたが行います）。
       </span>
+      <button v-if="draft.status !== 'pending'" class="link" @click="redoDraft">読み直す</button>
     </p>
 
     <p v-if="loading" class="muted">読み込み中…</p>
