@@ -320,6 +320,8 @@ export interface RequirementsDraft {
     howMadeSource: string
     assumptions: string[]
     fileNotes: { file: string; note: string }[]
+    /** 02-1 の「作られ方（イメージ）」の図。資料に手順が無ければ null */
+    howMadeFigure?: Record<string, unknown> | null
     /** 帳票ごとの読み方（03 に出す）。資料に手順・帳票の形が文書化されているときだけ入る */
     outputPlans?: { file: string; blocks: Record<string, unknown>[] }[]
   }

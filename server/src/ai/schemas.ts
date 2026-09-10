@@ -104,6 +104,57 @@ export const REQUIREMENTS_SCHEMA = {
         additionalProperties: false,
       },
     },
+    howMadeFigure: {
+      type: 'object',
+      description: '02-1 に置く「作られ方（イメージ）」の図。土台の1行（例: 得意先）に、ステップごとに'
+        + '列が足されて最終指標になるまでを1枚で見せる。資料に作成手順があるときだけ作る'
+        + '（無ければ groups を空配列にする）。sample は説明のための架空の例（万円単位のきりのよい数など）で、'
+        + '実データの数値は絶対に使わない',
+      properties: {
+        title: { type: 'string', description: '図の見出し。通常は空文字（既定「作られ方（イメージ）」が付く）' },
+        groups: {
+          type: 'array',
+          description: '左から並べる列のかたまり。[土台(base)] → [ステップごと(direct/ratio)] → [＝最終指標(result)] の順',
+          items: {
+            type: 'object',
+            properties: {
+              label: { type: 'string', description: 'かたまりの上の札（例: ①68期実績（土台）、ステップ1・直接付与、＝営業利益）' },
+              tone: { type: 'string', enum: ['base', 'direct', 'ratio', 'manual', 'result'] },
+              columns: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    name: { type: 'string', description: '列名（例: 管理料）' },
+                    sample: { type: 'string', description: '説明のための架空の例（例: 20万円）。実データの値は使わない' },
+                  },
+                  required: ['name', 'sample'],
+                  additionalProperties: false,
+                },
+              },
+            },
+            required: ['label', 'tone', 'columns'],
+            additionalProperties: false,
+          },
+        },
+        steps: {
+          type: 'array',
+          description: '図の下の読み方（1段=1行）。tag は ①土台 / ステップ1〜 / 最終指標名',
+          items: {
+            type: 'object',
+            properties: {
+              tag: { type: 'string' },
+              tone: { type: 'string', enum: ['base', 'direct', 'ratio', 'manual', 'result'] },
+              text: { type: 'string', description: 'その段で何が足されるか（出所ファイルを含める）' },
+            },
+            required: ['tag', 'tone', 'text'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['title', 'groups', 'steps'],
+      additionalProperties: false,
+    },
     outputPlans: {
       type: 'array',
       description: '最終アウトプットの帳票ごとの読み方（レポート03「ロジックの確認」に出す）。'
