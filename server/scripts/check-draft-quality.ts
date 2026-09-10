@@ -16,6 +16,7 @@
 //   R5 丸数字がカード内で連番（①②③…）
 //   R6 「作られ方（イメージ）」の図がある（groups に base と result を含む）
 //   R7 本文・sample に7桁以上の実数らしい数値が無い（大前提: 実データの数値を出さない）
+//   R8 steps の前に flow（何から何ができるかの1枚図）がある
 
 interface StepLine { tag: string; tone: string; text: string }
 interface Card { title: string; text: string; steps: StepLine[]; note: string }
@@ -78,6 +79,16 @@ check('R6 作られ方の図', fig !== null && figTones.has('base') && figTones.
 const allText = JSON.stringify(spec);
 const bigNumbers = allText.match(/\d{1,3}(,\d{3}){2,}|\d{7,}/g) ?? [];
 check('R7 実データ数値の混入なし', bigNumbers.length === 0, bigNumbers.slice(0, 3).join(' / ') || 'なし');
+
+// R8: steps を持つ帳票では、その前に flow がある
+let r8ok = true;
+const r8detail: string[] = [];
+for (const p of spec.outputPlans) {
+  const stepsIdx = p.blocks.findIndex(b => b.kind === 'steps');
+  if (stepsIdx < 0) continue;
+  if (!p.blocks.slice(0, stepsIdx).some(b => b.kind === 'flow')) { r8ok = false; r8detail.push(p.file); }
+}
+check('R8 steps の前の flow 図', r8ok, r8detail.join(' / ') || '適合');
 
 let failed = 0;
 for (const r of results) {

@@ -208,10 +208,23 @@ const SPEC_TOOL = {
               items: {
                 type: 'object',
                 properties: {
-                  kind: { type: 'string', enum: ['heading', 'bullets', 'steps', 'check'] },
-                  title: { type: 'string', description: 'heading / bullets / steps の見出し。check では空文字' },
+                  kind: { type: 'string', enum: ['heading', 'bullets', 'flow', 'steps', 'check'] },
+                  title: { type: 'string', description: 'heading / bullets / steps の見出し。check・flow では空文字' },
                   lede: { type: 'string', description: 'heading の導入1文。他は空文字' },
                   items: { type: 'array', items: { type: 'string' }, description: 'bullets の箇条書き。他は空配列' },
+                  flowKey: { type: 'string', description: 'flow: 突き合わせのキー。他は空文字' },
+                  flowText: { type: 'string', description: 'flow: 図の上の1〜2文。他は空文字' },
+                  flowSources: { type: 'array', items: { type: 'string' }, description: 'flow: 左に並べる受領ファイル。他は空配列' },
+                  flowStages: {
+                    type: 'array',
+                    description: 'flow: 右へ流れる段（土台→足し込み→最終）。他は空配列',
+                    items: {
+                      type: 'object',
+                      properties: { title: { type: 'string' }, note: { type: 'string' } },
+                      required: ['title', 'note'],
+                    },
+                  },
+                  flowNote: { type: 'string', description: 'flow: 図の下の注記。他は空文字' },
                   cards: {
                     type: 'array',
                     description: 'steps のカード（1ステップ=1カード）。他は空配列',
@@ -240,7 +253,7 @@ const SPEC_TOOL = {
                   question: { type: 'string', description: 'check の問い。他は空文字' },
                   detail: { type: 'array', items: { type: 'string' }, description: 'check の補足。他は空配列' },
                 },
-                required: ['kind', 'title', 'lede', 'items', 'cards', 'question', 'detail'],
+                required: ['kind', 'title', 'lede', 'items', 'flowKey', 'flowText', 'flowSources', 'flowStages', 'flowNote', 'cards', 'question', 'detail'],
               },
             },
           },
@@ -263,6 +276,11 @@ function shapeOutputPlans(raw: unknown): { file: string; blocks: Record<string, 
       switch (b.kind) {
         case 'heading': return { kind: 'heading', title: b.title, lede: b.lede };
         case 'bullets': return { kind: 'bullets', title: b.title, items: b.items, notes: [] };
+        case 'flow': return {
+          kind: 'flow', lede: '', repeat: [], title: b.title,
+          key: b.flowKey, sourceNote: 'いただいたファイル', text: b.flowText,
+          sources: b.flowSources, stages: b.flowStages, note: b.flowNote,
+        };
         case 'steps': return { kind: 'steps', title: b.title, cards: b.cards };
         case 'check': return { kind: 'check', question: b.question, detail: b.detail };
         default: return null;

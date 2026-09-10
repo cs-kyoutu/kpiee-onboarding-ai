@@ -935,14 +935,20 @@ async function runRequirementsExtract(projectId: number): Promise<RequirementsEx
       '- 作成手順があるときは howMadeFigure（作られ方の図）も作る: 土台1行（例: 得意先・売上・粗利）に',
       '  ステップごとの列（グループ）が足され、最後に ＝最終指標 となる並び。sample は万円単位の',
       '  きりのよい架空の例にする（土台の売上500万円 → 各ステップの経費 → 最終指標が引き算で合う数字にする）',
+      '- steps ブロックの直前には flow ブロック（何から何ができるかの1枚図）を置く:',
+      '  flowSources=足し込む受領ファイル（括弧で何を付与するかを添える）、flowKey=突き合わせのキー、',
+      '  flowStages=［土台のファイル → 足し込みの途中 → 最終アウトプット］の3段、',
+      '  flowNote=貼り付けで数式が残らない案件ではその旨（「この図は伺った手順のとおりに描いたものです」）',
       '',
       `<received_files>\n${fileList}\n</received_files>`,
       `<docs>\n${body}\n</docs>`,
     ].join('\n');
 
     interface ExtractedBlock {
-      kind: 'heading' | 'bullets' | 'steps' | 'check';
+      kind: 'heading' | 'bullets' | 'flow' | 'steps' | 'check';
       title: string; lede: string; items: string[];
+      flowKey: string; flowText: string; flowSources: string[];
+      flowStages: { title: string; note: string }[]; flowNote: string;
       cards: { title: string; text: string; steps: { tag: string; tone: string; text: string }[]; note: string }[];
       question: string; detail: string[];
     }
@@ -1007,6 +1013,11 @@ async function runRequirementsExtract(projectId: number): Promise<RequirementsEx
         switch (b.kind) {
           case 'heading': return { kind: 'heading', title: b.title, lede: b.lede };
           case 'bullets': return { kind: 'bullets', title: b.title, items: b.items, notes: [] };
+          case 'flow': return {
+            kind: 'flow', lede: '', repeat: [], title: b.title,
+            key: b.flowKey, sourceNote: 'いただいたファイル', text: b.flowText,
+            sources: b.flowSources, stages: b.flowStages, note: b.flowNote,
+          };
           case 'steps': return {
             kind: 'steps', title: b.title,
             cards: b.cards.map(c => ({ ...c, steps: normalizeStepLines(c.steps) })),

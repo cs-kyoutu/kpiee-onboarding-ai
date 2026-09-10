@@ -171,13 +171,36 @@ export const REQUIREMENTS_SCHEMA = {
             items: {
               type: 'object',
               properties: {
-                kind: { type: 'string', enum: ['heading', 'bullets', 'steps', 'check'], description: 'ブロックの種類' },
-                title: { type: 'string', description: 'heading / bullets / steps の見出し。check では空文字' },
+                kind: {
+                  type: 'string', enum: ['heading', 'bullets', 'flow', 'steps', 'check'],
+                  description: 'ブロックの種類。flow は steps の前に置く「何から何ができるか」の1枚図',
+                },
+                title: { type: 'string', description: 'heading / bullets / steps の見出し。check・flow では空文字' },
                 lede: { type: 'string', description: 'heading の導入1文。他の種類では空文字' },
                 items: {
                   type: 'array', items: { type: 'string' },
                   description: 'bullets の箇条書き（<b> で強調可）。他の種類では空配列',
                 },
+                flowKey: { type: 'string', description: 'flow: 突き合わせに使うキー（例: 集計得意先CD）。他の種類では空文字' },
+                flowText: { type: 'string', description: 'flow: 図の上に置く1〜2文（土台に何を足して何を出すか。<b> 可）。他では空文字' },
+                flowSources: {
+                  type: 'array', items: { type: 'string' },
+                  description: 'flow: 左に並べる受領ファイル（例: ⑧得意先マスタ（部門コード））。他では空配列',
+                },
+                flowStages: {
+                  type: 'array',
+                  description: 'flow: 右へ流れる段（通常3段: 土台 → 足し込み → 最終指標）。他では空配列',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      title: { type: 'string', description: '段の名前（例: ①68期集計得意先別実績）' },
+                      note: { type: 'string', description: '段の下の添え書き（例: 売上・粗利の実績 ＝ 配賦の土台）' },
+                    },
+                    required: ['title', 'note'],
+                    additionalProperties: false,
+                  },
+                },
+                flowNote: { type: 'string', description: 'flow: 図の下の注記（貼り付けで数式が残らない旨など）。他では空文字' },
                 cards: {
                   type: 'array',
                   description: 'steps のカード（1ステップ=1カード、資料の順）。他の種類では空配列',
@@ -215,7 +238,7 @@ export const REQUIREMENTS_SCHEMA = {
                   description: 'check の補足（なぜ確認したいか）。他の種類では空配列',
                 },
               },
-              required: ['kind', 'title', 'lede', 'items', 'cards', 'question', 'detail'],
+              required: ['kind', 'title', 'lede', 'items', 'flowKey', 'flowText', 'flowSources', 'flowStages', 'flowNote', 'cards', 'question', 'detail'],
               additionalProperties: false,
             },
           },
