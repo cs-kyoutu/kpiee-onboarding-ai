@@ -75,13 +75,15 @@ onMounted(load)
 <template>
   <h1>オンボーディングプロジェクト</h1>
 
-  <div class="toolbar">
+  <!-- 読み込みが終わるまで操作は出さない。空に見える一覧＋新規ボタンだけが並ぶと、
+       「プロジェクトが無い」と誤解して重複作成につながる -->
+  <div v-if="!loading" class="toolbar">
     <button class="primary" @click="showForm = !showForm">＋ 新規プロジェクト</button>
     <input
       v-model="query" class="project-search" type="search"
       placeholder="顧客名・概要・番号で検索"
     >
-    <span v-if="query && !loading" class="muted">{{ filtered.length }} / {{ projects.length }} 件</span>
+    <span v-if="query" class="muted">{{ filtered.length }} / {{ projects.length }} 件</span>
   </div>
 
   <!-- 削除失敗などフォーム外の操作エラーもここで見えるように、フォームの外に置く -->
@@ -96,9 +98,16 @@ onMounted(load)
     </div>
   </div>
 
-  <p v-if="loading" class="muted">読み込み中…</p>
+  <!-- 読み込み中はカードの骨組みを出す（場所が分かり、空一覧と見分けがつく） -->
+  <div v-if="loading" class="card-grid">
+    <div v-for="i in 6" :key="i" class="project-card">
+      <p class="sk" style="width: 60%"></p>
+      <p class="sk" style="width: 90%; margin-top: 10px"></p>
+      <p class="sk" style="width: 40%; margin-top: 10px"></p>
+    </div>
+  </div>
 
-  <div class="card-grid">
+  <div v-else class="card-grid">
     <div v-for="p in filtered" :key="p.id" class="project-card" @click="router.push(`/projects/${p.id}`)">
       <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px">
         <strong>{{ p.customer_name }}</strong>
