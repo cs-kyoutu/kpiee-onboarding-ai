@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // SC-01 プロジェクト一覧。顧客名・進行段階・照合一致率をカード表示する。
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { get, post, deleteProject, type Project } from '../api'
 
@@ -11,6 +11,19 @@ const showForm = ref(false)
 const customerName = ref('')
 const description = ref('')
 const error = ref('')
+
+// 検索。案件が増えるとカードを目で探せなくなる。顧客名・概要・番号（#30 / 30）で絞る。
+// 一覧 API は全件返すので、クライアント側の絞り込みで足りる（数十件規模）
+const query = ref('')
+const filtered = computed(() => {
+  const q = query.value.trim().toLowerCase()
+  if (!q) return projects.value
+  const idQ = q.replace(/^#/, '')
+  return projects.value.filter(p =>
+    p.customer_name.toLowerCase().includes(q)
+    || (p.description ?? '').toLowerCase().includes(q)
+    || String(p.id) === idQ)
+})
 
 const STATUS_LABELS: Record<string, string> = {
   draft: '下書き',
@@ -64,6 +77,11 @@ onMounted(load)
 
   <div class="toolbar">
     <button class="primary" @click="showForm = !showForm">＋ 新規プロジェクト</button>
+    <input
+      v-model="query" class="project-search" type="search"
+      placeholder="顧客名・概要・番号で検索"
+    >
+    <span v-if="query && !loading" class="muted">{{ filtered.length }} / {{ projects.length }} 件</span>
   </div>
 
   <!-- 削除失敗などフォーム外の操作エラーもここで見えるように、フォームの外に置く -->
@@ -81,7 +99,7 @@ onMounted(load)
   <p v-if="loading" class="muted">読み込み中…</p>
 
   <div class="card-grid">
-    <div v-for="p in projects" :key="p.id" class="project-card" @click="router.push(`/projects/${p.id}`)">
+    <div v-for="p in filtered" :key="p.id" class="project-card" @click="router.push(`/projects/${p.id}`)">
       <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px">
         <strong>{{ p.customer_name }}</strong>
         <div style="display: flex; align-items: center; gap: 6px">
@@ -100,4 +118,5 @@ onMounted(load)
   </div>
 
   <p v-if="!loading && projects.length === 0" class="muted">プロジェクトがありません。「＋ 新規プロジェクト」から作成してください。</p>
+  <p v-else-if="!loading && filtered.length === 0" class="muted">「{{ query }}」に一致するプロジェクトはありません。</p>
 </template>

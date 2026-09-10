@@ -189,6 +189,7 @@ pre.code {
 .manual-ops summary { cursor: pointer; }
 
 .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+.project-search { width: 280px; font-size: 13px; }
 .error-box {
   background: var(--ng-bg); color: var(--ng); padding: 11px 14px; border-radius: var(--r-sm);
   font-size: 13px; margin-bottom: 14px; white-space: pre-wrap; border: 1px solid #f4c9c9;
