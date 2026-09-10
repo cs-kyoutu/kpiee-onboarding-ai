@@ -256,6 +256,10 @@ pre.code {
   animation: wz-spin 0.8s linear infinite;
 }
 @keyframes wz-spin { to { transform: rotate(360deg); } }
+.wz-spinner-sm { width: 14px; height: 14px; border-width: 2px; display: inline-block; vertical-align: -2px; }
+
+/* 「次へ」を押せない理由。ボタンの左に添える */
+.wz-nav-reason { font-size: 12.5px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
 
 /* ステップの中の2段階（物理カラムの確認 → SQL構築）。全体のステップ帯より一回り小さく */
 .wz-substeps { margin: 4px 0 14px; }
@@ -453,7 +457,6 @@ button.link.danger { color: var(--ng); }
   border: 2px solid rgba(49, 130, 246, 0.25); border-top-color: var(--primary);
   animation: wz-spin 0.7s linear infinite;
 }
-@keyframes wz-spin { to { transform: rotate(360deg); } }
 /* 読み込み中の行（表の骨組み）。中身が来るまで場所と件数が分かるようにする */
 .sk { background: linear-gradient(90deg, #f2f4f6 25%, #e9ecef 37%, #f2f4f6 63%); background-size: 400% 100%;
   animation: wz-sk 1.2s ease infinite; border-radius: 6px; height: 12px; }

@@ -16,7 +16,7 @@
 // 関係グラフ（重い処理）はこの画面では取らない。必要な「構造解析」の画面だけが取る。
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { get, type ProjectDetailData } from '../api'
+import { get, type ProjectDetailData, type ProjectDoc } from '../api'
 import DrivePickStep from '../components/wizard/DrivePickStep.vue'
 import DocsPanel from '../components/wizard/DocsPanel.vue'
 import ClassifyStep from '../components/wizard/ClassifyStep.vue'
@@ -45,8 +45,18 @@ const STEPS = [
 ] as const
 
 const parsedArtifacts = computed(() => project.value?.artifacts.filter(a => a.parse_status === 'done') ?? [])
+/** 解析がまだ走っているファイル。ある間は次へ進ませない（半分の状態で分類・解析を見せない） */
+const parsingArtifacts = computed(() =>
+  project.value?.artifacts.filter(a => a.parse_status !== 'done' && a.parse_status !== 'failed') ?? [])
+/** 要件定義書・手順書（本文が読めたもの）。ステップ1の必須条件 */
+const docs = ref<ProjectDoc[]>([])
+const hasDocs = computed(() => docs.value.some(d => d.kind === 'doc' && d.text_length > 0))
+
 const done = computed(() => ({
-  1: parsedArtifacts.value.length > 0,
+  // データが解析済みで、解析中のファイルが残っておらず、要件定義書が入っていること。
+  // 要件定義書を必須にするのは、無いまま進むと分類・関係・レポートの要件が全部空で出て
+  // 「生成が違う」となるため（協和の再現で実際に起きた）。
+  1: parsedArtifacts.value.length > 0 && parsingArtifacts.value.length === 0 && hasDocs.value,
   2: parsedArtifacts.value.length > 0 && (project.value?.flags ?? []).includes('roles_confirmed'),
   3: true, // 解析結果の確認。ここで止める条件は無い（表0件なら画面側で警告を出す）
   4: true, // レポートは何度でも作り直す場所。ここで止めると SQL構築へ進めない
@@ -59,9 +69,23 @@ function reachable(no: number): boolean {
   return true
 }
 
+/** 「次へ」を押せない理由。押せないボタンだけ見せると「なぜ？」になるので、理由を常に添える */
+const nextBlockedReason = computed(() => {
+  if (step.value >= STEPS.length || reachable(step.value + 1)) return ''
+  if (step.value === 1) {
+    if (parsedArtifacts.value.length === 0) return 'まずデータ（Excel / CSV）を取り込んでください。'
+    if (parsingArtifacts.value.length > 0) {
+      return `ファイルを解析しています（残り ${parsingArtifacts.value.length} 件）。終わると次へ進めます。`
+    }
+    if (!hasDocs.value) return '要件定義書・手順書を入れてください（下の「要件定義書・手順書の取り込み」から。次へ進む必須条件です）。'
+  }
+  if (step.value === 2 && !done.value[2]) return '「この分類で確定する」を押すと次へ進めます。'
+  return ''
+})
+
 const blockedReason = computed(() => {
   if (reachable(step.value)) return ''
-  if (!done.value[1]) return 'まずファイルを取り込んでください。'
+  if (!done.value[1]) return nextBlockedReason.value || 'まずステップ1（資料・データ取り込み）を終えてください。'
   if (!done.value[2]) return 'シートの分類を確定してください。'
   return ''
 })
@@ -69,7 +93,12 @@ const blockedReason = computed(() => {
 async function load() {
   error.value = ''
   try {
-    project.value = await get<ProjectDetailData>(`/projects/${props.projectId}`)
+    const [p, d] = await Promise.all([
+      get<ProjectDetailData>(`/projects/${props.projectId}`),
+      get<ProjectDoc[]>(`/projects/${props.projectId}/docs`).catch(() => [] as ProjectDoc[]),
+    ])
+    project.value = p
+    docs.value = d
   } catch (e) {
     error.value = String(e)
   }
@@ -94,7 +123,9 @@ onMounted(async () => {
     : ([1, 2, 3].find(n => !done.value[n]) ?? 4)
   timer = setInterval(() => {
     if (document.hidden) return
-    if (project.value?.runs.some(r => r.status === 'running')) void load()
+    // パイプライン実行中と、取り込んだファイルの解析中は状態が変わるので取り直す
+    // （解析が終わった瞬間に「次へ」が押せるようになる）
+    if (project.value?.runs.some(r => r.status === 'running') || parsingArtifacts.value.length > 0) void load()
   }, 2500)
 })
 onUnmounted(() => { if (timer) clearInterval(timer) })
@@ -135,6 +166,7 @@ watch(step, () => { void load() })
         />
         <DocsPanel
           :project-id="props.projectId" :folder-id="dataFolder.id" :folder-name="dataFolder.name"
+          @changed="load"
         />
       </template>
       <ClassifyStep
@@ -154,6 +186,11 @@ watch(step, () => { void load() })
     <div class="wz-nav">
       <button :disabled="step === 1" @click="step--">← 戻る</button>
       <span class="muted">{{ step }} / {{ STEPS.length }}</span>
+      <!-- 押せない理由をボタンの隣に常に出す（灰色のボタンだけだと「なぜ？」で止まる） -->
+      <span v-if="nextBlockedReason" class="wz-nav-reason">
+        <span v-if="parsingArtifacts.length > 0" class="wz-spinner wz-spinner-sm"></span>
+        {{ nextBlockedReason }}
+      </span>
       <button class="primary" :disabled="step === STEPS.length || !reachable(step + 1)" @click="next">次へ →</button>
     </div>
   </div>

@@ -25,6 +25,8 @@ const props = defineProps<{
   folderId?: string
   folderName?: string
 }>()
+// 要件定義書はステップ1完了の必須条件。増減をウィザードに伝えて「次へ」の可否を更新する
+const emit = defineEmits<{ changed: [] }>()
 
 const docs = ref<ProjectDoc[]>([])
 const loading = ref(true)
@@ -90,6 +92,7 @@ async function importFromDrive(f: DriveSheet) {
     await importDocFromDrive(props.projectId, f.id)
     await load()
     watchDraft()
+    emit('changed')
   } catch (e) {
     error.value = `${f.name}: ${String(e)}`
   } finally {
@@ -114,6 +117,7 @@ async function pick(ev: Event) {
   busy.value = ''
   await load()
   watchDraft() // 入れた資料は裏で自動読み取りが始まる。状態を追う
+  emit('changed')
 }
 
 async function openText(d: ProjectDoc) {
@@ -132,6 +136,7 @@ async function remove(d: ProjectDoc) {
     await deleteProjectDoc(d.id)
     if (opened.value?.id === d.id) opened.value = null
     await load()
+    emit('changed')
   } catch (e) {
     error.value = String(e)
   }
@@ -180,10 +185,10 @@ onMounted(async () => {
 
 <template>
   <div class="wz-card">
-    <h3 class="wz-h">要件定義書・手順書の取り込み（業務資料）</h3>
+    <h3 class="wz-h">要件定義書・手順書の取り込み <span class="badge warn">必須</span></h3>
     <p class="muted">
-      <b>要件定義書はここで入れます。</b>データ（Excel / CSV）ではなく、
-      <b>データの作り方を書いた文書</b>の受け口です。
+      <b>要件定義書はここで入れます（次のステップへ進む必須条件です）。</b>
+      データ（Excel / CSV）ではなく、<b>データの作り方を書いた文書</b>の受け口です。
       「何がアウトプットか」「どのファイルから何を付与するか」「配賦の例外」は数式には残らないため、
       これが唯一の根拠になります。入れると <b>AI 解読</b>と、次のステップの
       <b>分類の当て込み・レポートの前提</b>に効きます。
