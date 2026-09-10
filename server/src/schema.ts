@@ -255,6 +255,17 @@ CREATE TABLE IF NOT EXISTS doc_drafts (
   updated_at ${ts}
 );
 
+-- 物理カラム突き合わせの下書き（案件ごとに1件）。
+-- メモリ持ちだとデプロイ・再起動で結果ごと消え、「読み取っても0行」に見える（実際に起きた）。
+-- rows / tables / notes は JSON。確定（sql_column_maps への保存）は従来どおり人が行う。
+CREATE TABLE IF NOT EXISTS sql_column_drafts (
+  project_id INTEGER PRIMARY KEY REFERENCES projects(id),
+  status TEXT NOT NULL DEFAULT 'pending',
+  error TEXT,
+  result TEXT,
+  updated_at ${ts}
+);
+
 -- 構築した SQLジョブ（1案件に複数本。協和は STEP1〜4 ＋ 統合の5本）。
 -- output_spec は出力仕様（順番 → 別名 → 予測物理名 → 原本の列 → 下流での用途）。
 -- ジョブ登録で別名は物理名に変わるため、これが無いと下流の担当者が参照名を辿れない。

@@ -272,6 +272,35 @@ export const REQUIREMENTS_SCHEMA = {
   additionalProperties: false,
 } as const;
 
+/**
+ * 物理カラム突き合わせの AI 補助のスキーマ。
+ * 名寄せ（正規化した名前の一致）で当たらなかった原本の列と物理カラムを、
+ * 意味で対応づける（例: 「★売上金額（割戻金含む）」↔ 論理名「売上」）。
+ * 確信が持てない対応は返させない（間違った物理名は SQL の実行エラーより質が悪い）。
+ */
+export const COLUMN_MATCH_SCHEMA = {
+  type: 'object',
+  properties: {
+    matches: {
+      type: 'array',
+      description: '意味的に同じと判断できた対応だけ。確信が持てないものは含めない',
+      items: {
+        type: 'object',
+        properties: {
+          local_table: { type: 'string', description: '原本側のテーブル名（候補一覧の名前をそのまま）' },
+          local_column: { type: 'string', description: '原本側の列名（候補一覧の名前をそのまま）' },
+          physical_column: { type: 'string', description: '対応する物理カラム名（候補一覧の名前をそのまま）' },
+          reason: { type: 'string', description: 'なぜ同じと判断したか（1文）' },
+        },
+        required: ['local_table', 'local_column', 'physical_column', 'reason'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['matches'],
+  additionalProperties: false,
+} as const;
+
 /** P1 解読: 解読項目リスト＋全体構造の自然言語サマリのスキーマ */
 export const FINDINGS_SCHEMA = {
   type: 'object',

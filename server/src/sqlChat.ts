@@ -19,7 +19,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { db } from './db.js';
-import { aiAvailable, callWithTools } from './ai/client.js';
+import { aiAvailable, callStructured, callWithTools } from './ai/client.js';
+import { COLUMN_MATCH_SCHEMA } from './ai/schemas.js';
 import { collectByRole } from './pipeline/orchestrator.js';
 import { SqlSandbox, tableHeaderOf } from './match/simulate.js';
 import { scanQuery } from './validator/queryScanner.js';
@@ -195,18 +196,24 @@ export function matchColumnsToLocal(
   const norm = (s: string) => s.normalize('NFKC').replace(/[\s　_\-./／・()（）\[\]【】]/g, '').toLowerCase();
   // アセット名から番号・種別タグを落とす（「3-1. [raw] SPD収支管理表」→「SPD収支管理表」）
   const assetCore = (s: string) => norm(s.replace(/\[[^\]]*\]|【[^】]*】|（[^）]*）|\([^)]*\)/g, '').replace(/^[\d\s\-.．]+/, ''));
+  // 先頭の飾り・連番を落とした形も候補にする。「■ ③SPD収支管理表」の ■ や、原本「②〜」と
+  // アセット「③〜」の番号ずれ（協和で実際にあった形）は、中身の名前で当てるしかない
+  const variants = (s: string): string[] => {
+    const bare = s.replace(/^[\d■□●○◆◇★☆*＊]+/, '');
+    return bare && bare !== s ? [s, bare] : [s];
+  };
 
   // テーブル名だけでなく元ファイル名でも当てる。xlsx のテーブル名はシート名（Export 等）で、
   // アセット名（原本ファイル由来）とは一致しないことが多い（協和は全ファイル Export だった）
   const tableByNorm = tables.map(t => ({
-    t, names: [norm(t.name), norm(t.filename.replace(/\.[^.]+$/, ''))].filter(Boolean),
+    t, names: [norm(t.name), norm(t.filename.replace(/\.[^.]+$/, ''))].filter(Boolean).flatMap(variants),
   }));
   const findTable = (asset: string): { name: string; columns: string[] } | null => {
-    const a = assetCore(asset);
-    if (!a) return null;
+    const cores = variants(assetCore(asset)).filter(Boolean);
+    if (cores.length === 0) return null;
     // 双方向の包含で当てる（原本側が「①68期集計得意先別実績」のように接頭記号を持つことがある。
     // NFKC で ③→3 に均されるため、丸数字とアセット番号もかみ合う）
-    const hit = tableByNorm.find(x => x.names.some(n => n.includes(a) || a.includes(n)));
+    const hit = tableByNorm.find(x => x.names.some(n => cores.some(a => n.includes(a) || a.includes(n))));
     return hit ? hit.t : null;
   };
 
@@ -233,8 +240,14 @@ export function matchColumnsToLocal(
 
 /**
  * 対応表の初期案を丸ごと組み立てる（ステップ1「読み取る」の本体）。
- * 添付ファイルの読み取り → 原本（取込済みデータ）との自動突き合わせまで行い、
- * 人は表で確認・修正して確定するだけにする。
+ *
+ * 表の主役は「実装対象＝取込済みデータの列」。Redash の書き出しには他案件・移行用の
+ * アセットも数百行並ぶため（協和の WS には 313 行中 271 行が無関係だった）、
+ * Redash 側を基準に並べると、直すべき行が無関係な行に埋もれる。
+ *   1) Redash の書き出しを読み取る
+ *   2) 名寄せ（正規化した名前）で自動突き合わせ
+ *   3) 名寄せで当たらなかった残りを AI が意味で対応づける（AI推定と明記）
+ *   4) 原本の列を1行=1列で並べ、無関係なアセットの行は数だけ知らせて出さない
  */
 export async function buildColumnDraft(projectId: number, docs: { filename: string; content: string }[]): Promise<{
   rows: SqlColumnRow[];
@@ -243,14 +256,103 @@ export async function buildColumnDraft(projectId: number, docs: { filename: stri
   unmatchedLocal: string[];
   tables: { name: string; columns: string[] }[];
 }> {
-  const parsed = parseColumnFiles(docs);
   const collections = await collectByRole(projectId);
   const tables = collections.inputs.map(i => ({
     name: i.tableName, filename: i.filename, columns: tableHeaderOf(i.parsed),
   }));
+  return await assembleColumnDraft(projectId, docs, tables);
+}
+
+/** buildColumnDraft の本体（取込データの読み出し以外）。テーブル一覧を渡せるのでテストできる */
+export async function assembleColumnDraft(
+  projectId: number,
+  docs: { filename: string; content: string }[],
+  tables: { name: string; filename: string; columns: string[] }[],
+): Promise<{
+  rows: SqlColumnRow[];
+  notes: string[];
+  matched: number;
+  unmatchedLocal: string[];
+  tables: { name: string; columns: string[] }[];
+}> {
+  const parsed = parseColumnFiles(docs);
   const m = matchColumnsToLocal(parsed.rows, tables);
+  const notes = [...parsed.notes];
+
+  // この案件に関係するアセット＝原本ファイルと名前が突き合ったアセット。
+  // 一度も当たらなかったアセットの行は他案件・移行用とみなし、表には出さない
+  const relevantAssets = new Set(m.rows.filter(r => r.local_table !== '').map(r => r.asset_name));
+  const relevantRows = m.rows.filter(r => relevantAssets.has(r.asset_name));
+  const droppedCount = m.rows.length - relevantRows.length;
+  if (droppedCount > 0) {
+    notes.push(`受領ファイルと突き合わないアセットの ${droppedCount.toLocaleString()} 行（他案件・移行用とみられる）は表に出していません。`);
+  }
+
+  // 名寄せで残った分を AI が意味で対応づける（「★売上金額（割戻金含む）」↔ 論理名「売上」など）。
+  // 間違った物理名は実行エラーより質が悪いので、確信のある対応だけ返させ、AI推定と明記する
+  let aiMatched = 0;
+  const unmatchedPhysical = relevantRows.filter(r => r.local_column === '');
+  const unmatchedLocalCols = tables.flatMap(t =>
+    t.columns.filter(c => !relevantRows.some(r => r.local_table === t.name && r.local_column === c))
+      .map(c => ({ table: t.name, column: c })));
+  if (aiAvailable() && unmatchedPhysical.length > 0 && unmatchedLocalCols.length > 0) {
+    try {
+      const instruction = [
+        '取込データの列（原本）と、kpiee の物理カラムの対応づけです。名前の正規化一致では当たらなかった',
+        '残り同士を、意味で対応づけてください。列名の言い換え（記号・注記の有無、略称）だけを根拠にし、',
+        '確信が持てない対応は返さないでください。',
+        '',
+        '<原本の列（テーブル名 . 列名）>',
+        ...unmatchedLocalCols.map(c => `- ${c.table} . ${c.column}`),
+        '</原本の列>',
+        '',
+        '<物理カラム（物理名 | 論理名 | アセット名）>',
+        ...unmatchedPhysical.map(r => `- ${r.physical_column} | ${r.logical_name} | ${r.asset_name}`),
+        '</物理カラム>',
+      ].join('\n');
+      const result = await callStructured<{ matches: { local_table: string; local_column: string; physical_column: string; reason: string }[] }>(
+        projectId, 'sql-columns', instruction, COLUMN_MATCH_SCHEMA as unknown as Record<string, unknown>,
+      );
+      const usable = new Set(unmatchedLocalCols.map(c => `${c.table}!${c.column}`));
+      for (const match of result.data.matches) {
+        const row = relevantRows.find(r => r.physical_column === match.physical_column && r.local_column === '');
+        // 候補に無い名前を作った対応や、同じ原本列への二重の対応は捨てる
+        if (!row || !usable.delete(`${match.local_table}!${match.local_column}`)) continue;
+        row.local_table = match.local_table;
+        row.local_column = match.local_column;
+        row.note = `AI推定: ${match.reason}`;
+        aiMatched++;
+      }
+      if (aiMatched > 0) notes.push(`名寄せで当たらなかった ${aiMatched} 行を AI が意味で対応づけました（備考に「AI推定」と根拠）。内容をご確認ください。`);
+    } catch (e) {
+      notes.push(`AI の対応づけは実行できませんでした（名寄せ分のみ）: ${String(e).slice(0, 120)}`);
+    }
+  }
+
+  // 表を「原本の列」基準に並べ替える: 対応済み（原本の列順）→ 原本にあって対応が無い列（要確認）
+  // → 関係アセットにあって原本に無い物理行（未取込の可能性）。同じ原本列に複数の物理行が
+  // 当たることもある（アセットの重複書き出し）ため、置けなかった行も末尾に残して人に見せる
+  const byLocal = new Map(relevantRows.filter(r => r.local_table && r.local_column)
+    .map(r => [`${r.local_table}!${r.local_column}`, r]));
+  const placed = new Set<SqlColumnRow>();
+  const orderedRows: SqlColumnRow[] = [];
+  for (const t of tables) {
+    for (const c of t.columns) {
+      const hit = byLocal.get(`${t.name}!${c}`);
+      if (hit) placed.add(hit);
+      orderedRows.push(hit ?? {
+        table_name: '', physical_column: '', logical_name: '', asset_name: '',
+        local_table: t.name, local_column: c, note: '',
+      });
+    }
+  }
+  orderedRows.push(...relevantRows.filter(r => !placed.has(r)));
+
+  const unmatchedLocal = orderedRows.filter(r => r.physical_column === '').map(r => `${r.local_table} の ${r.local_column}`);
   return {
-    rows: m.rows, notes: parsed.notes, matched: m.matched, unmatchedLocal: m.unmatchedLocal,
+    rows: orderedRows, notes,
+    matched: m.matched + aiMatched,
+    unmatchedLocal,
     tables: tables.map(t => ({ name: t.name, columns: t.columns })),
   };
 }

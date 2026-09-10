@@ -23,6 +23,8 @@ const MODEL_BY_STAGE: Record<string, string> = {
   requirements: EXTRACT_MODEL,
   'step-flow': EXTRACT_MODEL,
   'report-chat': EXTRACT_MODEL,
+  // 物理カラムの意味対応づけ（言い換えの判断）。間違った物理名は実行エラーより質が悪い
+  'sql-columns': EXTRACT_MODEL,
 };
 export const modelOf = (stage: string): string => MODEL_BY_STAGE[stage] ?? MODEL;
 

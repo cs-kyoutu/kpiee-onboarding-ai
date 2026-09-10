@@ -45,8 +45,8 @@ const unmatchedLocal = ref<string[]>([])
 /** 取込済みデータのテーブルと列。修正時に datalist 候補として出す */
 const localTables = ref<{ name: string; columns: string[] }[]>([])
 
-/** 原本の列まで当たっている行数（確定前の見どころ。全行当たっている必要はない） */
-const matchedCount = computed(() => rows.value.filter(r => r.local_table && r.local_column).length)
+/** 原本の列と物理名の両方が入っている行数（確定前の見どころ。全行当たっている必要はない） */
+const matchedCount = computed(() => rows.value.filter(r => r.local_table && r.local_column && r.physical_column).length)
 const localColumnOptions = computed(() =>
   localTables.value.flatMap(t => t.columns.map(c => `${t.name}.${c}`)))
 
@@ -54,7 +54,7 @@ const visibleRows = computed(() => {
   const f = filter.value.trim().toLowerCase()
   if (!f) return rows.value
   return rows.value.filter(r =>
-    [r.table_name, r.physical_column, r.logical_name, r.asset_name, r.note]
+    [r.local_table, r.local_column, r.table_name, r.physical_column, r.logical_name, r.asset_name, r.note]
       .some(v => (v ?? '').toLowerCase().includes(f)))
 })
 
@@ -111,9 +111,10 @@ function applyDraft(r: SqlColumnDraft) {
   rows.value = r.rows
   localTables.value = r.tables
   unmatchedLocal.value = r.unmatchedLocal
+  const localTotal = r.tables.reduce((n, t) => n + t.columns.length, 0)
   parseNotes.value = [
     ...r.notes,
-    `原本の列と自動で突き合わせ: ${r.matched} / ${r.rows.length} 行が当たりました。外れた行（原本の列が空欄）を直してください。`,
+    `原本の列 ${localTotal.toLocaleString()} 列のうち ${r.matched.toLocaleString()} 列に物理名が付きました。空欄の行（黄色）だけ確かめて直してください。`,
   ]
 }
 
@@ -445,7 +446,7 @@ onUnmounted(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(r, i) in visibleRows" :key="r.id ?? `n${i}`" :class="{ warn: !(r.local_table && r.local_column) }">
+              <tr v-for="(r, i) in visibleRows" :key="r.id ?? `n${i}`" :class="{ warn: !(r.local_table && r.local_column && r.physical_column) }">
                 <td>
                   <input
                     :value="r.local_table && r.local_column ? `${r.local_table}.${r.local_column}` : ''"
@@ -453,7 +454,7 @@ onUnmounted(() => {
                     @change="applyLocalPick(r, ($event.target as HTMLInputElement).value)"
                   >
                 </td>
-                <td><input v-model="r.physical_column" :disabled="locked" placeholder="IMPORT_30016_STRING_1"></td>
+                <td><input v-model="r.physical_column" :disabled="locked" :placeholder="r.local_column ? '（物理名なし。確定時にこの行は保存されません）' : 'IMPORT_30016_STRING_1'"></td>
                 <td><input v-model="r.logical_name" :disabled="locked" placeholder="集計得意先コード"></td>
                 <td><input v-model="r.asset_name" :disabled="locked"></td>
                 <td><input v-model="r.note" :disabled="locked"></td>

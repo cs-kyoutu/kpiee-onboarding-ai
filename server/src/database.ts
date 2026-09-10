@@ -36,7 +36,7 @@ const isInsert = (sql: string) => /^\s*insert\b/i.test(sql);
 const hasReturning = (sql: string) => /\breturning\b/i.test(sql);
 // id 列を持たないテーブルへの INSERT には RETURNING id を付けない（project_id が PK のテーブル群）
 const noIdTable = (sql: string) =>
-  /\binto\s+(project_overviews|relation_graphs|report_specs|project_flags|doc_drafts)\b/i.test(sql);
+  /\binto\s+(project_overviews|relation_graphs|report_specs|project_flags|doc_drafts|sql_column_drafts)\b/i.test(sql);
 
 // ───────────────────────── Postgres ─────────────────────────
 function makePgDb(pool: pg.Pool, client?: pg.PoolClient): Db {

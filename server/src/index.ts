@@ -176,6 +176,7 @@ app.delete('/api/projects/:id', async (req, res) => {
     await t.prepare(`DELETE FROM sql_chat_messages WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM sql_jobs WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM sql_column_maps WHERE project_id = ?`).run(projectId);
+    await t.prepare(`DELETE FROM sql_column_drafts WHERE project_id = ?`).run(projectId);
     await t.prepare(`DELETE FROM doc_drafts WHERE project_id = ?`).run(projectId);
     // file_relations は artifacts を参照するので artifacts より先に消す
     await t.prepare(`DELETE FROM file_relations WHERE project_id = ?`).run(projectId);
@@ -1176,12 +1177,20 @@ app.post('/api/projects/:id/sql-chat', async (req, res) => {
 // 確定した対応だけが SQL構築チャットの前提になる（初期案の読み取り違いをそのまま根拠にしない）。
 // 突き合わせは取込データの再パース（無保存モードでは Drive 再取得）を伴い、協和の実測で
 // 70秒超かかる。同期で返すとブラウザ・ALB のタイムアウトで「0行」に見えるため、
-// 非同期＋ポーリングにする（doc-draft と同じ方式）。結果はメモリ持ち — 押し直せば作り直せるもの
-const colDraftJobs = new Map<number, {
-  status: 'pending' | 'done' | 'failed';
-  result?: Awaited<ReturnType<typeof buildColumnDraft>>;
-  error?: string;
-}>();
+// 非同期＋ポーリングにする（doc-draft と同じ方式）。結果はメモリ持ちだとデプロイでタスクが
+// 入れ替わった瞬間に消えて「status: none / 0行」に戻る（実際に起きた）ので、DB に持つ。
+
+const saveColDraft = async (projectId: number, patch: Record<string, unknown>) => {
+  const cols = Object.keys(patch);
+  const updated = await db.prepare(
+    `UPDATE sql_column_drafts SET ${cols.map(c => `${c} = ?`).join(', ')}, updated_at = ${db.driver === 'pg' ? 'now()' : "datetime('now')"} WHERE project_id = ?`,
+  ).run(...cols.map(c => patch[c]), projectId);
+  if (updated.changes === 0) {
+    await db.prepare(
+      `INSERT INTO sql_column_drafts (project_id, ${cols.join(', ')}) VALUES (?${', ?'.repeat(cols.length)})`,
+    ).run(projectId, ...cols.map(c => patch[c]));
+  }
+};
 
 app.post('/api/projects/:id/sql-columns/parse', async (req, res) => {
   const projectId = Number(req.params.id);
@@ -1190,15 +1199,21 @@ app.post('/api/projects/:id/sql-columns/parse', async (req, res) => {
     if (docs.length === 0) {
       return res.status(400).json({ error: '物理カラム一覧が添付されていません。Redash クエリ145/147 の書き出し CSV を先に添付してください' });
     }
-    if (colDraftJobs.get(projectId)?.status === 'pending') {
+    const row = await db.prepare(`SELECT status, updated_at FROM sql_column_drafts WHERE project_id = ?`)
+      .get(projectId) as { status: string; updated_at: string } | undefined;
+    // pending のまま長時間動かない行は、デプロイでジョブごと消えた残骸なので押し直しを許す
+    // （doc-draft と同じ罠・同じ回復）。SQLite の datetime は T なし UTC なので ISO に直して比べる
+    const updatedMs = row ? Date.parse(row.updated_at.includes('T') ? row.updated_at : `${row.updated_at.replace(' ', 'T')}Z`) : 0;
+    if (row?.status === 'pending' && Date.now() - updatedMs < 10 * 60 * 1000) {
       return res.status(202).json({ pending: true });
     }
-    colDraftJobs.set(projectId, { status: 'pending' });
+    await saveColDraft(projectId, { status: 'pending', error: null });
     void (async () => {
       try {
-        colDraftJobs.set(projectId, { status: 'done', result: await buildColumnDraft(projectId, docs) });
+        const result = await buildColumnDraft(projectId, docs);
+        await saveColDraft(projectId, { status: 'done', result: JSON.stringify(result), error: null });
       } catch (e) {
-        colDraftJobs.set(projectId, { status: 'failed', error: String(e) });
+        await saveColDraft(projectId, { status: 'failed', error: String(e) }).catch(() => {});
       }
     })();
     res.status(202).json({ pending: true });
@@ -1209,9 +1224,14 @@ app.post('/api/projects/:id/sql-columns/parse', async (req, res) => {
 
 /** 突き合わせの進み具合と結果。UI はこれをポーリングする */
 app.get('/api/projects/:id/sql-columns/parse', async (req, res) => {
-  const job = colDraftJobs.get(Number(req.params.id));
-  if (!job) return res.json({ status: 'none' });
-  res.json({ status: job.status, error: job.error, result: job.result });
+  try {
+    const row = await db.prepare(`SELECT status, error, result FROM sql_column_drafts WHERE project_id = ?`)
+      .get(Number(req.params.id)) as { status: string; error: string | null; result: string | null } | undefined;
+    if (!row) return res.json({ status: 'none' });
+    res.json({ status: row.status, error: row.error ?? undefined, result: row.result ? JSON.parse(row.result) : undefined });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
 });
 
 app.get('/api/projects/:id/sql-columns', async (req, res) => {
