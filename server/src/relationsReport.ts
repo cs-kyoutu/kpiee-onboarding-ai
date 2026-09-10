@@ -4041,7 +4041,23 @@ ${secOn.flow ? `
           renderLogicBlock(b, i + 1, regions, graph.keyLinks ?? [], labels, fileNameOf, showEr)).join('\n'),
         graph: '',
       };
-      if (!plan) return `${auto.graph}\n    ${auto.recipes}`;
+      // 登録済みのブック関係（伺った手順）から、この帳票の「作られ方」をステップの札で並べる。
+      // 貼り付けで受け渡す案件（協和型）は、自動のロジックブロックが原理的に0件になる
+      // （数式も値一致も残らない）ため、これが無いと帳票の節が見出しだけになる。
+      // outputPlans の指定がある案件では従来どおり指定が優先（この札は出さない）。
+      const declaredSteps = declaredRels
+        .filter(d => fileNameOf(d.toFile) === sec.filename || d.toFile === fileLabelOf(sec.filename))
+        .sort((a, b) => (a.step ?? 999) - (b.step ?? 999));
+      const declaredHow = declaredSteps.length === 0 ? '' : `
+    <p class="graph-guide">${sentences(
+      'ファイル間の受け渡しは値の貼り付けで行われており、Excel 上に数式が残りません。',
+      '以下は伺った内容（業務資料）から整理した作成手順です。線の向きと、足されるものがこれで合っているかをご確認ください。',
+    )}</p>
+    ${declaredSteps.map((d, i) => `<div class="stepcard">
+      <div class="stepcard-h"><span class="stepchip">${d.step ? `ステップ${d.step}` : `受け渡し${i + 1}`}</span> ${esc(d.stepTitle || `${fileNameOf(d.fromFile)} → ${sec.filename}`)}</div>
+      <p class="stepcard-p"><b>${esc(fileNameOf(d.fromFile))}</b> から <b>${esc(fileNameOf(d.toFile))}</b> へ（${esc(FILE_REL_LABELS[d.relType])}）${d.adds ? `。足されるもの: <b>${esc(d.adds)}</b>` : ''}${d.note ? `<br>${esc(d.note)}` : ''}</p>
+    </div>`).join('\n    ')}`;
+      if (!plan) return `${declaredHow}\n    ${auto.graph}\n    ${auto.recipes}`;
       return plan.blocks
         .map((b, i) => renderOutputBlock(b, checkMark.get(b) ?? '', `o${si}-${i}`, auto))
         .join('\n    ');
