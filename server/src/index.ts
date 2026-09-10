@@ -881,6 +881,8 @@ interface RequirementsExtractResult {
     howMadeSource: string;
     assumptions: string[];
     fileNotes: { file: string; note: string }[];
+    /** 帳票ごとの読み方（03 に出す）。saveReportSpec の normalize がそのまま受ける形 */
+    outputPlans: { file: string; blocks: Record<string, unknown>[] }[];
   };
   roleHints: {
     file: string; artifactId: number | null; sheet: string; sheetFound: boolean; role: string; reason: string;
@@ -917,17 +919,27 @@ async function runRequirementsExtract(projectId: number): Promise<RequirementsEx
       '- ファイル名・シート名は、下の受領ファイル一覧の名前をそのまま使う（言い換え・省略をしない）',
       '- 資料の項目が空欄なら、それは「まだいただいていない」ものとして assumptions へ1行入れる',
       '- 顧客が読む文章になるため、資料の言い回しを尊重し、こちらの推測で断定しない',
+      '- 帳票の作成手順（ステップ1〜のような文書）があれば outputPlans の steps ブロックへ、',
+      '  帳票の縦横の形が書かれていれば bullets ブロックへ整理する。順番は資料のとおり。',
+      '  数値の実例（金額など）は書かない',
       '',
       `<received_files>\n${fileList}\n</received_files>`,
       `<docs>\n${body}\n</docs>`,
     ].join('\n');
 
+    interface ExtractedBlock {
+      kind: 'heading' | 'bullets' | 'steps' | 'check';
+      title: string; lede: string; items: string[];
+      cards: { title: string; text: string; steps: { tag: string; tone: string; text: string }[]; note: string }[];
+      question: string; detail: string[];
+    }
     interface Extracted {
       reproduce: { label: string; text: string }[];
       howMade: string[];
       howMadeSource: string;
       assumptions: string[];
       fileNotes: { file: string; note: string }[];
+      outputPlans: { file: string; blocks: ExtractedBlock[] }[];
       roleHints: { file: string; sheet: string; role: string; reason: string }[];
     }
     const result = await callStructured<Extracted>(
@@ -948,6 +960,23 @@ async function runRequirementsExtract(projectId: number): Promise<RequirementsEx
       // 解決できたら受領時のファイル名へ揃える（資料側の省略表記のままだと 01 の突き合わせが外れる）
       return id === null ? null : { file: nameOf.get(id)!, note: n.note };
     }).filter((n): n is { file: string; note: string } => n !== null);
+
+    // 帳票ごとの読み方。フラットな抽出形（全 kind の項目が並ぶ）を ReportOutputBlock の判別型へ戻す。
+    // 中身は normalizeReportSpec（saveReportSpec 経由）が上限・体裁を面倒みるので、ここは形合わせだけ
+    const outputPlans = data.outputPlans.map(p => {
+      const id = idOf(p.file);
+      if (id === null) { unresolved.add(p.file); return null; }
+      const blocks = p.blocks.map((b): Record<string, unknown> | null => {
+        switch (b.kind) {
+          case 'heading': return { kind: 'heading', title: b.title, lede: b.lede };
+          case 'bullets': return { kind: 'bullets', title: b.title, items: b.items, notes: [] };
+          case 'steps': return { kind: 'steps', title: b.title, cards: b.cards };
+          case 'check': return { kind: 'check', question: b.question, detail: b.detail };
+          default: return null;
+        }
+      }).filter((b): b is Record<string, unknown> => b !== null);
+      return blocks.length === 0 ? null : { file: nameOf.get(id)!, blocks };
+    }).filter((p): p is { file: string; blocks: Record<string, unknown>[] } => p !== null);
 
     // 役割の当て込み案。シート名も突き合わせ、資料が指すシートが実在するかを画面へ返す
     const roleHints = data.roleHints.map(h => {
@@ -1004,6 +1033,7 @@ async function runRequirementsExtract(projectId: number): Promise<RequirementsEx
         howMadeSource: data.howMadeSource,
         assumptions: data.assumptions,
         fileNotes,
+        outputPlans,
       },
       roleHints,
       unresolved: [...unresolved],

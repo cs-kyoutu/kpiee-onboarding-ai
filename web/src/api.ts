@@ -320,6 +320,8 @@ export interface RequirementsDraft {
     howMadeSource: string
     assumptions: string[]
     fileNotes: { file: string; note: string }[]
+    /** 帳票ごとの読み方（03 に出す）。資料に手順・帳票の形が文書化されているときだけ入る */
+    outputPlans?: { file: string; blocks: Record<string, unknown>[] }[]
   }
   roleHints: RoleHint[]
   /** 資料に出てきたが受領ファイルに無い名前（未受領の可能性） */

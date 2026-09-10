@@ -104,6 +104,75 @@ export const REQUIREMENTS_SCHEMA = {
         additionalProperties: false,
       },
     },
+    outputPlans: {
+      type: 'array',
+      description: '最終アウトプットの帳票ごとの読み方（レポート03「ロジックの確認」に出す）。'
+        + '資料に帳票の形・作成手順・計算の段取りが文書化されているときだけ作る（無ければ空配列）。'
+        + '協和の試算手順のような「ステップ1〜4」の文書は steps ブロックに、'
+        + '帳票の縦横の構成が書かれていれば bullets ブロックに整理する。資料に無いことは書かない',
+      items: {
+        type: 'object',
+        properties: {
+          file: { type: 'string', description: '対象の最終アウトプットのファイル名。受領ファイル一覧の名前をそのまま使う' },
+          blocks: {
+            type: 'array',
+            description: '上から並べる順。話の切れ目に heading、帳票の形は bullets、手順は steps、確認したいことは check',
+            items: {
+              type: 'object',
+              properties: {
+                kind: { type: 'string', enum: ['heading', 'bullets', 'steps', 'check'], description: 'ブロックの種類' },
+                title: { type: 'string', description: 'heading / bullets / steps の見出し。check では空文字' },
+                lede: { type: 'string', description: 'heading の導入1文。他の種類では空文字' },
+                items: {
+                  type: 'array', items: { type: 'string' },
+                  description: 'bullets の箇条書き（<b> で強調可）。他の種類では空配列',
+                },
+                cards: {
+                  type: 'array',
+                  description: 'steps のカード（1ステップ=1カード、資料の順）。他の種類では空配列',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      title: { type: 'string', description: 'カードの見出し（例: ステップ1 得意先直下）' },
+                      text: { type: 'string', description: 'このステップで何をするか（資料の言い回しを尊重）' },
+                      steps: {
+                        type: 'array',
+                        description: 'カードの中の行（左に札、右に説明）。細分が無ければ空配列',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            tag: { type: 'string', description: '左の札（例: ①集計、②演算、③配賦）' },
+                            tone: {
+                              type: 'string', enum: ['base', 'direct', 'ratio', 'manual', 'result'],
+                              description: 'base=土台 / direct=そのまま付与 / ratio=比率で配る / manual=手入力 / result=でき上がり',
+                            },
+                            text: { type: 'string', description: 'その行で何をするか。<b> で強調可' },
+                          },
+                          required: ['tag', 'tone', 'text'],
+                          additionalProperties: false,
+                        },
+                      },
+                      note: { type: 'string', description: 'カードの下の注記。無ければ空文字' },
+                    },
+                    required: ['title', 'text', 'steps', 'note'],
+                    additionalProperties: false,
+                  },
+                },
+                question: { type: 'string', description: 'check の問い（1文）。他の種類では空文字' },
+                detail: {
+                  type: 'array', items: { type: 'string' },
+                  description: 'check の補足（なぜ確認したいか）。他の種類では空配列',
+                },
+              },
+              required: ['kind', 'title', 'lede', 'items', 'cards', 'question', 'detail'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['file', 'blocks'],
+        additionalProperties: false,
+      },
+    },
     roleHints: {
       type: 'array',
       description: '資料が指定しているシートの役割。タブ名まで指定されているものだけを挙げる。'
@@ -125,7 +194,7 @@ export const REQUIREMENTS_SCHEMA = {
       },
     },
   },
-  required: ['reproduce', 'howMade', 'howMadeSource', 'assumptions', 'fileNotes', 'roleHints'],
+  required: ['reproduce', 'howMade', 'howMadeSource', 'assumptions', 'fileNotes', 'outputPlans', 'roleHints'],
   additionalProperties: false,
 } as const;
 
