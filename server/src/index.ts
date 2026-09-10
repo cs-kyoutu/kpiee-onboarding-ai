@@ -1867,9 +1867,22 @@ app.post('/api/projects/:id/reset-status', async (req, res) => {
 const webDist = process.env.WEB_DIST
   || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../web/dist');
 if (existsSync(webDist)) {
-  app.use(express.static(webDist));
+  // アセットはファイル名にハッシュが入るので長期キャッシュしてよい。
+  // index.html だけはキャッシュさせない — ここが古いと、デプロイ後もブラウザが
+  // 旧バンドルを読み続けて「デプロイしたのに変わらない」になる（実際に起きた）。
+  app.use(express.static(webDist, {
+    index: false,
+    setHeaders: (res, filePath) => {
+      if (/[.-][A-Za-z0-9_-]{8,}\.(js|css)$/.test(filePath)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    },
+  }));
   // SPA フォールバック（vue-router history モード）。/api 以外の GET は index.html を返す。
-  app.get(/^(?!\/api\/).*/, (_req, res) => res.sendFile(path.join(webDist, 'index.html')));
+  app.get(/^(?!\/api\/).*/, (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.sendFile(path.join(webDist, 'index.html'));
+  });
   console.log(`[kpiee-onboarding-ai] serving web from ${webDist}`);
 }
 
